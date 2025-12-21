@@ -7,10 +7,15 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+pub mod schema;
 pub mod session;
 
 pub use rmcp::model::{CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject};
 pub use rmcp::service::{ClientInitializeError, ServiceError};
+pub use schema::{
+    parse_call_tool_request, parse_call_tool_result, parse_list_tools, schema_version_label,
+    SchemaError,
+};
 pub use session::{SessionDriver, SessionError};
 
 /// Schema versions supported by the tooltest core.

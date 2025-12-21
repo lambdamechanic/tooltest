@@ -1,0 +1,12 @@
+## 1. Implementation
+- [ ] 1.1 Create a Rust workspace with `tooltest-core` and `tooltest-ffi` crates
+- [ ] 1.2 Define core API types for endpoint config, tool predicate callback, assertions, and run results
+- [ ] 1.3 Implement MCP session driver with initialization enforcement and transport abstraction
+- [ ] 1.4 Implement stdio and HTTP transport backends
+- [ ] 1.5 Implement schema-based invocation generator with tool eligibility filtering
+- [ ] 1.6 Implement MCP schema parsing (Tool, tools/list, tools/call) per schema/2025-11-25 with configurable schema version support
+- [ ] 1.7 Implement default assertions, optional declarative DSL assertions, and rustprop minimization output
+- [ ] 1.8 Implement FFI surface for Node (napi) and Python (pyo3) wrappers, including JSON DSL helpers
+- [ ] 1.9 Add unit tests for initialization ordering, schema validation, predicate filtering, assertions, and minimization
+- [ ] 1.10 Add basic integration tests with stub MCP endpoints (stdio and HTTP), including HTTP auth header coverage
+- [ ] 1.11 Document core API and FFI usage

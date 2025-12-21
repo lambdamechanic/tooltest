@@ -8,11 +8,26 @@ pub trait Transport {
     fn send(&mut self, request: JsonValue) -> Result<JsonValue, TransportError>;
 }
 
+/// Transport error category to aid recovery decisions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransportErrorKind {
+    /// Errors caused by IO, networking, or process failures.
+    Io,
+    /// Errors caused by protocol or framing mismatches.
+    Protocol,
+    /// Errors that do not fit a more specific category.
+    Other,
+}
+
 /// Transport-level error surfaced by the session driver.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransportError {
     /// Human-readable error description.
     pub message: String,
+    /// Classification for the underlying transport error.
+    pub kind: TransportErrorKind,
+    /// Optional source string for debugging.
+    pub source: Option<String>,
 }
 
 impl TransportError {
@@ -20,6 +35,60 @@ impl TransportError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: TransportErrorKind::Other,
+            source: None,
+        }
+    }
+
+    /// Creates a new transport error with an explicit kind.
+    pub fn with_kind(kind: TransportErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind,
+            source: None,
+        }
+    }
+
+    /// Creates a new transport error with a source description.
+    pub fn with_source(
+        kind: TransportErrorKind,
+        message: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            kind,
+            source: Some(source.into()),
+        }
+    }
+}
+
+/// Structured JSON-RPC error payload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RpcError {
+    /// Optional JSON-RPC error code.
+    pub code: Option<i64>,
+    /// Optional JSON-RPC error message.
+    pub message: Option<String>,
+    /// Optional JSON-RPC error data payload.
+    pub data: Option<JsonValue>,
+    /// Raw error value preserved for debugging.
+    pub raw: JsonValue,
+}
+
+impl RpcError {
+    fn from_value(value: &JsonValue) -> Self {
+        let code = value.get("code").and_then(|entry| entry.as_i64());
+        let message = value
+            .get("message")
+            .and_then(|entry| entry.as_str())
+            .map(str::to_string);
+        let data = value.get("data").cloned();
+        Self {
+            code,
+            message,
+            data,
+            raw: value.clone(),
         }
     }
 }
@@ -30,9 +99,9 @@ pub enum SessionError {
     /// Transport-level failure.
     Transport(TransportError),
     /// Initialization failed with a reason.
-    InitializationFailed { reason: String },
+    InitializationFailed { error: Box<RpcError> },
     /// Tool call failed with a reason.
-    ToolCallFailed { tool: String, reason: String },
+    ToolCallFailed { tool: String, error: Box<RpcError> },
 }
 
 impl From<TransportError> for SessionError {
@@ -63,6 +132,12 @@ impl<T: Transport> SessionDriver<T> {
         self.initialized
     }
 
+    /// Resets initialization state and request id counter.
+    pub fn reset(&mut self) {
+        self.initialized = false;
+        self.next_id = 1;
+    }
+
     /// Performs MCP initialization with empty parameters.
     pub fn initialize(&mut self) -> Result<JsonValue, SessionError> {
         self.initialize_with_params(json!({}))
@@ -71,8 +146,10 @@ impl<T: Transport> SessionDriver<T> {
     /// Performs MCP initialization with caller-supplied parameters.
     pub fn initialize_with_params(&mut self, params: JsonValue) -> Result<JsonValue, SessionError> {
         let response = self.send_request("initialize", params)?;
-        if let Some(reason) = extract_error(&response) {
-            return Err(SessionError::InitializationFailed { reason });
+        if let Some(error) = extract_error(&response) {
+            return Err(SessionError::InitializationFailed {
+                error: Box::new(error),
+            });
         }
         self.initialized = true;
         Ok(response)
@@ -91,10 +168,10 @@ impl<T: Transport> SessionDriver<T> {
             "arguments": arguments,
         });
         let response = self.send_request("tools/call", params)?;
-        if let Some(reason) = extract_error(&response) {
+        if let Some(error) = extract_error(&response) {
             return Err(SessionError::ToolCallFailed {
                 tool: tool_name,
-                reason,
+                error: Box::new(error),
             });
         }
         Ok(TraceEntry {
@@ -136,8 +213,8 @@ impl<T: Transport> SessionDriver<T> {
     }
 }
 
-fn extract_error(response: &JsonValue) -> Option<String> {
-    response.get("error").map(|error| error.to_string())
+fn extract_error(response: &JsonValue) -> Option<RpcError> {
+    response.get("error").map(RpcError::from_value)
 }
 
 #[cfg(test)]
@@ -235,7 +312,12 @@ mod tests {
         assert_eq!(
             error,
             SessionError::InitializationFailed {
-                reason: "{\"message\":\"nope\"}".to_string()
+                error: Box::new(RpcError {
+                    code: None,
+                    message: Some("nope".to_string()),
+                    data: None,
+                    raw: json!({"message": "nope"}),
+                })
             }
         );
     }
@@ -256,10 +338,20 @@ mod tests {
     fn transport_error_helpers_capture_message() {
         let error = TransportError::new("transport down");
         assert_eq!(error.message, "transport down");
+        assert_eq!(error.kind, TransportErrorKind::Other);
+        assert!(error.source.is_none());
         assert_eq!(
             SessionError::from(error.clone()),
             SessionError::Transport(error)
         );
+
+        let error = TransportError::with_kind(TransportErrorKind::Io, "lost");
+        assert_eq!(error.kind, TransportErrorKind::Io);
+        assert!(error.source.is_none());
+
+        let error = TransportError::with_source(TransportErrorKind::Protocol, "bad", "codec");
+        assert_eq!(error.kind, TransportErrorKind::Protocol);
+        assert_eq!(error.source, Some("codec".to_string()));
     }
 
     #[test]
@@ -309,7 +401,12 @@ mod tests {
             error,
             SessionError::ToolCallFailed {
                 tool: "bad_tool".to_string(),
-                reason: "{\"message\":\"bad\"}".to_string()
+                error: Box::new(RpcError {
+                    code: None,
+                    message: Some("bad".to_string()),
+                    data: None,
+                    raw: json!({"message": "bad"}),
+                })
             }
         );
     }
@@ -332,7 +429,12 @@ mod tests {
         assert_eq!(
             error,
             SessionError::InitializationFailed {
-                reason: "{\"message\":\"init blocked\"}".to_string()
+                error: Box::new(RpcError {
+                    code: None,
+                    message: Some("init blocked".to_string()),
+                    data: None,
+                    raw: json!({"message": "init blocked"}),
+                })
             }
         );
     }
@@ -412,7 +514,12 @@ mod tests {
         assert_eq!(
             error,
             SessionError::InitializationFailed {
-                reason: "{\"message\":\"no init\"}".to_string()
+                error: Box::new(RpcError {
+                    code: None,
+                    message: Some("no init".to_string()),
+                    data: None,
+                    raw: json!({"message": "no init"}),
+                })
             }
         );
     }
@@ -437,8 +544,59 @@ mod tests {
             error,
             SessionError::ToolCallFailed {
                 tool: "fail".to_string(),
-                reason: "{\"message\":\"nope\"}".to_string()
+                error: Box::new(RpcError {
+                    code: None,
+                    message: Some("nope".to_string()),
+                    data: None,
+                    raw: json!({"message": "nope"}),
+                })
             }
+        );
+    }
+
+    #[test]
+    fn rpc_error_preserves_fields() {
+        let error = RpcError::from_value(&json!({
+            "code": -32000,
+            "message": "oops",
+            "data": {"info": "detail"}
+        }));
+        assert_eq!(error.code, Some(-32000));
+        assert_eq!(error.message.as_deref(), Some("oops"));
+        assert_eq!(error.data, Some(json!({"info": "detail"})));
+        assert_eq!(
+            error.raw,
+            json!({"code": -32000, "message": "oops", "data": {"info": "detail"}})
+        );
+    }
+
+    #[test]
+    fn reset_clears_initialization_state() {
+        let responses = vec![
+            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+        ];
+        let transport = RecordingTransport::new(responses);
+        let mut driver = SessionDriver::new(transport);
+
+        driver.initialize().expect("init");
+        assert!(driver.is_initialized());
+        driver.reset();
+        assert!(!driver.is_initialized());
+
+        driver.initialize().expect("init again");
+        assert_eq!(driver.transport.requests.len(), 2);
+        assert_eq!(
+            driver.transport.requests[0]
+                .get("id")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            driver.transport.requests[1]
+                .get("id")
+                .and_then(|value| value.as_i64()),
+            Some(1)
         );
     }
 }

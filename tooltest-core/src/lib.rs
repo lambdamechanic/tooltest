@@ -9,7 +9,9 @@ use serde_json::Value as JsonValue;
 
 pub mod session;
 
-pub use session::{SessionDriver, SessionError, Transport, TransportError};
+pub use session::{
+    RpcError, SessionDriver, SessionError, Transport, TransportError, TransportErrorKind,
+};
 
 /// Schema versions supported by the tooltest core.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

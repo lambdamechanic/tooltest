@@ -3,33 +3,33 @@ use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceEr
 
 /// Errors emitted by the rmcp-backed session driver.
 ///
-/// The rmcp error variants are surfaced directly to simplify handling.
-#[allow(clippy::large_enum_variant)]
+/// The rmcp error variants are boxed to keep the enum size small; match on
+/// `SessionError` and then inspect the boxed error as needed.
 #[derive(Debug)]
 pub enum SessionError {
     /// Initialization failed while establishing the session.
-    Initialize(ClientInitializeError),
+    Initialize(Box<ClientInitializeError>),
     /// The session failed while sending or receiving requests.
-    Service(ServiceError),
+    Service(Box<ServiceError>),
     /// Failed to spawn or configure the stdio transport.
-    Transport(std::io::Error),
+    Transport(Box<std::io::Error>),
 }
 
 impl From<ClientInitializeError> for SessionError {
     fn from(error: ClientInitializeError) -> Self {
-        Self::Initialize(error)
+        Self::Initialize(Box::new(error))
     }
 }
 
 impl From<ServiceError> for SessionError {
     fn from(error: ServiceError) -> Self {
-        Self::Service(error)
+        Self::Service(Box::new(error))
     }
 }
 
 impl From<std::io::Error> for SessionError {
     fn from(error: std::io::Error) -> Self {
-        Self::Transport(error)
+        Self::Transport(Box::new(error))
     }
 }
 
@@ -60,9 +60,9 @@ impl SessionDriver {
     /// successful stdio flows.
     #[cfg(test)]
     pub async fn connect_stdio(_config: &StdioConfig) -> Result<Self, SessionError> {
-        Err(SessionError::Transport(std::io::Error::other(
-            "stdio transport disabled in tests",
-        )))
+        Err(SessionError::Transport(Box::new(std::io::Error::other(
+            "stdio transport disabled in tests; use connect_with_transport",
+        ))))
     }
 
     /// Connects to an MCP server over HTTP using rmcp streamable HTTP transport.
@@ -78,9 +78,9 @@ impl SessionDriver {
     /// successful HTTP flows.
     #[cfg(test)]
     pub async fn connect_http(_config: &HttpConfig) -> Result<Self, SessionError> {
-        Err(SessionError::Transport(std::io::Error::other(
-            "http transport disabled in tests",
-        )))
+        Err(SessionError::Transport(Box::new(std::io::Error::other(
+            "http transport disabled in tests; use connect_with_transport",
+        ))))
     }
 
     /// Connects using a custom rmcp transport implementation.
@@ -119,7 +119,6 @@ impl SessionDriver {
 }
 
 #[cfg(not(test))]
-#[allow(clippy::result_large_err)]
 fn build_http_transport(
     config: &HttpConfig,
 ) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {

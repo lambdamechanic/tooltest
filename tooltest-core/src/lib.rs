@@ -283,4 +283,19 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(debug.contains("predicate: true"));
     }
+
+    #[test]
+    fn run_config_default_matches_new() {
+        let config = RunConfig::new();
+        let default_config = RunConfig::default();
+        assert_eq!(config.schema, default_config.schema);
+        assert_eq!(
+            config.predicate.is_some(),
+            default_config.predicate.is_some()
+        );
+        assert_eq!(
+            config.assertions.rules.len(),
+            default_config.assertions.rules.len()
+        );
+    }
 }

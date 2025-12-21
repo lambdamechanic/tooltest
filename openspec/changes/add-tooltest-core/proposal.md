@@ -9,6 +9,7 @@ Tooltest needs a shared Rust core that can run valid MCP sequences against stdio
 - Define MCP sequence generation behavior, including initialization, tool eligibility filtering, default assertions, and proptest minimization output.
 - Include optional configurable HTTP auth header support for MCP endpoints.
 - Adopt the `rmcp` SDK for JSON-RPC/MCP protocol types and error shapes in the core runner.
+- **BREAKING**: Replace custom session and transport primitives with `rmcp` session/transport APIs.
 
 ## Impact
 - Affected specs: mcp-sequence-runner, ffi-bindings

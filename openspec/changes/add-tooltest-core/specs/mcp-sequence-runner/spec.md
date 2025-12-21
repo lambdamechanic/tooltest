@@ -17,6 +17,28 @@ The system SHALL support MCP sessions over stdio and HTTP endpoints.
 - **WHEN** an HTTP MCP endpoint is provided
 - **THEN** the session uses HTTP for MCP request/response exchange
 
+### Requirement: rmcp Session Driver
+The system SHALL use the `rmcp` SDK session/client APIs to drive MCP initialization and tool calls instead of maintaining a custom session driver.
+
+#### Scenario: rmcp session handles initialization
+- **WHEN** a run is started
+- **THEN** the MCP initialization handshake is dispatched via rmcp session/client APIs
+
+#### Scenario: rmcp session handles tool calls
+- **WHEN** a tool invocation is generated
+- **THEN** the MCP call is executed through rmcp session/client APIs
+
+### Requirement: rmcp Transport Usage
+The system SHALL use `rmcp` transport implementations for stdio and HTTP exchanges.
+
+#### Scenario: rmcp stdio transport selected
+- **WHEN** a stdio command is provided
+- **THEN** the session uses rmcp stdio transport primitives for request/response exchange
+
+#### Scenario: rmcp HTTP transport selected
+- **WHEN** an HTTP MCP endpoint is provided
+- **THEN** the session uses rmcp HTTP transport primitives for request/response exchange
+
 ### Requirement: HTTP Authorization Header
 The system SHALL accept an optional configurable HTTP auth header for MCP endpoints.
 

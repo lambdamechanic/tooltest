@@ -1,9 +1,9 @@
 ## 1. Implementation
 - [ ] 1.1 Create a Rust workspace with `tooltest-core` and `tooltest-ffi` crates
 - [ ] 1.2 Define core API types for endpoint config, tool predicate callback, assertions, and run results
-- [ ] 1.3 Adopt rmcp protocol types in the core session driver and error handling
-- [ ] 1.4 Implement MCP session driver with initialization enforcement and transport abstraction
-- [ ] 1.5 Implement stdio and HTTP transport backends
+- [ ] 1.3 Adopt rmcp protocol types in the core session flow and error handling
+- [ ] 1.4 Replace the custom session driver with rmcp client/session APIs
+- [ ] 1.5 Implement stdio and HTTP transports using rmcp transport primitives
 - [ ] 1.6 Implement schema-based invocation generator with tool eligibility filtering
 - [ ] 1.7 Implement MCP schema parsing (Tool, tools/list, tools/call) per schema/2025-11-25 with configurable schema version support
 - [ ] 1.8 Implement default assertions, optional declarative DSL assertions, and proptest minimization output

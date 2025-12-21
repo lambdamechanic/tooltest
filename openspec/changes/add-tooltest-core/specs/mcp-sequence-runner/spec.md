@@ -106,10 +106,10 @@ The system SHALL ensure that all emitted requests form a valid MCP session seque
 - **THEN** the session enforces MCP-valid ordering and required handshakes
 
 ### Requirement: Rustprop Minimization and Trace
-The system SHALL return a minimized failing sequence from rustprop alongside the full execution trace of calls.
+The system SHALL return a minimized failing sequence from proptest alongside the full execution trace of calls.
 
 #### Scenario: Minimized failure
-- **WHEN** rustprop finds a counterexample
+- **WHEN** proptest finds a counterexample
 - **THEN** the result includes the minimized sequence that reproduces the issue
 
 #### Scenario: Full trace returned

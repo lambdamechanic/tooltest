@@ -5,7 +5,7 @@
 - [ ] 1.4 Implement stdio and HTTP transport backends
 - [ ] 1.5 Implement schema-based invocation generator with tool eligibility filtering
 - [ ] 1.6 Implement MCP schema parsing (Tool, tools/list, tools/call) per schema/2025-11-25 with configurable schema version support
-- [ ] 1.7 Implement default assertions, optional declarative DSL assertions, and rustprop minimization output
+- [ ] 1.7 Implement default assertions, optional declarative DSL assertions, and proptest minimization output
 - [ ] 1.8 Implement FFI surface for Node (napi) and Python (pyo3) wrappers, including JSON DSL helpers
 - [ ] 1.9 Add unit tests for initialization ordering, schema validation, predicate filtering, assertions, and minimization
 - [ ] 1.10 Add basic integration tests with stub MCP endpoints (stdio and HTTP), including HTTP auth header coverage

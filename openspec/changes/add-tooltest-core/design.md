@@ -17,7 +17,7 @@ Tooltest is a new Rust-based MCP testing tool with no existing code. It must exe
   - Rationale: Ensures MCP validity regardless of generator output.
 - Decision: Generate tool calls via a property-based generator constrained by MCP tool schemas at runtime, pinning to schema version 2025-11-25 (JSON Schema draft 2020-12) by default while allowing a configured version to be selected.
   - Rationale: Keeps validation truthful to supported versions while leaving room to add versions later.
-- Decision: Use default rustprop assertions that validate response schemas and transport-level correctness, with optional user-supplied declarative assertions on responses or sequences for FFI compatibility.
+- Decision: Use default proptest assertions that validate response schemas and transport-level correctness, with optional user-supplied declarative assertions on responses or sequences for FFI compatibility.
   - Rationale: Ensures baseline safety while allowing custom validation.
 - Decision: Abstract transports behind a minimal trait with stdio and HTTP implementations, including optional configurable HTTP auth header support.
   - Rationale: Common session logic with pluggable transport.

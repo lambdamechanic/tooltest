@@ -7,6 +7,7 @@ use serde_json::Value as JsonValue;
 use crate::{SchemaConfig, SchemaVersion};
 
 const SUPPORTED_SCHEMA_VERSION: &str = "2025-11-25";
+const SUPPORTED_JSON_SCHEMA: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Errors produced while parsing MCP schema data.
 #[derive(Debug)]
@@ -142,11 +143,14 @@ fn validate_schema_object(
     }
 
     if let Some(schema_value) = schema.get("$schema") {
-        if !schema_value.is_string() {
+        let schema_value = schema_value
+            .as_str()
+            .ok_or_else(|| invalid_tool_schema(tool_name, field, "$schema must be a string"))?;
+        if schema_value != SUPPORTED_JSON_SCHEMA {
             return Err(invalid_tool_schema(
                 tool_name,
                 field,
-                "$schema must be a string",
+                &format!("$schema must be {SUPPORTED_JSON_SCHEMA}, got {schema_value}"),
             ));
         }
     }
@@ -326,6 +330,23 @@ mod tests {
                         "type": "object",
                         "$schema": "https://json-schema.org/draft/2020-12/schema",
                         "properties": []
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_unsupported_schema_url() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "object",
+                        "$schema": "https://json-schema.org/draft-07/schema#"
                     }
                 }
             ]

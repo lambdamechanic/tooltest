@@ -19,7 +19,7 @@ Tooltest is a new Rust-based MCP testing tool with no existing code. It must exe
   - Rationale: Keeps validation truthful to supported versions while leaving room to add versions later.
 - Decision: Use default proptest assertions that validate response schemas and transport-level correctness, with optional user-supplied declarative assertions on responses or sequences for FFI compatibility.
   - Rationale: Ensures baseline safety while allowing custom validation.
-- Decision: Abstract transports behind a minimal trait with stdio and HTTP implementations, including optional configurable HTTP auth header support.
+- Decision: Abstract transports behind a minimal trait with stdio and HTTP implementations, including optional configurable HTTP auth token support.
   - Rationale: Common session logic with pluggable transport.
 - Decision: Use the `rmcp` SDK for JSON-RPC/MCP protocol request and error types in the core runner.
   - Rationale: Aligns the core with the canonical protocol implementation and reduces drift.

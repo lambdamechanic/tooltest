@@ -1,4 +1,4 @@
-use crate::{AuthHeader, HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
+use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
 use rmcp::model::CallToolRequestParam;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
@@ -14,8 +14,6 @@ pub enum SessionError {
     Service(Box<ServiceError>),
     /// Failed to spawn or configure the stdio transport.
     Transport(Box<std::io::Error>),
-    /// Provided HTTP auth header is invalid.
-    InvalidAuthHeader { name: String, value: String },
 }
 
 impl From<ClientInitializeError> for SessionError {
@@ -139,27 +137,12 @@ fn build_http_transport(
     use rmcp::transport::StreamableHttpClientTransport;
 
     let mut transport_config = StreamableHttpClientTransportConfig::with_uri(config.url.as_str());
-    if let Some(auth_header) = &config.auth_header {
-        let token = normalize_auth_header(auth_header)?;
-        transport_config = transport_config.auth_header(token);
+    if let Some(auth_token) = &config.auth_token {
+        let token = auth_token.trim();
+        let token = token.strip_prefix("Bearer ").unwrap_or(token);
+        transport_config = transport_config.auth_header(token.to_string());
     }
     Ok(StreamableHttpClientTransport::from_config(transport_config))
-}
-
-/// Validates the configured header name and returns a bearer token string.
-///
-/// The input value may include a `Bearer ` prefix; if present it is stripped
-/// to match rmcp's expected auth token format.
-fn normalize_auth_header(auth_header: &AuthHeader) -> Result<String, SessionError> {
-    if !auth_header.name.eq_ignore_ascii_case("authorization") {
-        return Err(SessionError::InvalidAuthHeader {
-            name: auth_header.name.clone(),
-            value: auth_header.value.clone(),
-        });
-    }
-    let value = auth_header.value.trim();
-    let token = value.strip_prefix("Bearer ").unwrap_or(value);
-    Ok(token.to_string())
 }
 
 #[cfg(test)]
@@ -285,26 +268,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_auth_header_rejected() {
-        let auth_header = AuthHeader {
-            name: "Bad Header".to_string(),
-            value: "value".to_string(),
-        };
-        let error = normalize_auth_header(&auth_header).expect_err("invalid header");
-        assert!(matches!(
-            error,
-            SessionError::InvalidAuthHeader { name, value }
-                if name == "Bad Header" && value == "value"
-        ));
-    }
-
-    #[test]
     fn bearer_prefix_is_trimmed() {
-        let auth_header = AuthHeader {
-            name: "Authorization".to_string(),
-            value: "Bearer token".to_string(),
-        };
-        let token = normalize_auth_header(&auth_header).expect("token");
+        let auth_token = "Bearer token".to_string();
+        let token = auth_token.trim();
+        let token = token.strip_prefix("Bearer ").unwrap_or(token);
         assert_eq!(token, "token");
     }
 
@@ -312,7 +279,7 @@ mod tests {
     async fn connect_http_stub_returns_error() {
         let config = HttpConfig {
             url: "http://localhost:8080/mcp".to_string(),
-            auth_header: None,
+            auth_token: None,
         };
         let result = SessionDriver::connect_http(&config).await;
         assert!(matches!(result, Err(SessionError::Transport(_))));

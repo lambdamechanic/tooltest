@@ -39,12 +39,12 @@ The system SHALL use `rmcp` transport implementations for stdio and HTTP exchang
 - **WHEN** an HTTP MCP endpoint is provided
 - **THEN** the session uses rmcp HTTP transport primitives for request/response exchange
 
-### Requirement: HTTP Authorization Header
-The system SHALL accept an optional configurable HTTP auth header for MCP endpoints.
+### Requirement: HTTP Authorization Token
+The system SHALL accept an optional configurable HTTP auth token for MCP endpoints.
 
-#### Scenario: Auth header applied to HTTP requests
-- **WHEN** an HTTP auth header name and value are configured
-- **THEN** each HTTP request includes that header
+#### Scenario: Auth token applied to HTTP requests
+- **WHEN** an HTTP auth token is configured
+- **THEN** each HTTP request includes it as the Authorization bearer token
 
 ### Requirement: Schema-Based Invocation Generation
 The system SHALL generate a sequence of tool invocations that conform to MCP tool schemas retrieved at runtime from the MCP endpoint.

@@ -7,7 +7,7 @@ Tooltest needs a shared Rust core that can run valid MCP sequences against stdio
 - Create a Rust core library package that drives MCP sessions and generates tool invocations based on MCP schemas.
 - Add a minimal FFI surface so Node (napi) and Python (pyo3) wrappers can call into the core.
 - Define MCP sequence generation behavior, including initialization, tool eligibility filtering, default assertions, and proptest minimization output.
-- Include optional configurable HTTP auth header support for MCP endpoints.
+- Include optional configurable HTTP auth token support for MCP endpoints.
 - Adopt the `rmcp` SDK for JSON-RPC/MCP protocol types and error shapes in the core runner.
 - **BREAKING**: Replace custom session and transport primitives with `rmcp` session/transport APIs.
 

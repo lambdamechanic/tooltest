@@ -31,15 +31,6 @@ pub struct SchemaConfig {
     pub version: SchemaVersion,
 }
 
-/// Optional HTTP authorization header configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AuthHeader {
-    /// The HTTP header name (for example, "Authorization").
-    pub name: String,
-    /// The HTTP header value.
-    pub value: String,
-}
-
 /// Configuration for a stdio-based MCP endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StdioConfig {
@@ -70,8 +61,8 @@ impl StdioConfig {
 pub struct HttpConfig {
     /// The HTTP endpoint URL for MCP requests.
     pub url: String,
-    /// Optional authorization header to attach to requests.
-    pub auth_header: Option<AuthHeader>,
+    /// Optional bearer token to attach to Authorization headers.
+    pub auth_token: Option<String>,
 }
 
 /// Transport options for connecting to an MCP endpoint.
@@ -276,10 +267,7 @@ mod tests {
     fn run_config_builders_wire_fields() {
         let transport = TransportConfig::Http(HttpConfig {
             url: "https://example.test/mcp".to_string(),
-            auth_header: Some(AuthHeader {
-                name: "Authorization".to_string(),
-                value: "Bearer token".to_string(),
-            }),
+            auth_token: Some("Bearer token".to_string()),
         });
         let schema = SchemaConfig {
             version: SchemaVersion::Other("2025-12-01".to_string()),

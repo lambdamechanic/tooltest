@@ -130,6 +130,7 @@ impl<T: Transport> SessionDriver<T> {
             "method": method,
             "params": params,
         });
+        // Saturate instead of wrapping to avoid repeating request ids in long runs.
         self.next_id = self.next_id.saturating_add(1);
         self.transport.send(request).map_err(SessionError::from)
     }

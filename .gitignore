@@ -1,0 +1,8 @@
+/state/
+/target/
+/node_modules/
+/venv/
+*.log
+*.tmp
+*.swp
+.DS_Store

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "repos": {
+    "entries": [
+      {
+        "key": "github.com/lambdamechanic/skills",
+        "alias": "lambdamechanic/skills",
+        "url": "git@github.com:lambdamechanic/skills.git",
+        "host": "github.com",
+        "owner": "lambdamechanic",
+        "repo": "skills",
+        "addedAt": "2025-12-21T06:14:11.669570466+00:00"
+      }
+    ],
+    "updatedAt": "2025-12-21T06:14:11.669577206+00:00"
+  },
+  "skills": [
+    {
+      "installName": "lambda-workflow",
+      "source": {
+        "repoKey": "github.com/lambdamechanic/skills",
+        "skillPath": "lambda-workflow"
+      },
+      "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
+      "digest": "sha256:e55d56c0d6ada889023ea4248d10629fcc557ffa4f899f619faa0c9c36be8cd5",
+      "installedAt": "2025-12-21T06:15:20.118065049+00:00"
+    },
+    {
+      "installName": "bd-workflow",
+      "source": {
+        "repoKey": "github.com/lambdamechanic/skills",
+        "skillPath": "bd-workflow"
+      },
+      "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
+      "digest": "sha256:42892feebcaa6afb7796284d24efc75fc1c591c95c593e18661d94b3372f5780",
+      "installedAt": "2025-12-21T06:15:31.186555771+00:00"
+    },
+    {
+      "installName": "testing-patterns",
+      "source": {
+        "repoKey": "github.com/lambdamechanic/skills",
+        "skillPath": "testing-patterns"
+      },
+      "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
+      "digest": "sha256:53baa76aa35c488e87008e909ec7f437781cc3f0cb09e5ced6de6d6a34f0b537",
+      "installedAt": "2025-12-21T06:16:38.797888600+00:00"
+    },
+    {
+      "installName": "rust-guidelines",
+      "source": {
+        "repoKey": "github.com/lambdamechanic/skills",
+        "skillPath": "rust-guidelines"
+      },
+      "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
+      "digest": "sha256:63c89e30e6f8e508c2c1d864b257b35551860324f406286db928b354f948462a",
+      "installedAt": "2025-12-21T06:16:47.122277870+00:00"
+    }
+  ],
+  "generatedAt": "2025-12-21T06:16:47.122331290+00:00"
+}

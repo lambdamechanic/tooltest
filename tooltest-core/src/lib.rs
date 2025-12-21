@@ -8,34 +8,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Schema versions supported by the tooltest core.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SchemaVersion {
     /// MCP schema version 2025-11-25.
+    #[default]
     V2025_11_25,
     /// Any other explicitly configured schema version string.
     Other(String),
 }
 
-impl Default for SchemaVersion {
-    fn default() -> Self {
-        Self::V2025_11_25
-    }
-}
-
 /// Configuration for MCP schema parsing and validation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// The selected MCP schema version.
     pub version: SchemaVersion,
-}
-
-impl Default for SchemaConfig {
-    fn default() -> Self {
-        Self {
-            version: SchemaVersion::default(),
-        }
-    }
 }
 
 /// Optional HTTP authorization header configuration.
@@ -257,4 +244,68 @@ pub struct RunResult {
     pub trace: Vec<TraceEntry>,
     /// Minimized sequence for failures, when available.
     pub minimized: Option<MinimizedSequence>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn schema_config_defaults_to_latest() {
+        let config = SchemaConfig::default();
+        assert_eq!(config.version, SchemaVersion::V2025_11_25);
+    }
+
+    #[test]
+    fn stdio_config_new_sets_defaults() {
+        let config = StdioConfig::new("mcp-server");
+        assert_eq!(config.command, "mcp-server");
+        assert!(config.args.is_empty());
+        assert!(config.env.is_empty());
+        assert!(config.cwd.is_none());
+    }
+
+    #[test]
+    fn run_config_builders_wire_fields() {
+        let transport = TransportConfig::Http(HttpConfig {
+            url: "https://example.test/mcp".to_string(),
+            auth_header: Some(AuthHeader {
+                name: "Authorization".to_string(),
+                value: "Bearer token".to_string(),
+            }),
+        });
+        let schema = SchemaConfig {
+            version: SchemaVersion::Other("2025-12-01".to_string()),
+        };
+        let assertions = AssertionSet {
+            rules: vec![AssertionRule::Response(ResponseAssertion {
+                tool: Some("search".to_string()),
+                checks: vec![AssertionCheck {
+                    target: AssertionTarget::Input,
+                    pointer: "/query".to_string(),
+                    expected: json!("hello"),
+                }],
+            })],
+        };
+        let predicate: ToolPredicate = Arc::new(|name, input| {
+            name == "search" && input.pointer("/query") == Some(&json!("hello"))
+        });
+
+        let config = RunConfig::new(transport.clone())
+            .with_schema(schema.clone())
+            .with_predicate(predicate)
+            .with_assertions(assertions.clone());
+
+        assert_eq!(config.transport, transport);
+        assert_eq!(config.schema, schema);
+        assert!(config.predicate.is_some());
+        assert_eq!(config.assertions.rules.len(), 1);
+        let predicate = config.predicate.as_ref().expect("predicate set");
+        assert!(predicate("search", &json!({"query": "hello"})));
+        assert!(!predicate("search", &json!({"query": "nope"})));
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("predicate: true"));
+    }
 }

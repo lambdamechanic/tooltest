@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.qlty/bin:$PATH"
+
+# Check if bd is available.
+if ! command -v bd >/dev/null 2>&1; then
+  echo "Warning: bd command not found, skipping pre-commit flush" >&2
+else
+  # Only run in bd workspaces.
+  if [ -d .beads ]; then
+    if ! bd sync --flush-only >/dev/null 2>&1; then
+      echo "Warning: Failed to flush bd changes to JSONL" >&2
+      echo "Run 'bd sync --flush-only' manually to diagnose" >&2
+    fi
+
+    for f in .beads/beads.jsonl .beads/issues.jsonl .beads/deletions.jsonl; do
+      [ -f "$f" ] && git add "$f" 2>/dev/null || true
+    done
+  fi
+fi
+
+if ! command -v qlty >/dev/null 2>&1; then
+  echo "qlty not found; install with: curl -fsSL https://qlty.sh | sh" >&2
+  exit 1
+fi
+
+cargo fmt --all -- --check
+cargo clippy --workspace --locked -- -D warnings
+qlty check

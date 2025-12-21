@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install qlty
+        run: |
+          curl -fsSL https://qlty.sh | sh
+          echo "$HOME/.qlty/bin" >> "$GITHUB_PATH"
+      - name: Install llvm-tools
+        run: rustup component add llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Rust fmt
+        run: cargo fmt --all -- --check
+      - name: Qlty
+        run: qlty check
+      - name: Rust clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+      - name: Rust coverage
+        run: cargo llvm-cov --workspace --fail-under-lines 100 --locked

@@ -1,5 +1,4 @@
 use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
-use rmcp::model::CallToolRequestParam;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
 /// Errors emitted by the rmcp-backed session driver.
@@ -94,22 +93,12 @@ impl SessionDriver {
         Ok(Self { service })
     }
 
-    /// Returns the underlying rmcp peer for advanced interactions.
-    pub fn peer(&self) -> &rmcp::service::Peer<RoleClient> {
-        self.service.peer()
-    }
-
     /// Sends a tool invocation via rmcp and records the response.
     pub async fn send_tool_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<TraceEntry, SessionError> {
-        let params = CallToolRequestParam {
-            name: invocation.name.clone().into(),
-            arguments: invocation.arguments.as_object().cloned(),
-        };
-        let response = self.service.peer().call_tool(params).await?;
-        let response = serde_json::to_value(&response).expect("call tool result should serialize");
+        let response = self.service.peer().call_tool(invocation.clone()).await?;
         Ok(TraceEntry {
             invocation,
             response,
@@ -228,10 +217,9 @@ mod tests {
             .await
             .expect("connect");
 
-        let _ = driver.peer();
         let invocation = ToolInvocation {
-            name: "echo".to_string(),
-            arguments: json!({"value": "hello"}),
+            name: "echo".into(),
+            arguments: json!({"value": "hello"}).as_object().cloned(),
         };
         let trace = driver.send_tool_call(invocation).await.expect("tool call");
 
@@ -242,7 +230,7 @@ mod tests {
             JsonRpcMessage::Notification(JsonRpcNotification { .. })
         ));
         assert!(matches!(requests[2], JsonRpcMessage::Request(_)));
-        assert_eq!(trace.response["isError"], false);
+        assert_eq!(trace.response.is_error, Some(false));
     }
 
     #[tokio::test]
@@ -254,12 +242,12 @@ mod tests {
 
         let invocations = vec![
             ToolInvocation {
-                name: "one".to_string(),
-                arguments: json!({"a": 1}),
+                name: "one".into(),
+                arguments: json!({"a": 1}).as_object().cloned(),
             },
             ToolInvocation {
-                name: "two".to_string(),
-                arguments: json!({"b": 2}),
+                name: "two".into(),
+                arguments: json!({"b": 2}).as_object().cloned(),
             },
         ];
         let trace = driver.run_invocations(invocations).await.expect("trace");

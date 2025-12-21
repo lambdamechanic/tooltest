@@ -9,7 +9,7 @@ use serde_json::Value as JsonValue;
 
 pub mod session;
 
-pub use rmcp::model::{ErrorCode, ErrorData};
+pub use rmcp::model::{CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject};
 pub use rmcp::service::{ClientInitializeError, ServiceError};
 pub use session::{SessionDriver, SessionError};
 
@@ -63,16 +63,6 @@ pub struct HttpConfig {
     pub url: String,
     /// Optional bearer token to attach to Authorization headers.
     pub auth_token: Option<String>,
-}
-
-/// Transport options for connecting to an MCP endpoint.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TransportConfig {
-    /// Use stdio to communicate with an MCP server process.
-    Stdio(StdioConfig),
-    /// Use HTTP to communicate with an MCP server.
-    Http(HttpConfig),
 }
 
 /// Predicate callback used to decide whether a tool invocation is eligible.
@@ -139,8 +129,6 @@ pub enum AssertionTarget {
 /// Top-level configuration for executing a tooltest run.
 #[derive(Clone)]
 pub struct RunConfig {
-    /// Transport configuration for the MCP endpoint.
-    pub transport: TransportConfig,
     /// MCP schema configuration.
     pub schema: SchemaConfig,
     /// Optional predicate to filter eligible tools.
@@ -151,9 +139,8 @@ pub struct RunConfig {
 
 impl RunConfig {
     /// Creates a run configuration with defaults for schema and assertions.
-    pub fn new(transport: TransportConfig) -> Self {
+    pub fn new() -> Self {
         Self {
-            transport,
             schema: SchemaConfig::default(),
             predicate: None,
             assertions: AssertionSet::default(),
@@ -179,10 +166,15 @@ impl RunConfig {
     }
 }
 
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Debug for RunConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RunConfig")
-            .field("transport", &self.transport)
             .field("schema", &self.schema)
             .field("predicate", &self.predicate.is_some())
             .field("assertions", &self.assertions)
@@ -191,21 +183,15 @@ impl fmt::Debug for RunConfig {
 }
 
 /// A generated tool invocation.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ToolInvocation {
-    /// The MCP tool name.
-    pub name: String,
-    /// Arguments passed to the tool.
-    pub arguments: JsonValue,
-}
+pub type ToolInvocation = CallToolRequestParam;
 
 /// A trace entry capturing one tool call and its response.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraceEntry {
     /// The invocation that was sent.
     pub invocation: ToolInvocation,
-    /// The raw MCP response payload.
-    pub response: JsonValue,
+    /// The MCP response payload.
+    pub response: CallToolResult,
 }
 
 /// A minimized failing sequence from proptest.
@@ -265,10 +251,6 @@ mod tests {
 
     #[test]
     fn run_config_builders_wire_fields() {
-        let transport = TransportConfig::Http(HttpConfig {
-            url: "https://example.test/mcp".to_string(),
-            auth_token: Some("Bearer token".to_string()),
-        });
         let schema = SchemaConfig {
             version: SchemaVersion::Other("2025-12-01".to_string()),
         };
@@ -286,12 +268,11 @@ mod tests {
             name == "search" && input.pointer("/query") == Some(&json!("hello"))
         });
 
-        let config = RunConfig::new(transport.clone())
+        let config = RunConfig::new()
             .with_schema(schema.clone())
             .with_predicate(predicate)
             .with_assertions(assertions.clone());
 
-        assert_eq!(config.transport, transport);
         assert_eq!(config.schema, schema);
         assert!(config.predicate.is_some());
         assert_eq!(config.assertions.rules.len(), 1);

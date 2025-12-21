@@ -27,4 +27,4 @@ fi
 
 cargo fmt --all -- --check
 cargo clippy --workspace -- -D warnings
-qlty check
+qlty check --all

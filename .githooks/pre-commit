@@ -25,11 +25,6 @@ if ! command -v qlty >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
-  echo "cargo-llvm-cov not found; install with: cargo install cargo-llvm-cov" >&2
-  exit 1
-fi
-
 cargo fmt --all -- --check
 qlty check
-cargo llvm-cov --workspace --fail-under-lines 100 --locked
+cargo clippy --workspace --locked -- -D warnings

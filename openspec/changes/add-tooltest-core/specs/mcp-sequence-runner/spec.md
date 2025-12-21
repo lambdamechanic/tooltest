@@ -17,12 +17,34 @@ The system SHALL support MCP sessions over stdio and HTTP endpoints.
 - **WHEN** an HTTP MCP endpoint is provided
 - **THEN** the session uses HTTP for MCP request/response exchange
 
-### Requirement: HTTP Authorization Header
-The system SHALL accept an optional configurable HTTP auth header for MCP endpoints.
+### Requirement: rmcp Session Driver
+The system SHALL use the `rmcp` SDK session/client APIs to drive MCP initialization and tool calls instead of maintaining a custom session driver.
 
-#### Scenario: Auth header applied to HTTP requests
-- **WHEN** an HTTP auth header name and value are configured
-- **THEN** each HTTP request includes that header
+#### Scenario: rmcp session handles initialization
+- **WHEN** a run is started
+- **THEN** the MCP initialization handshake is dispatched via rmcp session/client APIs
+
+#### Scenario: rmcp session handles tool calls
+- **WHEN** a tool invocation is generated
+- **THEN** the MCP call is executed through rmcp session/client APIs
+
+### Requirement: rmcp Transport Usage
+The system SHALL use `rmcp` transport implementations for stdio and HTTP exchanges.
+
+#### Scenario: rmcp stdio transport selected
+- **WHEN** a stdio command is provided
+- **THEN** the session uses rmcp stdio transport primitives for request/response exchange
+
+#### Scenario: rmcp HTTP transport selected
+- **WHEN** an HTTP MCP endpoint is provided
+- **THEN** the session uses rmcp HTTP transport primitives for request/response exchange
+
+### Requirement: HTTP Authorization Token
+The system SHALL accept an optional configurable HTTP auth token for MCP endpoints.
+
+#### Scenario: Auth token applied to HTTP requests
+- **WHEN** an HTTP auth token is configured
+- **THEN** each HTTP request includes it as the Authorization bearer token
 
 ### Requirement: Schema-Based Invocation Generation
 The system SHALL generate a sequence of tool invocations that conform to MCP tool schemas retrieved at runtime from the MCP endpoint.
@@ -97,6 +119,17 @@ The system SHALL form tool calls and parse results according to the MCP protocol
 #### Scenario: CallToolResult parsing
 - **WHEN** a tool invocation response is received
 - **THEN** the response is parsed as an MCP `CallToolResult`
+
+### Requirement: rmcp Protocol Types
+The system SHALL use the `rmcp` SDK protocol types for JSON-RPC requests and error payloads in the core session driver.
+
+#### Scenario: rmcp request shaping
+- **WHEN** the session driver dispatches MCP requests
+- **THEN** request payloads are constructed from `rmcp` JSON-RPC request types
+
+#### Scenario: rmcp error parsing
+- **WHEN** a JSON-RPC error response is received
+- **THEN** the error payload is parsed into `rmcp` error data structures
 
 ### Requirement: MCP Validity Enforcement
 The system SHALL ensure that all emitted requests form a valid MCP session sequence.

@@ -25,8 +25,8 @@ jobs:
       - name: Rust fmt
         run: cargo fmt --all -- --check
       - name: Qlty
-        run: qlty check
+        run: qlty check --all
       - name: Rust clippy
-        run: cargo clippy --workspace --locked -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
       - name: Rust coverage
-        run: cargo llvm-cov --workspace --fail-under-lines 100 --locked
+        run: cargo llvm-cov --workspace --fail-under-lines 100

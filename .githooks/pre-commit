@@ -26,5 +26,5 @@ if ! command -v qlty >/dev/null 2>&1; then
 fi
 
 cargo fmt --all -- --check
-cargo clippy --workspace --locked -- -D warnings
-qlty check
+cargo clippy --workspace -- -D warnings
+qlty check --all

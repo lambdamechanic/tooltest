@@ -7,6 +7,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+pub mod session;
+
+pub use rmcp::model::{CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject};
+pub use rmcp::service::{ClientInitializeError, ServiceError};
+pub use session::{SessionDriver, SessionError};
+
 /// Schema versions supported by the tooltest core.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -23,15 +29,6 @@ pub enum SchemaVersion {
 pub struct SchemaConfig {
     /// The selected MCP schema version.
     pub version: SchemaVersion,
-}
-
-/// Optional HTTP authorization header configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AuthHeader {
-    /// The HTTP header name (for example, "Authorization").
-    pub name: String,
-    /// The HTTP header value.
-    pub value: String,
 }
 
 /// Configuration for a stdio-based MCP endpoint.
@@ -64,18 +61,8 @@ impl StdioConfig {
 pub struct HttpConfig {
     /// The HTTP endpoint URL for MCP requests.
     pub url: String,
-    /// Optional authorization header to attach to requests.
-    pub auth_header: Option<AuthHeader>,
-}
-
-/// Transport options for connecting to an MCP endpoint.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TransportConfig {
-    /// Use stdio to communicate with an MCP server process.
-    Stdio(StdioConfig),
-    /// Use HTTP to communicate with an MCP server.
-    Http(HttpConfig),
+    /// Optional bearer token to attach to Authorization headers.
+    pub auth_token: Option<String>,
 }
 
 /// Predicate callback used to decide whether a tool invocation is eligible.
@@ -142,8 +129,6 @@ pub enum AssertionTarget {
 /// Top-level configuration for executing a tooltest run.
 #[derive(Clone)]
 pub struct RunConfig {
-    /// Transport configuration for the MCP endpoint.
-    pub transport: TransportConfig,
     /// MCP schema configuration.
     pub schema: SchemaConfig,
     /// Optional predicate to filter eligible tools.
@@ -154,9 +139,8 @@ pub struct RunConfig {
 
 impl RunConfig {
     /// Creates a run configuration with defaults for schema and assertions.
-    pub fn new(transport: TransportConfig) -> Self {
+    pub fn new() -> Self {
         Self {
-            transport,
             schema: SchemaConfig::default(),
             predicate: None,
             assertions: AssertionSet::default(),
@@ -182,10 +166,15 @@ impl RunConfig {
     }
 }
 
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Debug for RunConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RunConfig")
-            .field("transport", &self.transport)
             .field("schema", &self.schema)
             .field("predicate", &self.predicate.is_some())
             .field("assertions", &self.assertions)
@@ -194,21 +183,15 @@ impl fmt::Debug for RunConfig {
 }
 
 /// A generated tool invocation.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ToolInvocation {
-    /// The MCP tool name.
-    pub name: String,
-    /// Arguments passed to the tool.
-    pub arguments: JsonValue,
-}
+pub type ToolInvocation = CallToolRequestParam;
 
 /// A trace entry capturing one tool call and its response.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraceEntry {
     /// The invocation that was sent.
     pub invocation: ToolInvocation,
-    /// The raw MCP response payload.
-    pub response: JsonValue,
+    /// The MCP response payload.
+    pub response: CallToolResult,
 }
 
 /// A minimized failing sequence from proptest.
@@ -268,13 +251,6 @@ mod tests {
 
     #[test]
     fn run_config_builders_wire_fields() {
-        let transport = TransportConfig::Http(HttpConfig {
-            url: "https://example.test/mcp".to_string(),
-            auth_header: Some(AuthHeader {
-                name: "Authorization".to_string(),
-                value: "Bearer token".to_string(),
-            }),
-        });
         let schema = SchemaConfig {
             version: SchemaVersion::Other("2025-12-01".to_string()),
         };
@@ -292,12 +268,11 @@ mod tests {
             name == "search" && input.pointer("/query") == Some(&json!("hello"))
         });
 
-        let config = RunConfig::new(transport.clone())
+        let config = RunConfig::new()
             .with_schema(schema.clone())
             .with_predicate(predicate)
             .with_assertions(assertions.clone());
 
-        assert_eq!(config.transport, transport);
         assert_eq!(config.schema, schema);
         assert!(config.predicate.is_some());
         assert_eq!(config.assertions.rules.len(), 1);
@@ -307,5 +282,20 @@ mod tests {
 
         let debug = format!("{config:?}");
         assert!(debug.contains("predicate: true"));
+    }
+
+    #[test]
+    fn run_config_default_matches_new() {
+        let config = RunConfig::new();
+        let default_config = RunConfig::default();
+        assert_eq!(config.schema, default_config.schema);
+        assert_eq!(
+            config.predicate.is_some(),
+            default_config.predicate.is_some()
+        );
+        assert_eq!(
+            config.assertions.rules.len(),
+            default_config.assertions.rules.len()
+        );
     }
 }

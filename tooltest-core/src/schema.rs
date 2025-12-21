@@ -1,0 +1,485 @@
+use std::borrow::Cow;
+use std::fmt;
+
+use rmcp::model::{CallToolRequestParam, CallToolResult, JsonObject, ListToolsResult, Tool};
+use serde_json::Value as JsonValue;
+
+use crate::{SchemaConfig, SchemaVersion};
+
+const SUPPORTED_SCHEMA_VERSION: &str = "2025-11-25";
+
+/// Errors produced while parsing MCP schema data.
+#[derive(Debug)]
+pub enum SchemaError {
+    /// The requested schema version is unsupported.
+    UnsupportedSchemaVersion(String),
+    /// Failed to parse a tools/list response.
+    InvalidListTools(String),
+    /// Failed to parse a tools/call request payload.
+    InvalidCallToolRequest(String),
+    /// Failed to parse a tools/call response payload.
+    InvalidCallToolResult(String),
+    /// The tool schema payload is invalid.
+    InvalidToolSchema {
+        tool: String,
+        field: String,
+        reason: String,
+    },
+}
+
+impl fmt::Display for SchemaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SchemaError::UnsupportedSchemaVersion(version) => {
+                write!(f, "unsupported MCP schema version: {version}")
+            }
+            SchemaError::InvalidListTools(message) => write!(f, "invalid tools/list: {message}"),
+            SchemaError::InvalidCallToolRequest(message) => {
+                write!(f, "invalid tools/call request: {message}")
+            }
+            SchemaError::InvalidCallToolResult(message) => {
+                write!(f, "invalid tools/call result: {message}")
+            }
+            SchemaError::InvalidToolSchema {
+                tool,
+                field,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "invalid schema for tool '{tool}' field '{field}': {reason}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SchemaError {}
+
+/// Validate and parse a tools/list response payload.
+pub fn parse_list_tools(
+    payload: JsonValue,
+    config: &SchemaConfig,
+) -> Result<ListToolsResult, SchemaError> {
+    ensure_supported_schema_version(config)?;
+    let result: ListToolsResult = serde_json::from_value(payload)
+        .map_err(|err| SchemaError::InvalidListTools(err.to_string()))?;
+    for tool in &result.tools {
+        validate_tool_schema(tool)?;
+    }
+    Ok(result)
+}
+
+/// Validate and parse a tools/call request payload.
+pub fn parse_call_tool_request(
+    payload: JsonValue,
+    config: &SchemaConfig,
+) -> Result<CallToolRequestParam, SchemaError> {
+    ensure_supported_schema_version(config)?;
+    serde_json::from_value(payload)
+        .map_err(|err| SchemaError::InvalidCallToolRequest(err.to_string()))
+}
+
+/// Validate and parse a tools/call response payload.
+pub fn parse_call_tool_result(
+    payload: JsonValue,
+    config: &SchemaConfig,
+) -> Result<CallToolResult, SchemaError> {
+    ensure_supported_schema_version(config)?;
+    serde_json::from_value(payload)
+        .map_err(|err| SchemaError::InvalidCallToolResult(err.to_string()))
+}
+
+fn ensure_supported_schema_version(config: &SchemaConfig) -> Result<(), SchemaError> {
+    match &config.version {
+        SchemaVersion::V2025_11_25 => Ok(()),
+        SchemaVersion::Other(version) => {
+            if version == SUPPORTED_SCHEMA_VERSION {
+                Ok(())
+            } else {
+                Err(SchemaError::UnsupportedSchemaVersion(version.clone()))
+            }
+        }
+    }
+}
+
+fn validate_tool_schema(tool: &Tool) -> Result<(), SchemaError> {
+    validate_schema_object(
+        tool.input_schema.as_ref(),
+        tool.name.as_ref(),
+        "inputSchema",
+    )?;
+    if let Some(output) = &tool.output_schema {
+        validate_schema_object(output.as_ref(), tool.name.as_ref(), "outputSchema")?;
+    }
+    Ok(())
+}
+
+fn validate_schema_object(
+    schema: &JsonObject,
+    tool_name: &str,
+    field: &str,
+) -> Result<(), SchemaError> {
+    let type_value = schema
+        .get("type")
+        .ok_or_else(|| invalid_tool_schema(tool_name, field, "missing type"))?;
+    match type_value {
+        JsonValue::String(value) if value == "object" => {}
+        JsonValue::String(value) => {
+            return Err(invalid_tool_schema(
+                tool_name,
+                field,
+                &format!("type must be object, got {value}"),
+            ))
+        }
+        _ => {
+            return Err(invalid_tool_schema(
+                tool_name,
+                field,
+                "type must be a string",
+            ))
+        }
+    }
+
+    if let Some(schema_value) = schema.get("$schema") {
+        if !schema_value.is_string() {
+            return Err(invalid_tool_schema(
+                tool_name,
+                field,
+                "$schema must be a string",
+            ));
+        }
+    }
+
+    if let Some(properties) = schema.get("properties") {
+        if !properties.is_object() {
+            return Err(invalid_tool_schema(
+                tool_name,
+                field,
+                "properties must be an object",
+            ));
+        }
+    }
+
+    if let Some(required) = schema.get("required") {
+        if let JsonValue::Array(values) = required {
+            if values.iter().any(|value| !value.is_string()) {
+                return Err(invalid_tool_schema(
+                    tool_name,
+                    field,
+                    "required values must be strings",
+                ));
+            }
+        } else {
+            return Err(invalid_tool_schema(
+                tool_name,
+                field,
+                "required must be an array",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn invalid_tool_schema(tool_name: &str, field: &str, reason: &str) -> SchemaError {
+    SchemaError::InvalidToolSchema {
+        tool: tool_name.to_string(),
+        field: field.to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+pub fn schema_version_label(version: &SchemaVersion) -> Cow<'_, str> {
+    match version {
+        SchemaVersion::V2025_11_25 => Cow::Borrowed(SUPPORTED_SCHEMA_VERSION),
+        SchemaVersion::Other(value) => Cow::Borrowed(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::Tool;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn default_config() -> SchemaConfig {
+        SchemaConfig {
+            version: SchemaVersion::V2025_11_25,
+        }
+    }
+
+    #[test]
+    fn parse_list_tools_accepts_valid_schema() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "value": { "type": "string" }
+                        },
+                        "required": ["value"]
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config()).expect("list tools");
+        assert_eq!(result.tools.len(), 1);
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_missing_type() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "properties": {
+                            "value": { "type": "string" }
+                        }
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_invalid_required() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": [1, 2]
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_non_object_type() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "string"
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_non_string_type_field() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": 5
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_invalid_schema_field_types() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "object",
+                        "$schema": 12,
+                        "properties": ["bad"],
+                        "required": "bad"
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_properties_not_object() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "object",
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "properties": []
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_required_not_array() {
+        let payload = json!({
+            "tools": [
+                {
+                    "name": "echo",
+                    "inputSchema": {
+                        "type": "object",
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "properties": {
+                            "value": { "type": "string" }
+                        },
+                        "required": "value"
+                    }
+                }
+            ]
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    }
+
+    #[test]
+    fn parse_list_tools_rejects_invalid_list_payload() {
+        let payload = json!({
+            "tools": "nope"
+        });
+        let result = parse_list_tools(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
+    }
+
+    #[test]
+    fn unsupported_schema_version_fails() {
+        let config = SchemaConfig {
+            version: SchemaVersion::Other("2025-12-01".to_string()),
+        };
+        let payload = json!({ "tools": [] });
+        let result = parse_list_tools(payload, &config);
+        assert!(matches!(
+            result,
+            Err(SchemaError::UnsupportedSchemaVersion(_))
+        ));
+    }
+
+    #[test]
+    fn supported_other_version_is_accepted() {
+        let config = SchemaConfig {
+            version: SchemaVersion::Other("2025-11-25".to_string()),
+        };
+        let payload = json!({ "tools": [] });
+        let result = parse_list_tools(payload, &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_call_tool_request_uses_rmcp_type() {
+        let payload = json!({
+            "name": "echo",
+            "arguments": {
+                "value": "hello"
+            }
+        });
+        let result = parse_call_tool_request(payload, &default_config()).expect("call request");
+        assert_eq!(result.name, "echo");
+    }
+
+    #[test]
+    fn parse_call_tool_request_rejects_invalid_payload() {
+        let payload = json!({
+            "arguments": {
+                "value": "hello"
+            }
+        });
+        let result = parse_call_tool_request(payload, &default_config());
+        assert!(matches!(
+            result,
+            Err(SchemaError::InvalidCallToolRequest(_))
+        ));
+    }
+
+    #[test]
+    fn parse_call_tool_result_uses_rmcp_type() {
+        let payload = json!({
+            "content": [
+                { "type": "text", "text": "ok" }
+            ],
+            "isError": false
+        });
+        let result = parse_call_tool_result(payload, &default_config()).expect("call result");
+        assert_eq!(result.content.len(), 1);
+    }
+
+    #[test]
+    fn parse_call_tool_result_rejects_invalid_payload() {
+        let payload = json!({});
+        let result = parse_call_tool_result(payload, &default_config());
+        assert!(matches!(result, Err(SchemaError::InvalidCallToolResult(_))));
+    }
+
+    #[test]
+    fn schema_error_formats_messages() {
+        let errors = vec![
+            SchemaError::UnsupportedSchemaVersion("2025-12-01".to_string()),
+            SchemaError::InvalidListTools("bad".to_string()),
+            SchemaError::InvalidCallToolRequest("bad".to_string()),
+            SchemaError::InvalidCallToolResult("bad".to_string()),
+            SchemaError::InvalidToolSchema {
+                tool: "echo".to_string(),
+                field: "inputSchema".to_string(),
+                reason: "bad".to_string(),
+            },
+        ];
+        for error in errors {
+            let message = error.to_string();
+            assert!(!message.is_empty());
+        }
+    }
+
+    #[test]
+    fn schema_version_label_formats_versions() {
+        let label = schema_version_label(&SchemaVersion::V2025_11_25);
+        assert_eq!(label.as_ref(), "2025-11-25");
+        let custom = SchemaVersion::Other("custom".to_string());
+        let label = schema_version_label(&custom);
+        assert_eq!(label.as_ref(), "custom");
+    }
+
+    #[test]
+    fn validate_tool_schema_allows_output_schema() {
+        let input_schema = json!({ "type": "object" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let output_schema = json!({ "type": "object" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let tool = Tool {
+            name: "echo".into(),
+            title: None,
+            description: None,
+            input_schema: Arc::new(input_schema),
+            output_schema: Some(Arc::new(output_schema)),
+            annotations: None,
+            icons: None,
+            meta: None,
+        };
+        validate_tool_schema(&tool).expect("valid");
+    }
+}

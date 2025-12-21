@@ -21,6 +21,8 @@ Tooltest is a new Rust-based MCP testing tool with no existing code. It must exe
   - Rationale: Ensures baseline safety while allowing custom validation.
 - Decision: Abstract transports behind a minimal trait with stdio and HTTP implementations, including optional configurable HTTP auth header support.
   - Rationale: Common session logic with pluggable transport.
+- Decision: Use the `rmcp` SDK for JSON-RPC/MCP protocol request and error types in the core runner.
+  - Rationale: Aligns the core with the canonical protocol implementation and reduces drift.
 - Decision: Expose napi and pyo3 bindings via a small FFI crate.
   - Rationale: Aligns with target ecosystems while keeping core logic in Rust.
 

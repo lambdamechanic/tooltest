@@ -98,6 +98,17 @@ The system SHALL form tool calls and parse results according to the MCP protocol
 - **WHEN** a tool invocation response is received
 - **THEN** the response is parsed as an MCP `CallToolResult`
 
+### Requirement: rmcp Protocol Types
+The system SHALL use the `rmcp` SDK protocol types for JSON-RPC requests and error payloads in the core session driver.
+
+#### Scenario: rmcp request shaping
+- **WHEN** the session driver dispatches MCP requests
+- **THEN** request payloads are constructed from `rmcp` JSON-RPC request types
+
+#### Scenario: rmcp error parsing
+- **WHEN** a JSON-RPC error response is received
+- **THEN** the error payload is parsed into `rmcp` error data structures
+
 ### Requirement: MCP Validity Enforcement
 The system SHALL ensure that all emitted requests form a valid MCP session sequence.
 

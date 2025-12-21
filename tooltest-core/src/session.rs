@@ -1,5 +1,7 @@
 use serde_json::{json, Value as JsonValue};
 
+use rmcp::model::{ErrorData, JsonRpcRequest, JsonRpcVersion2_0, NumberOrString, Request};
+
 use crate::{ToolInvocation, TraceEntry};
 
 /// Transport abstraction for MCP request/response exchange.
@@ -63,45 +65,15 @@ impl TransportError {
     }
 }
 
-/// Structured JSON-RPC error payload.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RpcError {
-    /// Optional JSON-RPC error code.
-    pub code: Option<i64>,
-    /// Optional JSON-RPC error message.
-    pub message: Option<String>,
-    /// Optional JSON-RPC error data payload.
-    pub data: Option<JsonValue>,
-    /// Raw error value preserved for debugging.
-    pub raw: JsonValue,
-}
-
-impl RpcError {
-    fn from_value(value: &JsonValue) -> Self {
-        let code = value.get("code").and_then(|entry| entry.as_i64());
-        let message = value
-            .get("message")
-            .and_then(|entry| entry.as_str())
-            .map(str::to_string);
-        let data = value.get("data").cloned();
-        Self {
-            code,
-            message,
-            data,
-            raw: value.clone(),
-        }
-    }
-}
-
 /// Errors emitted by the session driver.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionError {
     /// Transport-level failure.
     Transport(TransportError),
     /// Initialization failed with a reason.
-    InitializationFailed { error: Box<RpcError> },
+    InitializationFailed { error: Box<ErrorData> },
     /// Tool call failed with a reason.
-    ToolCallFailed { tool: String, error: Box<RpcError> },
+    ToolCallFailed { tool: String, error: Box<ErrorData> },
 }
 
 impl From<TransportError> for SessionError {
@@ -201,20 +173,36 @@ impl<T: Transport> SessionDriver<T> {
     }
 
     fn send_request(&mut self, method: &str, params: JsonValue) -> Result<JsonValue, SessionError> {
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": self.next_id,
-            "method": method,
-            "params": params,
-        });
+        let request = Request {
+            method: method.to_string(),
+            params,
+            extensions: Default::default(),
+        };
+        let id = i64::try_from(self.next_id).unwrap_or(i64::MAX);
+        let request = JsonRpcRequest {
+            jsonrpc: JsonRpcVersion2_0,
+            id: NumberOrString::Number(id),
+            request,
+        };
+        let request = serde_json::to_value(request).expect("rmcp request should serialize");
         // Saturate instead of wrapping to avoid repeating request ids in long runs.
         self.next_id = self.next_id.saturating_add(1);
         self.transport.send(request).map_err(SessionError::from)
     }
 }
 
-fn extract_error(response: &JsonValue) -> Option<RpcError> {
-    response.get("error").map(RpcError::from_value)
+fn extract_error(response: &JsonValue) -> Option<ErrorData> {
+    response.get("error").map(|error| {
+        serde_json::from_value(error.clone()).unwrap_or_else(|parse_error| {
+            ErrorData::internal_error(
+                "invalid error payload",
+                Some(json!({
+                    "raw": error,
+                    "parse_error": parse_error.to_string()
+                })),
+            )
+        })
+    })
 }
 
 #[cfg(test)]
@@ -222,6 +210,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use rmcp::model::ErrorCode;
     use serde_json::json;
 
     struct RecordingTransport {
@@ -303,7 +292,7 @@ mod tests {
         let responses = vec![json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "error": {"message": "nope"}
+            "error": {"code": -32603, "message": "nope"}
         })];
         let transport = RecordingTransport::new(responses);
         let mut driver = SessionDriver::new(transport);
@@ -312,12 +301,7 @@ mod tests {
         assert_eq!(
             error,
             SessionError::InitializationFailed {
-                error: Box::new(RpcError {
-                    code: None,
-                    message: Some("nope".to_string()),
-                    data: None,
-                    raw: json!({"message": "nope"}),
-                })
+                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "nope", None))
             }
         );
     }
@@ -387,7 +371,7 @@ mod tests {
     fn tool_call_error_surfaces_as_failure() {
         let responses = vec![
             json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json!({"jsonrpc": "2.0", "id": 2, "error": {"message": "bad"}}),
+            json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "bad"}}),
         ];
         let transport = RecordingTransport::new(responses);
         let mut driver = SessionDriver::new(transport);
@@ -401,12 +385,7 @@ mod tests {
             error,
             SessionError::ToolCallFailed {
                 tool: "bad_tool".to_string(),
-                error: Box::new(RpcError {
-                    code: None,
-                    message: Some("bad".to_string()),
-                    data: None,
-                    raw: json!({"message": "bad"}),
-                })
+                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "bad", None))
             }
         );
     }
@@ -416,7 +395,7 @@ mod tests {
         let responses = vec![Ok(json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "error": {"message": "init blocked"}
+            "error": {"code": -32603, "message": "init blocked"}
         }))];
         let transport = QueueTransport::new(responses);
         let mut driver = SessionDriver::new(transport);
@@ -429,12 +408,11 @@ mod tests {
         assert_eq!(
             error,
             SessionError::InitializationFailed {
-                error: Box::new(RpcError {
-                    code: None,
-                    message: Some("init blocked".to_string()),
-                    data: None,
-                    raw: json!({"message": "init blocked"}),
-                })
+                error: Box::new(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    "init blocked",
+                    None
+                ))
             }
         );
     }
@@ -499,7 +477,7 @@ mod tests {
         let responses = vec![Ok(json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "error": {"message": "no init"}
+            "error": {"code": -32603, "message": "no init"}
         }))];
         let transport = QueueTransport::new(responses);
         let mut driver = SessionDriver::new(transport);
@@ -514,12 +492,7 @@ mod tests {
         assert_eq!(
             error,
             SessionError::InitializationFailed {
-                error: Box::new(RpcError {
-                    code: None,
-                    message: Some("no init".to_string()),
-                    data: None,
-                    raw: json!({"message": "no init"}),
-                })
+                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "no init", None))
             }
         );
     }
@@ -528,7 +501,7 @@ mod tests {
     fn run_invocations_propagates_tool_failure() {
         let responses = vec![
             Ok(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
-            Ok(json!({"jsonrpc": "2.0", "id": 2, "error": {"message": "nope"}})),
+            Ok(json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "nope"}})),
         ];
         let transport = QueueTransport::new(responses);
         let mut driver = SessionDriver::new(transport);
@@ -544,30 +517,31 @@ mod tests {
             error,
             SessionError::ToolCallFailed {
                 tool: "fail".to_string(),
-                error: Box::new(RpcError {
-                    code: None,
-                    message: Some("nope".to_string()),
-                    data: None,
-                    raw: json!({"message": "nope"}),
-                })
+                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "nope", None))
             }
         );
     }
 
     #[test]
     fn rpc_error_preserves_fields() {
-        let error = RpcError::from_value(&json!({
-            "code": -32000,
-            "message": "oops",
-            "data": {"info": "detail"}
-        }));
-        assert_eq!(error.code, Some(-32000));
-        assert_eq!(error.message.as_deref(), Some("oops"));
-        assert_eq!(error.data, Some(json!({"info": "detail"})));
-        assert_eq!(
-            error.raw,
-            json!({"code": -32000, "message": "oops", "data": {"info": "detail"}})
+        let error = ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "oops",
+            Some(json!({"info": "detail"})),
         );
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(error.message.as_ref(), "oops");
+        assert_eq!(error.data, Some(json!({"info": "detail"})));
+    }
+
+    #[test]
+    fn invalid_error_payload_yields_internal_error() {
+        let error = extract_error(&json!({"error": {"message": "oops"}})).expect("error");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(error.message.as_ref(), "invalid error payload");
+        let data = error.data.expect("data");
+        assert_eq!(data["raw"], json!({"message": "oops"}));
+        assert!(data["parse_error"].as_str().is_some());
     }
 
     #[test]

@@ -3,7 +3,11 @@ set -euo pipefail
 
 export PATH="$HOME/.qlty/bin:$PATH"
 
-bd sync --flush-only
+unset GIT_DIR
+unset GIT_WORK_TREE
+unset GIT_INDEX_FILE
+
+bd sync
 
 if ! command -v qlty >/dev/null 2>&1; then
   echo "qlty not found; install with: curl -fsSL https://qlty.sh | sh" >&2

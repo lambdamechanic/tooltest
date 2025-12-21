@@ -35,7 +35,7 @@ bd sync               # Sync with git
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
 
-**Coverage requirement:** Ensure Rust coverage is 100% before pushing commits.
+**Quality requirement:** Ensure tests pass before committing and pushing; Rust coverage must be 100% before pushing.
 
 **MANDATORY WORKFLOW:**
 

@@ -7,6 +7,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+pub mod session;
+
+pub use session::{SessionDriver, SessionError, Transport, TransportError};
+
 /// Schema versions supported by the tooltest core.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

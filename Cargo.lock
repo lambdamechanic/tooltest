@@ -103,6 +103,9 @@ dependencies = [
 [[package]]
 name = "tooltest-ffi"
 version = "0.1.0"
+dependencies = [
+ "tooltest-core",
+]
 
 [[package]]
 name = "unicode-ident"

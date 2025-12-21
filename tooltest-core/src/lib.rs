@@ -10,7 +10,8 @@ use serde_json::Value as JsonValue;
 pub mod session;
 
 pub use rmcp::model::{ErrorCode, ErrorData};
-pub use session::{SessionDriver, SessionError, Transport, TransportError, TransportErrorKind};
+pub use rmcp::service::{ClientInitializeError, ServiceError};
+pub use session::{SessionDriver, SessionError};
 
 /// Schema versions supported by the tooltest core.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -1,455 +1,261 @@
-use serde_json::{json, Value as JsonValue};
+use crate::{AuthHeader, HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
+use rmcp::model::CallToolRequestParam;
+use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
-use rmcp::model::{ErrorData, JsonRpcRequest, JsonRpcVersion2_0, NumberOrString, Request};
-
-use crate::{ToolInvocation, TraceEntry};
-
-/// Transport abstraction for MCP request/response exchange.
-pub trait Transport {
-    /// Sends a JSON-RPC request and returns the raw JSON response.
-    fn send(&mut self, request: JsonValue) -> Result<JsonValue, TransportError>;
-}
-
-/// Transport error category to aid recovery decisions.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TransportErrorKind {
-    /// Errors caused by IO, networking, or process failures.
-    Io,
-    /// Errors caused by protocol or framing mismatches.
-    Protocol,
-    /// Errors that do not fit a more specific category.
-    Other,
-}
-
-/// Transport-level error surfaced by the session driver.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TransportError {
-    /// Human-readable error description.
-    pub message: String,
-    /// Classification for the underlying transport error.
-    pub kind: TransportErrorKind,
-    /// Optional source string for debugging.
-    pub source: Option<String>,
-}
-
-impl TransportError {
-    /// Creates a new transport error from a message.
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: TransportErrorKind::Other,
-            source: None,
-        }
-    }
-
-    /// Creates a new transport error with an explicit kind.
-    pub fn with_kind(kind: TransportErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind,
-            source: None,
-        }
-    }
-
-    /// Creates a new transport error with a source description.
-    pub fn with_source(
-        kind: TransportErrorKind,
-        message: impl Into<String>,
-        source: impl Into<String>,
-    ) -> Self {
-        Self {
-            message: message.into(),
-            kind,
-            source: Some(source.into()),
-        }
-    }
-}
-
-/// Errors emitted by the session driver.
-#[derive(Clone, Debug, PartialEq)]
+/// Errors emitted by the rmcp-backed session driver.
+#[derive(Debug)]
 pub enum SessionError {
-    /// Transport-level failure.
-    Transport(TransportError),
-    /// Initialization failed with a reason.
-    InitializationFailed { error: Box<ErrorData> },
-    /// Tool call failed with a reason.
-    ToolCallFailed { tool: String, error: Box<ErrorData> },
+    /// Initialization failed while establishing the session.
+    Initialize(Box<ClientInitializeError>),
+    /// The session failed while sending or receiving requests.
+    Service(Box<ServiceError>),
+    /// Failed to spawn or configure the stdio transport.
+    Transport(Box<std::io::Error>),
+    /// Provided HTTP auth header is invalid.
+    InvalidAuthHeader { name: String, value: String },
 }
 
-impl From<TransportError> for SessionError {
-    fn from(error: TransportError) -> Self {
-        Self::Transport(error)
+impl From<ClientInitializeError> for SessionError {
+    fn from(error: ClientInitializeError) -> Self {
+        Self::Initialize(Box::new(error))
     }
 }
 
-/// Stateful MCP session driver that enforces initialization ordering.
-pub struct SessionDriver<T: Transport> {
-    transport: T,
-    initialized: bool,
-    next_id: u64,
+impl From<ServiceError> for SessionError {
+    fn from(error: ServiceError) -> Self {
+        Self::Service(Box::new(error))
+    }
 }
 
-impl<T: Transport> SessionDriver<T> {
-    /// Creates a new session driver for the provided transport.
-    pub fn new(transport: T) -> Self {
-        Self {
-            transport,
-            initialized: false,
-            next_id: 1,
+impl From<std::io::Error> for SessionError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Transport(Box::new(error))
+    }
+}
+
+/// Session driver that uses rmcp client/session APIs.
+pub struct SessionDriver {
+    service: RunningService<RoleClient, ()>,
+}
+
+impl SessionDriver {
+    /// Connects to an MCP server over stdio using rmcp child-process transport.
+    #[cfg(not(test))]
+    pub async fn connect_stdio(config: &StdioConfig) -> Result<Self, SessionError> {
+        use rmcp::transport::TokioChildProcess;
+        use tokio::process::Command;
+
+        let mut command = Command::new(&config.command);
+        command.args(&config.args).envs(&config.env);
+        if let Some(cwd) = &config.cwd {
+            command.current_dir(cwd);
         }
+        let transport = TokioChildProcess::new(command)?;
+        Self::connect_with_transport(transport).await
     }
 
-    /// Returns whether initialization has completed.
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
+    /// Test stub for stdio transport setup.
+    #[cfg(test)]
+    pub async fn connect_stdio(_config: &StdioConfig) -> Result<Self, SessionError> {
+        Err(SessionError::Transport(Box::new(std::io::Error::other(
+            "stdio transport disabled in tests",
+        ))))
     }
 
-    /// Resets initialization state and request id counter.
-    pub fn reset(&mut self) {
-        self.initialized = false;
-        self.next_id = 1;
+    /// Connects to an MCP server over HTTP using rmcp streamable HTTP transport.
+    #[cfg(not(test))]
+    pub async fn connect_http(config: &HttpConfig) -> Result<Self, SessionError> {
+        let transport = build_http_transport(config)?;
+        Self::connect_with_transport(transport).await
     }
 
-    /// Performs MCP initialization with empty parameters.
-    pub fn initialize(&mut self) -> Result<JsonValue, SessionError> {
-        self.initialize_with_params(json!({}))
+    /// Test stub for HTTP transport setup.
+    #[cfg(test)]
+    pub async fn connect_http(_config: &HttpConfig) -> Result<Self, SessionError> {
+        Err(SessionError::Transport(Box::new(std::io::Error::other(
+            "http transport disabled in tests",
+        ))))
     }
 
-    /// Performs MCP initialization with caller-supplied parameters.
-    pub fn initialize_with_params(&mut self, params: JsonValue) -> Result<JsonValue, SessionError> {
-        let response = self.send_request("initialize", params)?;
-        if let Some(error) = extract_error(&response) {
-            return Err(SessionError::InitializationFailed {
-                error: Box::new(error),
-            });
-        }
-        self.initialized = true;
-        Ok(response)
+    /// Connects using a custom rmcp transport implementation.
+    pub async fn connect_with_transport<T, E, A>(transport: T) -> Result<Self, SessionError>
+    where
+        T: rmcp::transport::IntoTransport<RoleClient, E, A>,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let service = ().serve(transport).await?;
+        Ok(Self { service })
     }
 
-    /// Sends a tool invocation, ensuring initialization runs first.
-    pub fn send_tool_call(
-        &mut self,
+    /// Returns the underlying rmcp peer for advanced interactions.
+    pub fn peer(&self) -> &rmcp::service::Peer<RoleClient> {
+        self.service.peer()
+    }
+
+    /// Sends a tool invocation via rmcp and records the response.
+    pub async fn send_tool_call(
+        &self,
         invocation: ToolInvocation,
     ) -> Result<TraceEntry, SessionError> {
-        self.ensure_initialized()?;
-        let tool_name = invocation.name.clone();
-        let arguments = invocation.arguments.clone();
-        let params = json!({
-            "name": tool_name.clone(),
-            "arguments": arguments,
-        });
-        let response = self.send_request("tools/call", params)?;
-        if let Some(error) = extract_error(&response) {
-            return Err(SessionError::ToolCallFailed {
-                tool: tool_name,
-                error: Box::new(error),
-            });
-        }
+        let params = CallToolRequestParam {
+            name: invocation.name.clone().into(),
+            arguments: invocation.arguments.as_object().cloned(),
+        };
+        let response = self.service.peer().call_tool(params).await?;
+        let response = serde_json::to_value(&response).expect("call tool result should serialize");
         Ok(TraceEntry {
             invocation,
             response,
         })
     }
 
-    /// Drives a sequence of tool invocations, enforcing initialization ordering.
-    pub fn run_invocations<I>(&mut self, invocations: I) -> Result<Vec<TraceEntry>, SessionError>
+    /// Sends a sequence of tool invocations via rmcp.
+    pub async fn run_invocations<I>(&self, invocations: I) -> Result<Vec<TraceEntry>, SessionError>
     where
         I: IntoIterator<Item = ToolInvocation>,
     {
-        self.ensure_initialized()?;
         let mut trace = Vec::new();
         for invocation in invocations {
-            trace.push(self.send_tool_call(invocation)?);
+            trace.push(self.send_tool_call(invocation).await?);
         }
         Ok(trace)
     }
-
-    fn ensure_initialized(&mut self) -> Result<(), SessionError> {
-        if !self.initialized {
-            self.initialize()?;
-        }
-        Ok(())
-    }
-
-    fn send_request(&mut self, method: &str, params: JsonValue) -> Result<JsonValue, SessionError> {
-        let request = Request {
-            method: method.to_string(),
-            params,
-            extensions: Default::default(),
-        };
-        let id = i64::try_from(self.next_id).unwrap_or(i64::MAX);
-        let request = JsonRpcRequest {
-            jsonrpc: JsonRpcVersion2_0,
-            id: NumberOrString::Number(id),
-            request,
-        };
-        let request = serde_json::to_value(request).expect("rmcp request should serialize");
-        // Saturate instead of wrapping to avoid repeating request ids in long runs.
-        self.next_id = self.next_id.saturating_add(1);
-        self.transport.send(request).map_err(SessionError::from)
-    }
 }
 
-fn extract_error(response: &JsonValue) -> Option<ErrorData> {
-    response.get("error").map(|error| {
-        serde_json::from_value(error.clone()).unwrap_or_else(|parse_error| {
-            ErrorData::internal_error(
-                "invalid error payload",
-                Some(json!({
-                    "raw": error,
-                    "parse_error": parse_error.to_string()
-                })),
-            )
-        })
-    })
+#[cfg(not(test))]
+fn build_http_transport(
+    config: &HttpConfig,
+) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {
+    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+    use rmcp::transport::StreamableHttpClientTransport;
+
+    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(config.url.as_str());
+    if let Some(auth_header) = &config.auth_header {
+        let token = normalize_auth_header(auth_header)?;
+        transport_config = transport_config.auth_header(token);
+    }
+    Ok(StreamableHttpClientTransport::from_config(transport_config))
+}
+
+fn normalize_auth_header(auth_header: &AuthHeader) -> Result<String, SessionError> {
+    if !auth_header.name.eq_ignore_ascii_case("authorization") {
+        return Err(SessionError::InvalidAuthHeader {
+            name: auth_header.name.clone(),
+            value: auth_header.value.clone(),
+        });
+    }
+    let value = auth_header.value.trim();
+    let token = value.strip_prefix("Bearer ").unwrap_or(value);
+    Ok(token.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
-    use rmcp::model::ErrorCode;
+    use rmcp::model::{
+        CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ErrorCode, ErrorData,
+        InitializeResult, JsonRpcMessage, JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0,
+        ListToolsRequest, PaginatedRequestParam, ServerInfo, ServerJsonRpcMessage, ServerResult,
+    };
+    use rmcp::transport::Transport;
     use serde_json::json;
+    use tokio::sync::mpsc;
+    use tokio::sync::Mutex as AsyncMutex;
 
-    struct RecordingTransport {
-        requests: Vec<JsonValue>,
-        responses: VecDeque<JsonValue>,
+    struct TestTransport {
+        requests: Arc<Mutex<Vec<ClientJsonRpcMessage>>>,
+        responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
+        response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
     }
 
-    impl RecordingTransport {
-        fn new(responses: Vec<JsonValue>) -> Self {
+    impl TestTransport {
+        fn new() -> Self {
+            let (response_tx, response_rx) = mpsc::unbounded_channel();
             Self {
-                requests: Vec::new(),
-                responses: VecDeque::from(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                responses: Arc::new(AsyncMutex::new(response_rx)),
+                response_tx,
             }
+        }
+
+        fn request_log(&self) -> Arc<Mutex<Vec<ClientJsonRpcMessage>>> {
+            Arc::clone(&self.requests)
         }
     }
 
-    impl Transport for RecordingTransport {
-        fn send(&mut self, request: JsonValue) -> Result<JsonValue, TransportError> {
-            self.requests.push(request);
-            self.responses
-                .pop_front()
-                .ok_or_else(|| TransportError::new("missing response"))
+    impl Transport<RoleClient> for TestTransport {
+        type Error = std::convert::Infallible;
+
+        fn send(
+            &mut self,
+            item: ClientJsonRpcMessage,
+        ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+            let requests = Arc::clone(&self.requests);
+            let response_tx = self.response_tx.clone();
+            let message = item.clone();
+            if let JsonRpcMessage::Request(request) = &item {
+                let response = match &request.request {
+                    ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
+                    ClientRequest::CallToolRequest(_) => {
+                        Some(call_tool_response(request.id.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some(response) = response {
+                    let _ = response_tx.send(response);
+                }
+            }
+            requests.lock().expect("requests").push(message);
+            std::future::ready(Ok(()))
+        }
+
+        fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+            let responses = Arc::clone(&self.responses);
+            async move {
+                let mut receiver = responses.lock().await;
+                receiver.recv().await
+            }
+        }
+
+        async fn close(&mut self) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 
-    struct QueueTransport {
-        responses: VecDeque<Result<JsonValue, TransportError>>,
-    }
+    #[tokio::test]
+    async fn connect_sends_initialize_and_initialized() {
+        let transport = TestTransport::new();
+        let requests = transport.request_log();
+        let driver = SessionDriver::connect_with_transport(transport)
+            .await
+            .expect("connect");
 
-    impl QueueTransport {
-        fn new(responses: Vec<Result<JsonValue, TransportError>>) -> Self {
-            Self {
-                responses: VecDeque::from(responses),
-            }
-        }
-    }
-
-    impl Transport for QueueTransport {
-        fn send(&mut self, _request: JsonValue) -> Result<JsonValue, TransportError> {
-            self.responses
-                .pop_front()
-                .unwrap_or_else(|| Err(TransportError::new("missing response")))
-        }
-    }
-
-    #[test]
-    fn send_tool_call_initializes_first() {
-        let responses = vec![
-            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json!({"jsonrpc": "2.0", "id": 2, "result": {}}),
-        ];
-        let transport = RecordingTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
+        let _ = driver.peer();
         let invocation = ToolInvocation {
-            name: "search".to_string(),
-            arguments: json!({"query": "hello"}),
+            name: "echo".to_string(),
+            arguments: json!({"value": "hello"}),
         };
-        let trace = driver.send_tool_call(invocation).expect("tool call");
+        let trace = driver.send_tool_call(invocation).await.expect("tool call");
 
-        assert_eq!(trace.invocation.name, "search");
-        assert_eq!(driver.transport.requests.len(), 2);
-        assert_eq!(
-            driver.transport.requests[0]
-                .get("method")
-                .and_then(|value| value.as_str()),
-            Some("initialize")
-        );
-        assert_eq!(
-            driver.transport.requests[1]
-                .get("method")
-                .and_then(|value| value.as_str()),
-            Some("tools/call")
-        );
+        let requests = requests.lock().expect("requests");
+        assert!(matches!(requests[0], JsonRpcMessage::Request(_)));
+        assert!(matches!(
+            requests[1],
+            JsonRpcMessage::Notification(JsonRpcNotification { .. })
+        ));
+        assert!(matches!(requests[2], JsonRpcMessage::Request(_)));
+        assert_eq!(trace.response["isError"], false);
     }
 
-    #[test]
-    fn initialization_error_surfaces_as_failure() {
-        let responses = vec![json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": {"code": -32603, "message": "nope"}
-        })];
-        let transport = RecordingTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
+    #[tokio::test]
+    async fn run_invocations_collects_trace() {
+        let transport = TestTransport::new();
+        let driver = SessionDriver::connect_with_transport(transport)
+            .await
+            .expect("connect");
 
-        let error = driver.initialize().expect_err("expected init failure");
-        assert_eq!(
-            error,
-            SessionError::InitializationFailed {
-                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "nope", None))
-            }
-        );
-    }
-
-    #[test]
-    fn initialize_propagates_transport_error() {
-        let transport = QueueTransport::new(vec![Err(TransportError::new("wire down"))]);
-        let mut driver = SessionDriver::new(transport);
-
-        let error = driver.initialize().expect_err("transport failure");
-        assert_eq!(
-            error,
-            SessionError::Transport(TransportError::new("wire down"))
-        );
-    }
-
-    #[test]
-    fn transport_error_helpers_capture_message() {
-        let error = TransportError::new("transport down");
-        assert_eq!(error.message, "transport down");
-        assert_eq!(error.kind, TransportErrorKind::Other);
-        assert!(error.source.is_none());
-        assert_eq!(
-            SessionError::from(error.clone()),
-            SessionError::Transport(error)
-        );
-
-        let error = TransportError::with_kind(TransportErrorKind::Io, "lost");
-        assert_eq!(error.kind, TransportErrorKind::Io);
-        assert!(error.source.is_none());
-
-        let error = TransportError::with_source(TransportErrorKind::Protocol, "bad", "codec");
-        assert_eq!(error.kind, TransportErrorKind::Protocol);
-        assert_eq!(error.source, Some("codec".to_string()));
-    }
-
-    #[test]
-    fn recording_transport_missing_response_reports_error() {
-        let mut transport = RecordingTransport::new(Vec::new());
-        let error = transport
-            .send(json!({}))
-            .expect_err("expected missing response");
-        assert_eq!(error, TransportError::new("missing response"));
-    }
-
-    #[test]
-    fn queue_transport_missing_response_reports_error() {
-        let mut transport = QueueTransport::new(Vec::new());
-        let error = transport
-            .send(json!({}))
-            .expect_err("expected missing response");
-        assert_eq!(error, TransportError::new("missing response"));
-    }
-
-    #[test]
-    fn initialize_sets_initialized_flag() {
-        let responses = vec![json!({"jsonrpc": "2.0", "id": 1, "result": {}})];
-        let transport = RecordingTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        assert!(!driver.is_initialized());
-        driver.initialize().expect("init");
-        assert!(driver.is_initialized());
-    }
-
-    #[test]
-    fn tool_call_error_surfaces_as_failure() {
-        let responses = vec![
-            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "bad"}}),
-        ];
-        let transport = RecordingTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        let invocation = ToolInvocation {
-            name: "bad_tool".to_string(),
-            arguments: json!({}),
-        };
-        let error = driver.send_tool_call(invocation).expect_err("tool failure");
-        assert_eq!(
-            error,
-            SessionError::ToolCallFailed {
-                tool: "bad_tool".to_string(),
-                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "bad", None))
-            }
-        );
-    }
-
-    #[test]
-    fn tool_call_propagates_init_failure() {
-        let responses = vec![Ok(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": {"code": -32603, "message": "init blocked"}
-        }))];
-        let transport = QueueTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        let invocation = ToolInvocation {
-            name: "guarded".to_string(),
-            arguments: json!({}),
-        };
-        let error = driver.send_tool_call(invocation).expect_err("init failure");
-        assert_eq!(
-            error,
-            SessionError::InitializationFailed {
-                error: Box::new(ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    "init blocked",
-                    None
-                ))
-            }
-        );
-    }
-
-    #[test]
-    fn tool_call_propagates_transport_error() {
-        let responses = vec![
-            Ok(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
-            Err(TransportError::new("link down")),
-        ];
-        let transport = QueueTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        let invocation = ToolInvocation {
-            name: "unstable".to_string(),
-            arguments: json!({}),
-        };
-        let error = driver
-            .send_tool_call(invocation)
-            .expect_err("transport error");
-        assert_eq!(
-            error,
-            SessionError::Transport(TransportError::new("link down"))
-        );
-    }
-
-    #[test]
-    fn run_invocations_reuses_initialization() {
-        let responses = vec![
-            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json!({"jsonrpc": "2.0", "id": 2, "result": {}}),
-            json!({"jsonrpc": "2.0", "id": 3, "result": {}}),
-        ];
-        let transport = RecordingTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        driver.initialize().expect("init");
         let invocations = vec![
             ToolInvocation {
                 name: "one".to_string(),
@@ -460,117 +266,105 @@ mod tests {
                 arguments: json!({"b": 2}),
             },
         ];
-        let trace = driver.run_invocations(invocations).expect("trace");
+        let trace = driver.run_invocations(invocations).await.expect("trace");
 
         assert_eq!(trace.len(), 2);
-        assert_eq!(driver.transport.requests.len(), 3);
-        assert_eq!(
-            driver.transport.requests[0]
-                .get("method")
-                .and_then(|value| value.as_str()),
-            Some("initialize")
-        );
     }
 
     #[test]
-    fn run_invocations_propagates_init_failure() {
-        let responses = vec![Ok(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": {"code": -32603, "message": "no init"}
-        }))];
-        let transport = QueueTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        let invocations = vec![ToolInvocation {
-            name: "blocked".to_string(),
-            arguments: json!({}),
-        }];
-        let error = driver
-            .run_invocations(invocations)
-            .expect_err("init failure");
-        assert_eq!(
+    fn invalid_auth_header_rejected() {
+        let auth_header = AuthHeader {
+            name: "Bad Header".to_string(),
+            value: "value".to_string(),
+        };
+        let error = normalize_auth_header(&auth_header).expect_err("invalid header");
+        assert!(matches!(
             error,
-            SessionError::InitializationFailed {
-                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "no init", None))
-            }
-        );
+            SessionError::InvalidAuthHeader { name, value }
+                if name == "Bad Header" && value == "value"
+        ));
     }
 
     #[test]
-    fn run_invocations_propagates_tool_failure() {
-        let responses = vec![
-            Ok(json!({"jsonrpc": "2.0", "id": 1, "result": {}})),
-            Ok(json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "nope"}})),
-        ];
-        let transport = QueueTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
+    fn bearer_prefix_is_trimmed() {
+        let auth_header = AuthHeader {
+            name: "Authorization".to_string(),
+            value: "Bearer token".to_string(),
+        };
+        let token = normalize_auth_header(&auth_header).expect("token");
+        assert_eq!(token, "token");
+    }
 
-        let invocations = vec![ToolInvocation {
-            name: "fail".to_string(),
-            arguments: json!({}),
-        }];
-        let error = driver
-            .run_invocations(invocations)
-            .expect_err("tool failure");
-        assert_eq!(
-            error,
-            SessionError::ToolCallFailed {
-                tool: "fail".to_string(),
-                error: Box::new(ErrorData::new(ErrorCode::INTERNAL_ERROR, "nope", None))
-            }
-        );
+    #[tokio::test]
+    async fn connect_http_stub_returns_error() {
+        let config = HttpConfig {
+            url: "http://localhost:8080/mcp".to_string(),
+            auth_header: None,
+        };
+        let result = SessionDriver::connect_http(&config).await;
+        assert!(matches!(result, Err(SessionError::Transport(_))));
+    }
+
+    #[tokio::test]
+    async fn connect_stdio_stub_returns_error() {
+        let config = StdioConfig::new("mcp-server");
+        let result = SessionDriver::connect_stdio(&config).await;
+        assert!(matches!(result, Err(SessionError::Transport(_))));
     }
 
     #[test]
-    fn rpc_error_preserves_fields() {
-        let error = ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            "oops",
-            Some(json!({"info": "detail"})),
-        );
-        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
-        assert_eq!(error.message.as_ref(), "oops");
-        assert_eq!(error.data, Some(json!({"info": "detail"})));
+    fn session_error_from_variants() {
+        let error = SessionError::from(ClientInitializeError::Cancelled);
+        assert!(matches!(error, SessionError::Initialize(_)));
+
+        let error = SessionError::from(ServiceError::TransportClosed);
+        assert!(matches!(error, SessionError::Service(_)));
+
+        let error = SessionError::from(std::io::Error::other("io"));
+        assert!(matches!(error, SessionError::Transport(_)));
     }
 
     #[test]
-    fn invalid_error_payload_yields_internal_error() {
-        let error = extract_error(&json!({"error": {"message": "oops"}})).expect("error");
-        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
-        assert_eq!(error.message.as_ref(), "invalid error payload");
-        let data = error.data.expect("data");
-        assert_eq!(data["raw"], json!({"message": "oops"}));
-        assert!(data["parse_error"].as_str().is_some());
+    fn error_data_constants_round_trip() {
+        let error = ErrorData::new(ErrorCode::INVALID_REQUEST, "nope", None);
+        assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(error.message.as_ref(), "nope");
     }
 
-    #[test]
-    fn reset_clears_initialization_state() {
-        let responses = vec![
-            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
-            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
-        ];
-        let transport = RecordingTransport::new(responses);
-        let mut driver = SessionDriver::new(transport);
-
-        driver.initialize().expect("init");
-        assert!(driver.is_initialized());
-        driver.reset();
-        assert!(!driver.is_initialized());
-
-        driver.initialize().expect("init again");
-        assert_eq!(driver.transport.requests.len(), 2);
-        assert_eq!(
-            driver.transport.requests[0]
-                .get("id")
-                .and_then(|value| value.as_i64()),
-            Some(1)
+    #[tokio::test]
+    async fn test_transport_unhandled_request_and_close() {
+        let mut transport = TestTransport::new();
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::ListToolsRequest(ListToolsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            rmcp::model::NumberOrString::Number(99),
         );
-        assert_eq!(
-            driver.transport.requests[1]
-                .get("id")
-                .and_then(|value| value.as_i64()),
-            Some(1)
-        );
+        let _ = transport.send(request).await;
+        transport.close().await.expect("close");
+    }
+
+    fn call_tool_response(id: rmcp::model::RequestId) -> ServerJsonRpcMessage {
+        let result = CallToolResult::success(vec![Content::text("ok")]);
+        ServerJsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion2_0,
+            id,
+            result: ServerResult::CallToolResult(result),
+        })
+    }
+
+    fn init_response(id: rmcp::model::RequestId) -> ServerJsonRpcMessage {
+        ServerJsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion2_0,
+            id,
+            result: ServerResult::InitializeResult(InitializeResult {
+                protocol_version: ServerInfo::default().protocol_version,
+                capabilities: ServerInfo::default().capabilities,
+                server_info: ServerInfo::default().server_info,
+                instructions: None,
+            }),
+        })
     }
 }

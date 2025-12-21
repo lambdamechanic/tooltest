@@ -7,4 +7,8 @@ license = "MIT"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rmcp = "0.12"
+rmcp = { version = "0.12", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "process", "rt"] }
+
+[dev-dependencies]

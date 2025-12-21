@@ -8,34 +8,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Schema versions supported by the tooltest core.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SchemaVersion {
     /// MCP schema version 2025-11-25.
+    #[default]
     V2025_11_25,
     /// Any other explicitly configured schema version string.
     Other(String),
 }
 
-impl Default for SchemaVersion {
-    fn default() -> Self {
-        Self::V2025_11_25
-    }
-}
-
 /// Configuration for MCP schema parsing and validation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// The selected MCP schema version.
     pub version: SchemaVersion,
-}
-
-impl Default for SchemaConfig {
-    fn default() -> Self {
-        Self {
-            version: SchemaVersion::default(),
-        }
-    }
 }
 
 /// Optional HTTP authorization header configuration.

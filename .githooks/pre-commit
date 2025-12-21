@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.qlty/bin:$PATH"
+
+bd sync
+
+if ! command -v qlty >/dev/null 2>&1; then
+  echo "qlty not found; install with: curl -fsSL https://qlty.sh | sh" >&2
+  exit 1
+fi
+
+if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
+  echo "cargo-llvm-cov not found; install with: cargo install cargo-llvm-cov" >&2
+  exit 1
+fi
+
+cargo fmt --all -- --check
+qlty check
+cargo llvm-cov --workspace --fail-under-lines 100 --locked

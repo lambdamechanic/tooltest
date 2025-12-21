@@ -3,6 +3,9 @@ use rmcp::model::CallToolRequestParam;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
 /// Errors emitted by the rmcp-backed session driver.
+///
+/// The rmcp error variants are boxed to keep the enum size small; match on
+/// `SessionError` and then inspect the boxed error as needed.
 #[derive(Debug)]
 pub enum SessionError {
     /// Initialization failed while establishing the session.
@@ -55,6 +58,9 @@ impl SessionDriver {
     }
 
     /// Test stub for stdio transport setup.
+    ///
+    /// Use `connect_with_transport` with a test transport when unit testing
+    /// successful stdio flows.
     #[cfg(test)]
     pub async fn connect_stdio(_config: &StdioConfig) -> Result<Self, SessionError> {
         Err(SessionError::Transport(Box::new(std::io::Error::other(
@@ -70,6 +76,9 @@ impl SessionDriver {
     }
 
     /// Test stub for HTTP transport setup.
+    ///
+    /// Use `connect_with_transport` with a test transport when unit testing
+    /// successful HTTP flows.
     #[cfg(test)]
     pub async fn connect_http(_config: &HttpConfig) -> Result<Self, SessionError> {
         Err(SessionError::Transport(Box::new(std::io::Error::other(
@@ -137,6 +146,10 @@ fn build_http_transport(
     Ok(StreamableHttpClientTransport::from_config(transport_config))
 }
 
+/// Validates the configured header name and returns a bearer token string.
+///
+/// The input value may include a `Bearer ` prefix; if present it is stripped
+/// to match rmcp's expected auth token format.
 fn normalize_auth_header(auth_header: &AuthHeader) -> Result<String, SessionError> {
     if !auth_header.name.eq_ignore_ascii_case("authorization") {
         return Err(SessionError::InvalidAuthHeader {

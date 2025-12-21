@@ -301,6 +301,9 @@ mod tests {
         assert_eq!(config.schema, schema);
         assert!(config.predicate.is_some());
         assert_eq!(config.assertions.rules.len(), 1);
+        let predicate = config.predicate.as_ref().expect("predicate set");
+        assert!(predicate("search", &json!({"query": "hello"})));
+        assert!(!predicate("search", &json!({"query": "nope"})));
 
         let debug = format!("{config:?}");
         assert!(debug.contains("predicate: true"));

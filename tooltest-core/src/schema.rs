@@ -7,7 +7,9 @@ use serde_json::Value as JsonValue;
 use crate::{SchemaConfig, SchemaVersion};
 
 const SUPPORTED_SCHEMA_VERSION: &str = "2025-11-25";
+/// Supported JSON Schema draft URL (2020-12) without a hash fragment.
 const SUPPORTED_JSON_SCHEMA: &str = "https://json-schema.org/draft/2020-12/schema";
+/// Supported JSON Schema draft URL (2020-12) with a hash fragment.
 const SUPPORTED_JSON_SCHEMA_WITH_HASH: &str = "https://json-schema.org/draft/2020-12/schema#";
 
 /// Errors produced while parsing MCP schema data.
@@ -153,7 +155,7 @@ fn validate_schema_object(
                 tool_name,
                 field,
                 &format!(
-                    "$schema must be {SUPPORTED_JSON_SCHEMA} or {SUPPORTED_JSON_SCHEMA_WITH_HASH}, got {schema_value}"
+                    "expected $schema to be one of [{SUPPORTED_JSON_SCHEMA}, {SUPPORTED_JSON_SCHEMA_WITH_HASH}], got: {schema_value}"
                 ),
             ));
         }

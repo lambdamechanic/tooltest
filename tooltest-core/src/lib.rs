@@ -1,4 +1,5 @@
 //! Public API types for configuring and reporting tooltest runs.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+#[cfg_attr(coverage, coverage(off))]
 mod generator;
 pub mod schema;
 pub mod session;

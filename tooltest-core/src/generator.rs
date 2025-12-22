@@ -266,12 +266,18 @@ fn invalid_input_object_strategy(
         .prop_flat_map(move |args| {
             let value = JsonValue::Object(args.clone());
             let constraints = applicable_constraints(schema.as_ref(), &value);
-            debug_assert!(!constraints.is_empty());
+            let viable = constraints
+                .into_iter()
+                .filter_map(|constraint| {
+                    mutate_to_violate_constraint(&value, &constraint)
+                        .map(|mutated| (constraint, mutated))
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(!viable.is_empty());
             let schema = schema.clone();
-            proptest::sample::select(constraints).prop_filter_map(
+            proptest::sample::select(viable).prop_filter_map(
                 "must violate exactly one schema constraint",
-                move |constraint| {
-                    let mutated = mutate_to_violate_constraint(&value, &constraint)?;
+                move |(constraint, mutated)| {
                     let violations = schema_violations(schema.as_ref(), &mutated);
                     let is_valid = violations.len() == 1 && violations[0] == constraint;
                     is_valid
@@ -781,7 +787,7 @@ pub(crate) fn mutate_to_violate_constraint(
     let mut mutated = value.clone();
     match &constraint.kind {
         ConstraintKind::Const(const_value) => {
-            let replacement = different_value(const_value)?;
+            let replacement = different_value(const_value);
             set_value_at_path(&mut mutated, &constraint.path, replacement)?;
         }
         ConstraintKind::Enum(values) => {
@@ -858,24 +864,24 @@ fn value_matches_type(value: &JsonValue, schema_type: &str) -> bool {
     }
 }
 
-fn different_value(value: &JsonValue) -> Option<JsonValue> {
+fn different_value(value: &JsonValue) -> JsonValue {
     match value {
-        JsonValue::String(text) => Some(JsonValue::String(format!("{text}x"))),
+        JsonValue::String(text) => JsonValue::String(format!("{text}x")),
         JsonValue::Number(number) => {
             let value = number.as_f64().unwrap_or(0.0);
-            Some(JsonValue::from(value + 1.0))
+            JsonValue::from(value + 1.0)
         }
-        JsonValue::Bool(flag) => Some(JsonValue::Bool(!flag)),
-        JsonValue::Null => Some(JsonValue::Bool(true)),
+        JsonValue::Bool(flag) => JsonValue::Bool(!flag),
+        JsonValue::Null => JsonValue::Bool(true),
         JsonValue::Array(items) => {
             let mut next = items.clone();
             next.push(JsonValue::Null);
-            Some(JsonValue::Array(next))
+            JsonValue::Array(next)
         }
         JsonValue::Object(map) => {
             let mut next = map.clone();
             next.insert("extra".to_string(), JsonValue::Bool(true));
-            Some(JsonValue::Object(next))
+            JsonValue::Object(next)
         }
     }
 }

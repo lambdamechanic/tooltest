@@ -1579,6 +1579,18 @@ fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
     };
     assert!(mutate_to_violate_constraint(&value, &min_items).is_none());
 
+    let missing_min_items = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MinItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_min_items).is_none());
+
+    let non_array_min_items = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::MinItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &non_array_min_items).is_none());
+
     let pattern = Constraint {
         path: nonempty![PathSegment::Key("text".to_string())],
         kind: ConstraintKind::Pattern(".*".to_string()),
@@ -1632,6 +1644,30 @@ fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
         kind: ConstraintKind::Maximum(1.0),
     };
     assert!(mutate_to_violate_constraint(&value, &missing_maximum).is_none());
+
+    let missing_max_items = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MaxItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_max_items).is_none());
+
+    let non_array_max_items = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::MaxItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &non_array_max_items).is_none());
+
+    let missing_required = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Required("required".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_required).is_none());
+
+    let non_object_required = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::Required("required".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &non_object_required).is_none());
 
     let invalid_key_path = Constraint {
         path: nonempty![

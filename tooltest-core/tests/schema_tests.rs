@@ -234,6 +234,24 @@ fn parse_call_tool_request_uses_rmcp_type() {
 }
 
 #[test]
+fn parse_call_tool_request_rejects_unsupported_schema_version() {
+    let config = SchemaConfig {
+        version: SchemaVersion::Other("2025-12-01".to_string()),
+    };
+    let payload = json!({
+        "name": "echo",
+        "arguments": {
+            "value": "hello"
+        }
+    });
+    let result = parse_call_tool_request(payload, &config);
+    assert!(matches!(
+        result,
+        Err(SchemaError::UnsupportedSchemaVersion(_))
+    ));
+}
+
+#[test]
 fn parse_call_tool_request_rejects_invalid_payload() {
     let payload = json!({
         "arguments": {
@@ -257,6 +275,24 @@ fn parse_call_tool_result_uses_rmcp_type() {
     });
     let result = parse_call_tool_result(payload, &default_config()).expect("call result");
     assert_eq!(result.content.len(), 1);
+}
+
+#[test]
+fn parse_call_tool_result_rejects_unsupported_schema_version() {
+    let config = SchemaConfig {
+        version: SchemaVersion::Other("2025-12-01".to_string()),
+    };
+    let payload = json!({
+        "content": [
+            { "type": "text", "text": "ok" }
+        ],
+        "isError": false
+    });
+    let result = parse_call_tool_result(payload, &config);
+    assert!(matches!(
+        result,
+        Err(SchemaError::UnsupportedSchemaVersion(_))
+    ));
 }
 
 #[test]
@@ -307,4 +343,19 @@ fn validate_tool_schema_allows_output_schema() {
     });
     let result = parse_list_tools(payload, &default_config());
     assert!(result.is_ok());
+}
+
+#[test]
+fn parse_list_tools_rejects_invalid_output_schema() {
+    let payload = json!({
+        "tools": [
+            {
+                "name": "echo",
+                "inputSchema": { "type": "object" },
+                "outputSchema": { "type": "string" }
+            }
+        ]
+    });
+    let result = parse_list_tools(payload, &default_config());
+    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
 }

@@ -1,3 +1,8 @@
+//! Error handling strategy for the rmcp-backed session driver.
+//!
+//! We preserve rmcp error types inside `SessionError` to keep transport and
+//! session layers aligned and to retain full error context for debugging.
+
 use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
@@ -5,6 +10,7 @@ use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceEr
 ///
 /// The rmcp error variants are boxed to keep the enum size small; match on
 /// `SessionError` and then inspect the boxed error as needed.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum SessionError {
     /// Initialization failed while establishing the session.
@@ -61,7 +67,7 @@ impl SessionDriver {
     #[cfg(test)]
     pub async fn connect_stdio(_config: &StdioConfig) -> Result<Self, SessionError> {
         Err(SessionError::Transport(Box::new(std::io::Error::other(
-            "stdio transport disabled in tests",
+            "stdio transport disabled in tests; use connect_with_transport",
         ))))
     }
 
@@ -79,7 +85,7 @@ impl SessionDriver {
     #[cfg(test)]
     pub async fn connect_http(_config: &HttpConfig) -> Result<Self, SessionError> {
         Err(SessionError::Transport(Box::new(std::io::Error::other(
-            "http transport disabled in tests",
+            "http transport disabled in tests; use connect_with_transport",
         ))))
     }
 
@@ -119,6 +125,9 @@ impl SessionDriver {
 }
 
 #[cfg(not(test))]
+/// Builds an HTTP transport for MCP communication.
+///
+/// Errors are surfaced as `SessionError` to preserve rmcp error context.
 fn build_http_transport(
     config: &HttpConfig,
 ) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {

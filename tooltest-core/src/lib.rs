@@ -1,4 +1,5 @@
 //! Public API types for configuring and reporting tooltest runs.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+mod generator;
 pub mod schema;
 pub mod session;
 
@@ -17,6 +19,9 @@ pub use schema::{
     SchemaError,
 };
 pub use session::{SessionDriver, SessionError};
+
+#[cfg(test)]
+mod tests;
 
 /// Schema versions supported by the tooltest core.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -199,7 +204,7 @@ pub struct TraceEntry {
     pub response: CallToolResult,
 }
 
-/// A minimized failing sequence from proptest.
+/// A minimized failing sequence from property-based testing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MinimizedSequence {
     /// The minimized tool invocations that reproduce the failure.
@@ -232,75 +237,4 @@ pub struct RunResult {
     pub trace: Vec<TraceEntry>,
     /// Minimized sequence for failures, when available.
     pub minimized: Option<MinimizedSequence>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn schema_config_defaults_to_latest() {
-        let config = SchemaConfig::default();
-        assert_eq!(config.version, SchemaVersion::V2025_11_25);
-    }
-
-    #[test]
-    fn stdio_config_new_sets_defaults() {
-        let config = StdioConfig::new("mcp-server");
-        assert_eq!(config.command, "mcp-server");
-        assert!(config.args.is_empty());
-        assert!(config.env.is_empty());
-        assert!(config.cwd.is_none());
-    }
-
-    #[test]
-    fn run_config_builders_wire_fields() {
-        let schema = SchemaConfig {
-            version: SchemaVersion::Other("2025-12-01".to_string()),
-        };
-        let assertions = AssertionSet {
-            rules: vec![AssertionRule::Response(ResponseAssertion {
-                tool: Some("search".to_string()),
-                checks: vec![AssertionCheck {
-                    target: AssertionTarget::Input,
-                    pointer: "/query".to_string(),
-                    expected: json!("hello"),
-                }],
-            })],
-        };
-        let predicate: ToolPredicate = Arc::new(|name, input| {
-            name == "search" && input.pointer("/query") == Some(&json!("hello"))
-        });
-
-        let config = RunConfig::new()
-            .with_schema(schema.clone())
-            .with_predicate(predicate)
-            .with_assertions(assertions.clone());
-
-        assert_eq!(config.schema, schema);
-        assert!(config.predicate.is_some());
-        assert_eq!(config.assertions.rules.len(), 1);
-        let predicate = config.predicate.as_ref().expect("predicate set");
-        assert!(predicate("search", &json!({"query": "hello"})));
-        assert!(!predicate("search", &json!({"query": "nope"})));
-
-        let debug = format!("{config:?}");
-        assert!(debug.contains("predicate: true"));
-    }
-
-    #[test]
-    fn run_config_default_matches_new() {
-        let config = RunConfig::new();
-        let default_config = RunConfig::default();
-        assert_eq!(config.schema, default_config.schema);
-        assert_eq!(
-            config.predicate.is_some(),
-            default_config.predicate.is_some()
-        );
-        assert_eq!(
-            config.assertions.rules.len(),
-            default_config.assertions.rules.len()
-        );
-    }
 }

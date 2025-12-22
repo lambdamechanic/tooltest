@@ -1,0 +1,2 @@
+[env]
+LLVM_COV_FLAGS = "--ignore-filename-regex=/tests/"

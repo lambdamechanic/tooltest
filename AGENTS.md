@@ -31,6 +31,12 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Core Dependencies
+
+These dependencies are considered core and can be used freely:
+- proptest (do not expose proptest types in the public API)
+- rmcp
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

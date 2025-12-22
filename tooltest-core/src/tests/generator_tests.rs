@@ -1,14 +1,13 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::generator::{invocation_sequence_strategy, invocation_strategy, InvocationError};
+use crate::{JsonObject, ToolPredicate};
 use jsonschema::draft202012;
 use proptest::prelude::*;
 use rmcp::model::Tool;
 use serde_json::json;
 use serde_json::Value as JsonValue;
-use tooltest_core::{
-    invocation_sequence_strategy, invocation_strategy, InvocationError, ToolPredicate,
-};
 
 fn sample<T: fmt::Debug>(strategy: BoxedStrategy<T>) -> T {
     let mut runner = proptest::test_runner::TestRunner::default();
@@ -18,7 +17,7 @@ fn sample<T: fmt::Debug>(strategy: BoxedStrategy<T>) -> T {
         .current()
 }
 
-fn tool_with_schema(name: &str, schema: tooltest_core::JsonObject) -> Tool {
+fn tool_with_schema(name: &str, schema: JsonObject) -> Tool {
     Tool {
         name: name.to_string().into(),
         title: None,

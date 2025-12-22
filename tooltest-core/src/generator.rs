@@ -1,4 +1,5 @@
 //! Proptest-based tool invocation generation driven by MCP schemas.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::fmt;
 
@@ -10,7 +11,7 @@ use crate::{ToolInvocation, ToolPredicate};
 
 /// Errors emitted while generating tool invocations from schema data.
 #[derive(Debug)]
-pub enum InvocationError {
+pub(crate) enum InvocationError {
     /// No tools are eligible for invocation generation.
     NoEligibleTools,
     /// Schema data could not be interpreted for generation.
@@ -31,7 +32,7 @@ impl fmt::Display for InvocationError {
 impl std::error::Error for InvocationError {}
 
 /// Builds a proptest strategy that yields tool invocations from MCP tool schemas.
-pub fn invocation_strategy(
+pub(crate) fn invocation_strategy(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
 ) -> Result<BoxedStrategy<ToolInvocation>, InvocationError> {
@@ -73,7 +74,7 @@ pub fn invocation_strategy(
 }
 
 /// Builds a strategy that yields sequences of tool invocations.
-pub fn invocation_sequence_strategy(
+pub(crate) fn invocation_sequence_strategy(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
     len_range: std::ops::RangeInclusive<usize>,

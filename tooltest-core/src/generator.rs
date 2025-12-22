@@ -188,9 +188,34 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
             })
         }
         None => {
+            if let Some(JsonValue::Array(required)) = schema.get("required") {
+                if !required.is_empty() {
+                    return Err(InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: "inputSchema required must be empty when no properties exist"
+                            .to_string(),
+                    });
+                }
+            }
             return Ok(Just(JsonObject::new()).boxed());
         }
     };
+
+    if let Some(JsonValue::Array(required)) = schema.get("required") {
+        let required_keys = required
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        if !required_keys
+            .iter()
+            .all(|key| properties.contains_key(*key))
+        {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "inputSchema required must reference known properties".to_string(),
+            });
+        }
+    }
 
     let mut property_strategies = Vec::with_capacity(properties.len());
     for (name, schema_value) in properties {
@@ -234,17 +259,7 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
 fn invalid_input_object_strategy(
     tool: &Tool,
 ) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
-    let schema = tool.input_schema.clone();
-    let valid_inputs = input_object_strategy(tool)?
-        .prop_filter_map("input must satisfy schema constraints", move |args| {
-            let value = JsonValue::Object(args.clone());
-            if schema_violations(schema.as_ref(), &value).is_empty() {
-                Some(args)
-            } else {
-                None
-            }
-        })
-        .boxed();
+    let valid_inputs = input_object_strategy(tool)?;
 
     let schema = tool.input_schema.clone();
     Ok(valid_inputs
@@ -300,13 +315,98 @@ fn schema_value_strategy(
         })?;
 
     match schema_type {
-        "string" => Ok(proptest::collection::vec(proptest::char::any(), 0..=16)
-            .prop_map(|chars| JsonValue::String(chars.into_iter().collect()))
-            .boxed()),
-        "number" => Ok(proptest::num::f64::NORMAL.prop_map(JsonValue::from).boxed()),
-        "integer" => Ok(any::<i64>().prop_map(JsonValue::from).boxed()),
+        "string" => {
+            let min_length = schema
+                .get("minLength")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0) as usize;
+            let max_length = schema
+                .get("maxLength")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(16) as usize;
+            if max_length < min_length {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "maxLength must be >= minLength".to_string(),
+                });
+            }
+
+            if let Some(pattern) = schema.get("pattern").and_then(JsonValue::as_str) {
+                let pattern = pattern.to_string();
+                let strategy = proptest::string::string_regex(&pattern).map_err(|err| {
+                    InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("pattern must be a valid regex: {err}"),
+                    }
+                })?;
+                Ok(strategy
+                    .prop_filter("string length out of bounds", move |value| {
+                        let len = value.chars().count();
+                        len >= min_length && len <= max_length
+                    })
+                    .prop_map(JsonValue::String)
+                    .boxed())
+            } else {
+                Ok(
+                    proptest::collection::vec(proptest::char::any(), min_length..=max_length)
+                        .prop_map(|chars| JsonValue::String(chars.into_iter().collect()))
+                        .boxed(),
+                )
+            }
+        }
+        "number" => {
+            let minimum = schema.get("minimum").and_then(JsonValue::as_f64);
+            let maximum = schema.get("maximum").and_then(JsonValue::as_f64);
+            if let (Some(minimum), Some(maximum)) = (minimum, maximum) {
+                if maximum < minimum {
+                    return Err(InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: "maximum must be >= minimum".to_string(),
+                    });
+                }
+            }
+            let strategy = if minimum.is_some() || maximum.is_some() {
+                let min = minimum.unwrap_or(f64::NEG_INFINITY);
+                let max = maximum.unwrap_or(f64::INFINITY);
+                proptest::num::f64::NORMAL
+                    .prop_map(move |value| JsonValue::from(value.clamp(min, max)))
+                    .boxed()
+            } else {
+                proptest::num::f64::NORMAL.prop_map(JsonValue::from).boxed()
+            };
+            Ok(strategy)
+        }
+        "integer" => {
+            let minimum = schema.get("minimum").and_then(JsonValue::as_f64);
+            let maximum = schema.get("maximum").and_then(JsonValue::as_f64);
+            let min_bound = minimum.map(|value| value.ceil() as i64).unwrap_or(i64::MIN);
+            let max_bound = maximum
+                .map(|value| value.floor() as i64)
+                .unwrap_or(i64::MAX);
+            if max_bound < min_bound {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "maximum must be >= minimum".to_string(),
+                });
+            }
+            Ok((min_bound..=max_bound).prop_map(JsonValue::from).boxed())
+        }
         "boolean" => Ok(any::<bool>().prop_map(JsonValue::from).boxed()),
         "array" => {
+            let min_items = schema
+                .get("minItems")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0) as usize;
+            let max_items = schema
+                .get("maxItems")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(4) as usize;
+            if max_items < min_items {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "maxItems must be >= minItems".to_string(),
+                });
+            }
             let item_schema = schema
                 .get("items")
                 .and_then(JsonValue::as_object)
@@ -315,13 +415,30 @@ fn schema_value_strategy(
                     reason: "array schema must include object-valued items".to_string(),
                 })?;
             let item_strategy = schema_value_strategy(item_schema, tool)?;
-            Ok(proptest::collection::vec(item_strategy, 0..=4)
-                .prop_map(JsonValue::from)
-                .boxed())
+            Ok(
+                proptest::collection::vec(item_strategy, min_items..=max_items)
+                    .prop_map(JsonValue::from)
+                    .boxed(),
+            )
         }
         "object" => {
             let properties = schema.get("properties").and_then(JsonValue::as_object);
             if let Some(properties) = properties {
+                if let Some(JsonValue::Array(required)) = schema.get("required") {
+                    let required_keys = required
+                        .iter()
+                        .filter_map(JsonValue::as_str)
+                        .collect::<Vec<_>>();
+                    if !required_keys
+                        .iter()
+                        .all(|key| properties.contains_key(*key))
+                    {
+                        return Err(InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: "required must reference known properties".to_string(),
+                        });
+                    }
+                }
                 let mut property_strategies = Vec::with_capacity(properties.len());
                 for (name, schema_value) in properties {
                     let schema_object = schema_value.as_object().ok_or_else(|| {
@@ -360,6 +477,14 @@ fn schema_value_strategy(
                     })
                     .boxed())
             } else {
+                if let Some(JsonValue::Array(required)) = schema.get("required") {
+                    if !required.is_empty() {
+                        return Err(InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: "required must be empty when no properties exist".to_string(),
+                        });
+                    }
+                }
                 Ok(Just(JsonValue::Object(JsonObject::new())).boxed())
             }
         }

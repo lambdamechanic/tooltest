@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -69,8 +70,12 @@ fn scalar_json_value() -> impl Strategy<Value = JsonValue> {
 fn schema_leaf() -> impl Strategy<Value = JsonValue> {
     prop_oneof![
         Just(json!({ "type": "string" })),
+        Just(json!({ "type": "string", "minLength": 1, "maxLength": 4 })),
+        Just(json!({ "type": "string", "minLength": 1, "maxLength": 4, "pattern": "a+" })),
         Just(json!({ "type": "number" })),
+        Just(json!({ "type": "number", "minimum": 0.0, "maximum": 10.0 })),
         Just(json!({ "type": "integer" })),
+        Just(json!({ "type": "integer", "minimum": -3.0, "maximum": 3.0 })),
         Just(json!({ "type": "boolean" })),
         scalar_json_value().prop_map(|value| json!({ "const": value })),
         proptest::collection::vec(scalar_json_value(), 1..=4)
@@ -78,19 +83,65 @@ fn schema_leaf() -> impl Strategy<Value = JsonValue> {
     ]
 }
 
+fn schema_object_with_required(
+    properties: BTreeMap<String, JsonValue>,
+) -> BoxedStrategy<JsonValue> {
+    let keys: Vec<String> = properties.keys().cloned().collect();
+    let required_strategy: BoxedStrategy<Vec<String>> = if keys.is_empty() {
+        Just(Vec::new()).boxed()
+    } else {
+        proptest::collection::vec(proptest::sample::select(keys.clone()), 0..=keys.len())
+            .prop_map(|mut required| {
+                required.sort();
+                required.dedup();
+                required
+            })
+            .boxed()
+    };
+
+    required_strategy
+        .prop_map(move |required| {
+            let mut schema = json!({ "type": "object", "properties": properties.clone() });
+            if !required.is_empty() {
+                schema
+                    .as_object_mut()
+                    .expect("schema object")
+                    .insert("required".to_string(), json!(required));
+            }
+            schema
+        })
+        .boxed()
+}
+
 fn schema_value_strategy() -> impl Strategy<Value = JsonValue> {
     schema_leaf().prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
             proptest::collection::btree_map(schema_key(), inner.clone(), 0..=4)
-                .prop_map(|properties| json!({ "type": "object", "properties": properties })),
-            inner.prop_map(|items| json!({ "type": "array", "items": items })),
+                .prop_flat_map(schema_object_with_required),
+            inner.prop_flat_map(|items| {
+                prop_oneof![
+                    Just(json!({ "type": "array", "items": items.clone() })),
+                    Just(json!({
+                        "type": "array",
+                        "items": items.clone(),
+                        "minItems": 1,
+                        "maxItems": 3
+                    })),
+                    Just(json!({
+                        "type": "array",
+                        "items": items,
+                        "minItems": 0,
+                        "maxItems": 0
+                    })),
+                ]
+            }),
         ]
     })
 }
 
 fn schema_strategy() -> impl Strategy<Value = JsonValue> {
     proptest::collection::btree_map(schema_key(), schema_value_strategy(), 0..=4)
-        .prop_map(|properties| json!({ "type": "object", "properties": properties }))
+        .prop_flat_map(schema_object_with_required)
 }
 
 #[test]
@@ -103,27 +154,32 @@ fn invocation_strategy_errors_on_empty_tools() {
 fn invocation_strategy_builds_arguments_from_schema() {
     let schema = json!({
         "type": "object",
-        "required": ["required"],
         "properties": {
-            "query": { "const": "hello" }
+            "query": { "const": "hello" },
+            "required": { "const": "present" }
         }
     })
     .as_object()
     .cloned()
     .expect("schema object");
+    let schema = {
+        let mut schema = schema;
+        schema.insert("required".to_string(), json!(["required"]));
+        schema
+    };
     let tool = tool_with_schema("search", schema);
     let strategy = invocation_strategy(&[tool], None).expect("strategy");
     let invocation = sample(strategy);
     assert_eq!(invocation.name.as_ref(), "search");
     let args = invocation.arguments.expect("arguments");
     assert_eq!(args.get("query"), Some(&json!("hello")));
+    assert_eq!(args.get("required"), Some(&json!("present")));
 }
 
 #[test]
 fn invocation_strategy_applies_predicate() {
     let schema = json!({
         "type": "object",
-        "required": ["required"],
         "properties": {
             "flag": { "const": true }
         }
@@ -131,6 +187,11 @@ fn invocation_strategy_applies_predicate() {
     .as_object()
     .cloned()
     .expect("schema object");
+    let schema = {
+        let mut schema = schema;
+        schema.insert("required".to_string(), json!(["flag"]));
+        schema
+    };
     let tool = tool_with_schema("toggle", schema);
     let predicate: ToolPredicate =
         Arc::new(|name, input| name == "toggle" && input.get("flag") == Some(&json!(true)));
@@ -142,7 +203,7 @@ fn invocation_strategy_applies_predicate() {
 }
 
 #[test]
-fn invocation_strategy_ignores_min_length() {
+fn invocation_strategy_respects_min_length() {
     let tool = tool_with_schema_value(
         "short",
         json!({
@@ -154,19 +215,19 @@ fn invocation_strategy_ignores_min_length() {
     );
     let strategy = invocation_strategy(&[tool], None).expect("strategy");
     let samples = sample_many(strategy, 64);
-    let saw_short = samples.iter().any(|invocation| {
+    let all_long_enough = samples.iter().all(|invocation| {
         invocation
             .arguments
             .as_ref()
             .and_then(|args| args.get("value"))
             .and_then(JsonValue::as_str)
-            .is_some_and(|value| value.chars().count() < 5)
+            .is_some_and(|value| value.chars().count() >= 5)
     });
-    assert!(saw_short, "expected a value shorter than minLength");
+    assert!(all_long_enough, "expected all values to satisfy minLength");
 }
 
 #[test]
-fn invocation_strategy_ignores_max_length() {
+fn invocation_strategy_respects_max_length() {
     let tool = tool_with_schema_value(
         "long",
         json!({
@@ -178,21 +239,67 @@ fn invocation_strategy_ignores_max_length() {
     );
     let strategy = invocation_strategy(&[tool], None).expect("strategy");
     let samples = sample_many(strategy, 64);
-    let saw_long = samples.iter().any(|invocation| {
+    let all_short_enough = samples.iter().all(|invocation| {
         invocation
             .arguments
             .as_ref()
             .and_then(|args| args.get("value"))
             .and_then(JsonValue::as_str)
-            .is_some_and(|value| value.chars().count() > 3)
+            .is_some_and(|value| value.chars().count() <= 3)
     });
-    assert!(saw_long, "expected a value longer than maxLength");
+    assert!(all_short_enough, "expected all values to satisfy maxLength");
 }
 
 #[test]
-fn invocation_strategy_ignores_pattern() {
+fn invocation_strategy_respects_pattern() {
     let tool = tool_with_schema_value(
         "pattern",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "a+" }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let regex = regex::Regex::new("a+").expect("regex");
+    let samples = sample_many(strategy, 64);
+    let all_match = samples.iter().all(|invocation| {
+        invocation
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("value"))
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| regex.is_match(value))
+    });
+    assert!(all_match, "expected all values to satisfy pattern");
+}
+
+#[test]
+fn invocation_strategy_errors_on_invalid_string_length_bounds() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "minLength": 3, "maxLength": 1 }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(reason, "maxLength must be >= minLength");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_unsupported_pattern() {
+    let tool = tool_with_schema_value(
+        "invalid",
         json!({
             "type": "object",
             "properties": {
@@ -200,17 +307,251 @@ fn invocation_strategy_ignores_pattern() {
             }
         }),
     );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert!(reason.starts_with("pattern must be a valid regex:"));
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_respects_number_bounds() {
+    let tool = tool_with_schema_value(
+        "bounded",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "number", "minimum": 2.0, "maximum": 3.0 }
+            }
+        }),
+    );
     let strategy = invocation_strategy(&[tool], None).expect("strategy");
     let samples = sample_many(strategy, 64);
-    let saw_mismatch = samples.iter().any(|invocation| {
+    let all_in_range = samples.iter().all(|invocation| {
         invocation
             .arguments
             .as_ref()
             .and_then(|args| args.get("value"))
-            .and_then(JsonValue::as_str)
-            .is_some_and(|value| value.is_empty() || value.chars().any(|ch| ch != 'a'))
+            .and_then(JsonValue::as_f64)
+            .is_some_and(|value| value >= 2.0 && value <= 3.0)
     });
-    assert!(saw_mismatch, "expected a value that violates pattern");
+    assert!(all_in_range, "expected all values to satisfy number bounds");
+}
+
+#[test]
+fn invocation_strategy_errors_on_invalid_number_bounds() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "number", "minimum": 5.0, "maximum": 1.0 }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(reason, "maximum must be >= minimum");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_invalid_integer_bounds() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "integer", "minimum": 5.0, "maximum": 1.0 }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(reason, "maximum must be >= minimum");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_respects_array_bounds() {
+    let tool = tool_with_schema_value(
+        "bounded",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 2,
+                    "items": { "type": "boolean" }
+                }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let samples = sample_many(strategy, 64);
+    let all_in_range = samples.iter().all(|invocation| {
+        invocation
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("value"))
+            .and_then(JsonValue::as_array)
+            .is_some_and(|items| items.len() >= 1 && items.len() <= 2)
+    });
+    assert!(all_in_range, "expected all values to satisfy array bounds");
+}
+
+#[test]
+fn invocation_strategy_errors_on_invalid_array_bounds() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 1,
+                    "items": { "type": "boolean" }
+                }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(reason, "maxItems must be >= minItems");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_required_unknown_property() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "required": ["missing"],
+            "properties": {
+                "present": { "type": "string" }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(
+                reason,
+                "inputSchema required must reference known properties"
+            );
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_required_without_properties() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "required": ["missing"]
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(
+                reason,
+                "inputSchema required must be empty when no properties exist"
+            );
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_nested_required_unknown_property() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "required": ["missing"],
+                    "properties": { "present": { "type": "string" } }
+                }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(reason, "required must reference known properties");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_nested_required_without_properties() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "required": ["missing"]
+                }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert_eq!(reason, "required must be empty when no properties exist");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_allows_nested_empty_required_without_properties() {
+    let tool = tool_with_schema_value(
+        "valid",
+        json!({
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "required": []
+                }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.expect("arguments");
+    assert!(matches!(args.get("nested"), Some(JsonValue::Object(_))));
 }
 
 #[test]
@@ -523,6 +864,15 @@ fn invocation_strategy_supports_scalar_types_and_structures() {
 #[test]
 fn invocation_strategy_defaults_to_empty_object_when_no_properties() {
     let tool = tool_with_schema_value("empty", json!({ "type": "object" }));
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.expect("arguments");
+    assert!(args.is_empty());
+}
+
+#[test]
+fn invocation_strategy_allows_empty_required_without_properties() {
+    let tool = tool_with_schema_value("empty", json!({ "type": "object", "required": [] }));
     let strategy = invocation_strategy(&[tool], None).expect("strategy");
     let invocation = sample(strategy);
     let args = invocation.arguments.expect("arguments");

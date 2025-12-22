@@ -203,7 +203,7 @@ pub struct TraceEntry {
     pub response: CallToolResult,
 }
 
-/// A minimized failing sequence from proptest.
+/// A minimized failing sequence from property-based testing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MinimizedSequence {
     /// The minimized tool invocations that reproduce the failure.

@@ -419,6 +419,12 @@ fn invocation_error_formats_messages() {
 }
 
 #[test]
+fn invocation_error_exposes_no_source() {
+    let error = InvocationError::NoEligibleTools;
+    assert!(std::error::Error::source(&error).is_none());
+}
+
+#[test]
 fn invocation_strategy_errors_on_property_missing_type() {
     let tool = tool_with_schema_value(
         "bad",
@@ -570,6 +576,32 @@ fn invocation_strategy_errors_on_nested_property_schema_not_object() {
 }
 
 #[test]
+fn invocation_strategy_errors_on_nested_property_missing_type() {
+    let tool = tool_with_schema_value(
+        "bad",
+        json!({
+            "type": "object",
+            "properties": {
+                "nested": {
+                    "type": "object",
+                    "properties": {
+                        "value": {}
+                    }
+                }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "bad");
+            assert_eq!(reason, "schema type must be a string");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
 fn invocation_strategy_errors_on_unsupported_schema_type() {
     let tool = tool_with_schema_value(
         "bad",
@@ -683,6 +715,116 @@ fn schema_violations_detect_constraints() {
 }
 
 #[test]
+fn schema_violations_accepts_matching_string_constraints() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "text": { "type": "string", "minLength": 1, "maxLength": 3, "pattern": "^a+$" }
+        }
+    });
+    let value = json!({ "text": "aa" });
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(_))));
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::MaxLength(_))));
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Pattern(_))));
+}
+
+#[test]
+fn schema_violations_accepts_number_bounds() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "number": { "type": "number", "minimum": 1.0, "maximum": 10.0 }
+        }
+    });
+    let value = json!({ "number": 5.0 });
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Minimum(_))));
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Maximum(_))));
+}
+
+#[test]
+fn schema_violations_accepts_array_bounds() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "list": { "type": "array", "minItems": 1, "maxItems": 3 }
+        }
+    });
+    let value = json!({ "list": [1, 2] });
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::MinItems(_))));
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::MaxItems(_))));
+}
+
+#[test]
+fn schema_violations_accepts_required_present() {
+    let schema = json!({
+        "type": "object",
+        "required": ["required"],
+        "properties": {
+            "required": { "type": "string" }
+        }
+    });
+    let value = json!({ "required": "ok" });
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Required(_))));
+}
+
+#[test]
+fn schema_violations_accepts_const_and_enum() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "const": { "const": "fixed" },
+            "enum": { "enum": ["a", "b"] }
+        }
+    });
+    let value = json!({
+        "const": "fixed",
+        "enum": "a"
+    });
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Const(_))));
+    assert!(!violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Enum(_))));
+}
+
+#[test]
+fn schema_violations_skips_non_object_property_schema() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "bad": 3
+        }
+    });
+    let value = json!({ "bad": "x" });
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations
+        .iter()
+        .any(|violation| { violation.path == nonempty![PathSegment::Key("bad".to_string())] }));
+}
+
+#[test]
 fn schema_violations_covers_type_matching() {
     let cases = vec![
         ("string", json!("text")),
@@ -780,6 +922,70 @@ fn applicable_constraints_collects_scalar_constraints() {
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::MaxItems(_))));
+}
+
+#[test]
+fn applicable_constraints_skips_empty_pattern() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "text": { "type": "string", "pattern": "" }
+        }
+    });
+    let value = json!({ "text": "ok" });
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(!constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Pattern(_))));
+}
+
+#[test]
+fn applicable_constraints_skips_number_bounds_when_absent() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "number": { "type": "number" }
+        }
+    });
+    let value = json!({ "number": 4.0 });
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(!constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Minimum(_))));
+    assert!(!constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Maximum(_))));
+}
+
+#[test]
+fn applicable_constraints_skips_missing_required_key() {
+    let schema = json!({
+        "type": "object",
+        "required": ["required"],
+        "properties": {
+            "required": { "type": "string" }
+        }
+    });
+    let value = json!({});
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(!constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Required(_))));
+}
+
+#[test]
+fn applicable_constraints_skips_non_object_property_schema() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "bad": 3
+        }
+    });
+    let value = json!({ "bad": "x" });
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(!constraints
+        .iter()
+        .any(|constraint| { constraint.path == nonempty![PathSegment::Key("bad".to_string())] }));
 }
 
 #[test]
@@ -991,6 +1197,20 @@ fn mutate_to_violate_constraint_handles_all_kinds() {
 }
 
 #[test]
+fn mutate_to_violate_constraint_max_items_on_empty_array_uses_fallback_value() {
+    let value = json!([]);
+    let constraint = Constraint {
+        path: nonempty![PathSegment::Root],
+        kind: ConstraintKind::MaxItems(0),
+    };
+
+    let mutated = mutate_to_violate_constraint(&value, &constraint).expect("mutated value");
+    let mutated_array = mutated.as_array().expect("array");
+    assert_eq!(mutated_array.len(), 1);
+    assert_eq!(mutated_array[0], json!("extra"));
+}
+
+#[test]
 fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
     let value = json!({
         "text": "ok",
@@ -1027,11 +1247,50 @@ fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
     };
     assert!(mutate_to_violate_constraint(&value, &missing_key).is_none());
 
+    let missing_enum = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Enum(vec![json!("value")]),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_enum).is_none());
+
+    let missing_type = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Type("string".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_type).is_none());
+
     let missing_index = Constraint {
         path: nonempty![PathSegment::Key("array".to_string()), PathSegment::Index(5)],
         kind: ConstraintKind::MinLength(1),
     };
     assert!(mutate_to_violate_constraint(&value, &missing_index).is_none());
+
+    let missing_max_length = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MaxLength(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_max_length).is_none());
+
+    let missing_minimum = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Minimum(1.0),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_minimum).is_none());
+
+    let missing_maximum = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Maximum(1.0),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_maximum).is_none());
+
+    let invalid_key_path = Constraint {
+        path: nonempty![
+            PathSegment::Key("array".to_string()),
+            PathSegment::Key("nested".to_string())
+        ],
+        kind: ConstraintKind::MinLength(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &invalid_key_path).is_none());
 
     let invalid_path = Constraint {
         path: nonempty![PathSegment::Index(0)],

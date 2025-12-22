@@ -8,7 +8,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-#[cfg_attr(coverage, coverage(off))]
 mod generator;
 pub mod schema;
 pub mod session;

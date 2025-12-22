@@ -7,12 +7,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-#[cfg(feature = "generator")]
 pub mod generator;
 pub mod schema;
 pub mod session;
 
-#[cfg(feature = "generator")]
 pub use generator::{invocation_sequence_strategy, invocation_strategy, InvocationError};
 pub use rmcp::model::{CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject};
 pub use rmcp::service::{ClientInitializeError, ServiceError};

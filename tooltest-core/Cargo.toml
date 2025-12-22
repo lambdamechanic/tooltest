@@ -13,6 +13,7 @@ proptest = "1"
 tokio = { version = "1", features = ["macros", "process", "rt"] }
 
 [dev-dependencies]
+jsonschema = "0.26"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

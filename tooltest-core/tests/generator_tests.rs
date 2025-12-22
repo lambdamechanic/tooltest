@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use jsonschema::draft202012;
 use proptest::prelude::*;
 use rmcp::model::Tool;
 use serde_json::json;
@@ -32,6 +33,47 @@ fn tool_with_schema(name: &str, schema: tooltest_core::JsonObject) -> Tool {
 
 fn tool_with_schema_value(name: &str, schema: serde_json::Value) -> Tool {
     tool_with_schema(name, schema.as_object().cloned().expect("schema object"))
+}
+
+fn schema_key() -> impl Strategy<Value = String> {
+    proptest::collection::vec(proptest::char::range('a', 'z'), 1..=8)
+        .prop_map(|chars| chars.into_iter().collect())
+}
+
+fn scalar_json_value() -> impl Strategy<Value = JsonValue> {
+    prop_oneof![
+        any::<bool>().prop_map(JsonValue::Bool),
+        any::<i64>().prop_map(JsonValue::from),
+        proptest::collection::vec(proptest::char::range('a', 'z'), 1..=8)
+            .prop_map(|chars| JsonValue::String(chars.into_iter().collect())),
+    ]
+}
+
+fn schema_leaf() -> impl Strategy<Value = JsonValue> {
+    prop_oneof![
+        Just(json!({ "type": "string" })),
+        Just(json!({ "type": "number" })),
+        Just(json!({ "type": "integer" })),
+        Just(json!({ "type": "boolean" })),
+        scalar_json_value().prop_map(|value| json!({ "const": value })),
+        proptest::collection::vec(scalar_json_value(), 1..=4)
+            .prop_map(|values| json!({ "enum": values })),
+    ]
+}
+
+fn schema_value_strategy() -> impl Strategy<Value = JsonValue> {
+    schema_leaf().prop_recursive(3, 16, 4, |inner| {
+        prop_oneof![
+            proptest::collection::btree_map(schema_key(), inner.clone(), 0..=4)
+                .prop_map(|properties| json!({ "type": "object", "properties": properties })),
+            inner.prop_map(|items| json!({ "type": "array", "items": items })),
+        ]
+    })
+}
+
+fn schema_strategy() -> impl Strategy<Value = JsonValue> {
+    proptest::collection::btree_map(schema_key(), schema_value_strategy(), 0..=4)
+        .prop_map(|properties| json!({ "type": "object", "properties": properties }))
 }
 
 #[test]
@@ -90,6 +132,33 @@ fn invocation_strategy_rejects_non_object_schema() {
             assert_eq!(reason, "inputSchema type must be object, got string");
         }
         _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+proptest! {
+    #[test]
+    fn invocation_strategy_generates_values_matching_schema(schema in schema_strategy()) {
+        let schema_object = schema.as_object().cloned().expect("schema object");
+        let tool = tool_with_schema("generated", schema_object);
+        let strategy = invocation_strategy(&[tool], None).expect("strategy");
+        let validator = draft202012::new(&schema).expect("schema compile");
+
+        let properties = schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut runner = proptest::test_runner::TestRunner::default();
+        for _ in 0..8 {
+            let invocation = strategy.new_tree(&mut runner).expect("value tree").current();
+            let args = invocation.arguments.expect("arguments");
+            for key in properties.keys() {
+                prop_assert!(args.contains_key(key));
+            }
+            let instance = JsonValue::Object(args);
+            prop_assert!(validator.validate(&instance).is_ok());
+        }
     }
 }
 

@@ -455,8 +455,6 @@ fn invocation_strategy_rejects_inputs_when_predicate_fails() {
         }),
     );
     let predicate: ToolPredicate = Arc::new(|_, _| false);
-    let strategy = invocation_strategy(&[tool], Some(&predicate)).expect("strategy");
-    let mut runner = proptest::test_runner::TestRunner::default();
-    let result = strategy.new_tree(&mut runner);
-    assert!(result.is_err());
+    let error = invocation_strategy(&[tool], Some(&predicate)).expect_err("error");
+    assert!(matches!(error, InvocationError::NoEligibleTools));
 }

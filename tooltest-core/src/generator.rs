@@ -64,7 +64,12 @@ pub fn invocation_strategy(
         return Err(InvocationError::NoEligibleTools);
     }
 
-    Ok(proptest::strategy::Union::new(strategies).boxed())
+    let union = proptest::strategy::Union::new(strategies).boxed();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    if union.new_tree(&mut runner).is_err() {
+        return Err(InvocationError::NoEligibleTools);
+    }
+    Ok(union)
 }
 
 /// Builds a strategy that yields sequences of tool invocations.

@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use jsonschema::draft202012;
+use jsonschema::error::{TypeKind, ValidationError, ValidationErrorKind};
 use nonempty::NonEmpty;
 use proptest::prelude::*;
 use regex::Regex;
@@ -262,16 +264,25 @@ fn invalid_input_object_strategy(
     let valid_inputs = input_object_strategy(tool)?;
 
     let schema = tool.input_schema.clone();
+    let schema_for_filter = schema.clone();
     Ok(valid_inputs
-        .prop_flat_map(move |args| {
-            let value = JsonValue::Object(args.clone());
-            let constraints = applicable_constraints(schema.as_ref(), &value);
-            debug_assert!(!constraints.is_empty());
+        .prop_filter_map("must have a viable invalid mutation", move |args| {
+            let value = JsonValue::Object(args);
+            let constraints = applicable_constraints(schema_for_filter.as_ref(), &value);
+            let viable = constraints
+                .into_iter()
+                .filter_map(|constraint| {
+                    mutate_to_violate_constraint(&value, &constraint)
+                        .map(|mutated| (constraint, mutated))
+                })
+                .collect::<Vec<_>>();
+            (!viable.is_empty()).then_some(viable)
+        })
+        .prop_flat_map(move |viable| {
             let schema = schema.clone();
-            proptest::sample::select(constraints).prop_filter_map(
+            proptest::sample::select(viable).prop_filter_map(
                 "must violate exactly one schema constraint",
-                move |constraint| {
-                    let mutated = mutate_to_violate_constraint(&value, &constraint)?;
+                move |(constraint, mutated)| {
                     let violations = schema_violations(schema.as_ref(), &mutated);
                     let is_valid = violations.len() == 1 && violations[0] == constraint;
                     is_valid
@@ -630,140 +641,107 @@ fn collect_constraints(
 }
 
 pub(crate) fn schema_violations(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
-    let mut violations = Vec::new();
-    let mut path = Vec::new();
-    collect_violations(schema, value, &mut path, &mut violations);
+    let schema_value = JsonValue::Object(schema.clone());
+    let mut violations = match draft202012::new(&schema_value) {
+        Ok(validator) => validator
+            .iter_errors(value)
+            .filter_map(|error| constraint_from_error(&error))
+            .collect(),
+        Err(error) => constraint_from_error(&error).into_iter().collect(),
+    };
+
+    collect_invalid_pattern_violations(schema, value, &mut Vec::new(), &mut violations);
     violations
 }
 
-fn collect_violations(
+fn constraint_from_error(error: &ValidationError<'_>) -> Option<Constraint> {
+    let kind = match &error.kind {
+        ValidationErrorKind::Constant { expected_value } => {
+            ConstraintKind::Const(expected_value.clone())
+        }
+        ValidationErrorKind::Enum { options } => {
+            ConstraintKind::Enum(options.as_array().cloned().unwrap_or_default())
+        }
+        ValidationErrorKind::Type { kind } => ConstraintKind::Type(type_kind_label(kind)),
+        ValidationErrorKind::MinLength { limit } => ConstraintKind::MinLength(*limit as usize),
+        ValidationErrorKind::MaxLength { limit } => ConstraintKind::MaxLength(*limit as usize),
+        ValidationErrorKind::Pattern { pattern } => ConstraintKind::Pattern(pattern.clone()),
+        ValidationErrorKind::Minimum { limit } => {
+            ConstraintKind::Minimum(limit.as_f64().unwrap_or(0.0))
+        }
+        ValidationErrorKind::Maximum { limit } => {
+            ConstraintKind::Maximum(limit.as_f64().unwrap_or(0.0))
+        }
+        ValidationErrorKind::MinItems { limit } => ConstraintKind::MinItems(*limit as usize),
+        ValidationErrorKind::MaxItems { limit } => ConstraintKind::MaxItems(*limit as usize),
+        ValidationErrorKind::Required { property } => {
+            ConstraintKind::Required(property.as_str().unwrap_or_default().to_string())
+        }
+        _ => return None,
+    };
+
+    let path = path_from_pointer(error.instance_path.as_str());
+    Some(Constraint {
+        path: nonempty_path(&path),
+        kind,
+    })
+}
+
+fn type_kind_label(kind: &TypeKind) -> String {
+    match kind {
+        TypeKind::Single(value) => value.to_string(),
+        TypeKind::Multiple(values) => (*values)
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join("|"),
+    }
+}
+
+fn collect_invalid_pattern_violations(
     schema: &JsonObject,
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
 ) {
-    if let Some(const_value) = schema.get("const") {
-        if value != const_value {
-            violations.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::Const(const_value.clone()),
-            });
+    if let JsonValue::String(_) = value {
+        if let Some(JsonValue::String(schema_type)) = schema.get("type") {
+            if schema_type != "string" {
+                return;
+            }
         }
-    }
-
-    if let Some(JsonValue::Array(values)) = schema.get("enum") {
-        if !values.contains(value) {
-            violations.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::Enum(values.clone()),
-            });
-        }
-    }
-
-    if let Some(JsonValue::String(schema_type)) = schema.get("type") {
-        if !value_matches_type(value, schema_type) {
-            violations.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::Type(schema_type.clone()),
-            });
-            return;
+        if let Some(JsonValue::String(pattern)) = schema.get("pattern") {
+            if Regex::new(pattern).is_err() {
+                violations.push(Constraint {
+                    path: nonempty_path(path),
+                    kind: ConstraintKind::Pattern(pattern.clone()),
+                });
+            }
         }
     }
 
     match value {
-        JsonValue::String(value_str) => {
-            if let Some(min_length) = schema.get("minLength").and_then(JsonValue::as_u64) {
-                if value_str.chars().count() < min_length as usize {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::MinLength(min_length as usize),
-                    });
-                }
-            }
-            if let Some(max_length) = schema.get("maxLength").and_then(JsonValue::as_u64) {
-                if value_str.chars().count() > max_length as usize {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::MaxLength(max_length as usize),
-                    });
-                }
-            }
-            if let Some(JsonValue::String(pattern)) = schema.get("pattern") {
-                if let Ok(regex) = Regex::new(pattern) {
-                    if !regex.is_match(value_str) {
-                        violations.push(Constraint {
-                            path: nonempty_path(path),
-                            kind: ConstraintKind::Pattern(pattern.clone()),
-                        });
-                    }
-                } else {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::Pattern(pattern.clone()),
-                    });
-                }
-            }
-        }
-        JsonValue::Number(number) => {
-            if let Some(minimum) = schema.get("minimum").and_then(JsonValue::as_f64) {
-                if number.as_f64().is_some_and(|value| value < minimum) {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::Minimum(minimum),
-                    });
-                }
-            }
-            if let Some(maximum) = schema.get("maximum").and_then(JsonValue::as_f64) {
-                if number.as_f64().is_some_and(|value| value > maximum) {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::Maximum(maximum),
-                    });
-                }
-            }
-        }
         JsonValue::Array(items) => {
-            if let Some(min_items) = schema.get("minItems").and_then(JsonValue::as_u64) {
-                if items.len() < min_items as usize {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::MinItems(min_items as usize),
-                    });
-                }
-            }
-            if let Some(max_items) = schema.get("maxItems").and_then(JsonValue::as_u64) {
-                if items.len() > max_items as usize {
-                    violations.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::MaxItems(max_items as usize),
-                    });
-                }
-            }
             if let Some(JsonValue::Object(item_schema)) = schema.get("items") {
                 for (index, item) in items.iter().enumerate() {
                     path.push(PathSegment::Index(index));
-                    collect_violations(item_schema, item, path, violations);
+                    collect_invalid_pattern_violations(item_schema, item, path, violations);
                     path.pop();
                 }
             }
         }
         JsonValue::Object(map) => {
-            if let Some(JsonValue::Array(required)) = schema.get("required") {
-                for required_key in required.iter().filter_map(JsonValue::as_str) {
-                    if !map.contains_key(required_key) {
-                        violations.push(Constraint {
-                            path: nonempty_path(path),
-                            kind: ConstraintKind::Required(required_key.to_string()),
-                        });
-                    }
-                }
-            }
             if let Some(JsonValue::Object(properties)) = schema.get("properties") {
                 for (name, property_schema) in properties {
                     if let Some(property_value) = map.get(name) {
                         if let Some(property_schema) = property_schema.as_object() {
                             path.push(PathSegment::Key(name.clone()));
-                            collect_violations(property_schema, property_value, path, violations);
+                            collect_invalid_pattern_violations(
+                                property_schema,
+                                property_value,
+                                path,
+                                violations,
+                            );
                             path.pop();
                         }
                     }
@@ -774,6 +752,43 @@ fn collect_violations(
     }
 }
 
+pub(crate) fn path_from_pointer(pointer: &str) -> Vec<PathSegment> {
+    if pointer.is_empty() {
+        return Vec::new();
+    }
+
+    pointer
+        .split('/')
+        .skip(1)
+        .map(decode_pointer_segment)
+        .map(|segment| match segment.parse::<usize>() {
+            Ok(index) => PathSegment::Index(index),
+            Err(_) => PathSegment::Key(segment),
+        })
+        .collect()
+}
+
+pub(crate) fn decode_pointer_segment(segment: &str) -> String {
+    let mut decoded = String::with_capacity(segment.len());
+    let mut chars = segment.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '~' {
+            match chars.next() {
+                Some('0') => decoded.push('~'),
+                Some('1') => decoded.push('/'),
+                Some(other) => {
+                    decoded.push('~');
+                    decoded.push(other);
+                }
+                None => decoded.push('~'),
+            }
+        } else {
+            decoded.push(ch);
+        }
+    }
+    decoded
+}
+
 pub(crate) fn mutate_to_violate_constraint(
     value: &JsonValue,
     constraint: &Constraint,
@@ -781,7 +796,7 @@ pub(crate) fn mutate_to_violate_constraint(
     let mut mutated = value.clone();
     match &constraint.kind {
         ConstraintKind::Const(const_value) => {
-            let replacement = different_value(const_value)?;
+            let replacement = different_value(const_value);
             set_value_at_path(&mut mutated, &constraint.path, replacement)?;
         }
         ConstraintKind::Enum(values) => {
@@ -846,36 +861,24 @@ pub(crate) fn mutate_to_violate_constraint(
     Some(mutated)
 }
 
-fn value_matches_type(value: &JsonValue, schema_type: &str) -> bool {
-    match (schema_type, value) {
-        ("string", JsonValue::String(_)) => true,
-        ("number", JsonValue::Number(_)) => true,
-        ("integer", JsonValue::Number(number)) => number.is_i64() || number.is_u64(),
-        ("boolean", JsonValue::Bool(_)) => true,
-        ("array", JsonValue::Array(_)) => true,
-        ("object", JsonValue::Object(_)) => true,
-        _ => false,
-    }
-}
-
-fn different_value(value: &JsonValue) -> Option<JsonValue> {
+fn different_value(value: &JsonValue) -> JsonValue {
     match value {
-        JsonValue::String(text) => Some(JsonValue::String(format!("{text}x"))),
+        JsonValue::String(text) => JsonValue::String(format!("{text}x")),
         JsonValue::Number(number) => {
             let value = number.as_f64().unwrap_or(0.0);
-            Some(JsonValue::from(value + 1.0))
+            JsonValue::from(value + 1.0)
         }
-        JsonValue::Bool(flag) => Some(JsonValue::Bool(!flag)),
-        JsonValue::Null => Some(JsonValue::Bool(true)),
+        JsonValue::Bool(flag) => JsonValue::Bool(!flag),
+        JsonValue::Null => JsonValue::Bool(true),
         JsonValue::Array(items) => {
             let mut next = items.clone();
             next.push(JsonValue::Null);
-            Some(JsonValue::Array(next))
+            JsonValue::Array(next)
         }
         JsonValue::Object(map) => {
             let mut next = map.clone();
             next.insert("extra".to_string(), JsonValue::Bool(true));
-            Some(JsonValue::Object(next))
+            JsonValue::Object(next)
         }
     }
 }

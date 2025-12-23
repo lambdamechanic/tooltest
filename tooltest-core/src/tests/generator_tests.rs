@@ -3,9 +3,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::generator::{
-    applicable_constraints, invalid_invocation_strategy, invocation_sequence_strategy,
-    invocation_strategy, mutate_to_violate_constraint, schema_violations, Constraint,
-    ConstraintKind, InvocationError, PathSegment,
+    applicable_constraints, decode_pointer_segment, invalid_invocation_strategy,
+    invocation_sequence_strategy, invocation_strategy, mutate_to_violate_constraint,
+    path_from_pointer, schema_violations, Constraint, ConstraintKind, InvocationError, PathSegment,
 };
 use crate::{JsonObject, ToolPredicate};
 use jsonschema::draft202012;
@@ -1065,6 +1065,39 @@ fn schema_violations_detect_constraints() {
 }
 
 #[test]
+fn schema_violations_reports_enum_bounds_and_required() {
+    let schema = json!({
+        "type": "object",
+        "required": ["required"],
+        "properties": {
+            "required": { "type": "string" },
+            "enum": { "enum": ["one", "two"] },
+            "min": { "type": "number", "minimum": 2.0 },
+            "max": { "type": "number", "maximum": 2.0 }
+        }
+    });
+    let value = json!({
+        "enum": "three",
+        "min": 1.0,
+        "max": 3.0
+    });
+
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Enum(_))));
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Minimum(_))));
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Maximum(_))));
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Required(_))));
+}
+
+#[test]
 fn schema_violations_accepts_matching_string_constraints() {
     let schema = json!({
         "type": "object",
@@ -1402,6 +1435,32 @@ fn schema_violations_handles_invalid_pattern() {
 }
 
 #[test]
+fn decode_pointer_segment_handles_escapes() {
+    let input = std::hint::black_box("a~1b");
+    assert_eq!(decode_pointer_segment(input), "a/b");
+    let input = std::hint::black_box("a~0b");
+    assert_eq!(decode_pointer_segment(input), "a~b");
+    let input = std::hint::black_box("a~2b");
+    assert_eq!(decode_pointer_segment(input), "a~2b");
+    let input = std::hint::black_box("a~");
+    assert_eq!(decode_pointer_segment(input), "a~");
+}
+
+#[test]
+fn path_from_pointer_decodes_indices_and_keys() {
+    let path = path_from_pointer("/items/0/a~1b/a~0b");
+    assert_eq!(
+        path,
+        vec![
+            PathSegment::Key("items".to_string()),
+            PathSegment::Index(0),
+            PathSegment::Key("a/b".to_string()),
+            PathSegment::Key("a~b".to_string())
+        ]
+    );
+}
+
+#[test]
 fn schema_violations_skips_missing_property_values() {
     let schema = json!({
         "type": "object",
@@ -1579,6 +1638,18 @@ fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
     };
     assert!(mutate_to_violate_constraint(&value, &min_items).is_none());
 
+    let missing_min_items = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MinItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_min_items).is_none());
+
+    let non_array_min_items = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::MinItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &non_array_min_items).is_none());
+
     let pattern = Constraint {
         path: nonempty![PathSegment::Key("text".to_string())],
         kind: ConstraintKind::Pattern(".*".to_string()),
@@ -1632,6 +1703,30 @@ fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
         kind: ConstraintKind::Maximum(1.0),
     };
     assert!(mutate_to_violate_constraint(&value, &missing_maximum).is_none());
+
+    let missing_max_items = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MaxItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_max_items).is_none());
+
+    let non_array_max_items = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::MaxItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &non_array_max_items).is_none());
+
+    let missing_required = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Required("required".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_required).is_none());
+
+    let non_object_required = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::Required("required".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &non_object_required).is_none());
 
     let invalid_key_path = Constraint {
         path: nonempty![

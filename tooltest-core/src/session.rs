@@ -135,6 +135,7 @@ fn http_transport_config(
     transport_config
 }
 
+#[cfg(all(not(test), not(coverage)))]
 /// Builds an HTTP transport for MCP communication.
 ///
 /// Errors are surfaced as `SessionError` to preserve rmcp error context.

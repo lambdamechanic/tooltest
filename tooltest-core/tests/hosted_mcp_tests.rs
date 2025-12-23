@@ -5,6 +5,8 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::transport::StreamableHttpClientTransport;
 use tokio::time::{timeout, Duration};
 
+mod support;
+
 const HOSTED_MCP_URLS: [&str; 3] = [
     "https://pymcp.app.lambdamechanic.com/attack/mcp",
     "https://pymcp.app.lambdamechanic.com/kev/mcp",
@@ -32,6 +34,7 @@ fn build_transport(url: &str) -> StreamableHttpClientTransport<reqwest::Client> 
 
 #[tokio::test]
 async fn hosted_mcp_servers_list_tools() {
+    support::init_tracing();
     if !should_run_hosted_tests() {
         eprintln!("set SKIP_HOSTED_MCP_TESTS=1 to skip hosted MCP integration tests");
         return;

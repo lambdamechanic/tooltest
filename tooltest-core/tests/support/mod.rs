@@ -1,12 +1,27 @@
+#![allow(dead_code)]
+
 use std::sync::{Arc, Mutex};
 
 use rmcp::model::{
     CallToolResult, ClientJsonRpcMessage, ClientRequest, ErrorData, InitializeResult,
-    JsonRpcMessage, JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage,
-    ServerResult, Tool,
+    JsonRpcMessage, JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo,
+    ServerJsonRpcMessage, ServerResult, Tool,
 };
 use rmcp::transport::Transport;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
+
+static INIT_TRACING: std::sync::Once = std::sync::Once::new();
+
+pub fn init_tracing() {
+    INIT_TRACING.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
+}
 
 pub fn tool_with_schemas(
     name: &str,
@@ -23,9 +38,8 @@ pub fn tool_with_schemas(
                 .cloned()
                 .expect("input schema object"),
         ),
-        output_schema: output_schema.map(|schema| {
-            Arc::new(schema.as_object().cloned().expect("output schema object"))
-        }),
+        output_schema: output_schema
+            .map(|schema| Arc::new(schema.as_object().cloned().expect("output schema object"))),
         annotations: None,
         icons: None,
         meta: None,

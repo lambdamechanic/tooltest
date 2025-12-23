@@ -16,6 +16,7 @@ tokio = { version = "1", features = ["macros", "process", "rt", "time"] }
 nonempty = "0.10"
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }

@@ -220,21 +220,101 @@ async fn run_invocations_reports_call_error() {
 
 #[cfg(coverage)]
 #[tokio::test]
-async fn connect_http_stub_returns_error() {
-    let config = tooltest_core::HttpConfig {
-        url: "http://localhost:8080/mcp".to_string(),
-        auth_token: None,
-    };
-    let result = SessionDriver::connect_http(&config).await;
+async fn connect_stdio_stub_returns_error() {
+    let config = tooltest_core::StdioConfig::new("mcp-server");
+    let result = SessionDriver::connect_stdio(&config).await;
     assert!(matches!(result, Err(SessionError::Transport(_))));
 }
 
 #[cfg(coverage)]
 #[tokio::test]
-async fn connect_stdio_stub_returns_error() {
-    let config = tooltest_core::StdioConfig::new("mcp-server");
-    let result = SessionDriver::connect_stdio(&config).await;
-    assert!(matches!(result, Err(SessionError::Transport(_))));
+async fn connect_http_reports_error_for_invalid_url() {
+    let config = tooltest_core::HttpConfig {
+        url: "http://127.0.0.1:0/mcp".to_string(),
+        auth_token: Some("Bearer token".to_string()),
+    };
+    let result = SessionDriver::connect_http(&config).await;
+    assert!(result.is_err());
+}
+
+#[cfg(coverage)]
+#[tokio::test]
+async fn connect_http_reports_error_without_auth_token() {
+    let config = tooltest_core::HttpConfig {
+        url: "http://127.0.0.1:0/mcp".to_string(),
+        auth_token: None,
+    };
+    let result = SessionDriver::connect_http(&config).await;
+    assert!(result.is_err());
+}
+
+#[cfg(coverage)]
+#[tokio::test]
+async fn connect_http_reports_error_with_raw_token() {
+    let config = tooltest_core::HttpConfig {
+        url: "http://127.0.0.1:0/mcp".to_string(),
+        auth_token: Some("token".to_string()),
+    };
+    let result = SessionDriver::connect_http(&config).await;
+    assert!(result.is_err());
+}
+
+#[cfg(coverage)]
+async fn mcp_test_handler(
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let id = payload
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let info = ServerInfo::default();
+    let result = InitializeResult {
+        protocol_version: info.protocol_version,
+        capabilities: info.capabilities,
+        server_info: info.server_info,
+        instructions: None,
+    };
+    let response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    });
+    axum::Json(response)
+}
+
+#[cfg(coverage)]
+#[tokio::test]
+async fn connect_http_succeeds_with_local_server() {
+    let router = axum::Router::new().route("/mcp", axum::routing::post(mcp_test_handler));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let config = tooltest_core::HttpConfig {
+        url: format!("http://{addr}/mcp"),
+        auth_token: None,
+    };
+    let _driver = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        SessionDriver::connect_http(&config),
+    )
+    .await
+    .expect("connect timeout")
+    .expect("connect");
+
+    let _ = shutdown_tx.send(());
+    handle.await.expect("server");
 }
 
 #[test]

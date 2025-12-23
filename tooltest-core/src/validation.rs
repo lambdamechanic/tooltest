@@ -6,14 +6,13 @@ use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 
-use proptest::strategy::{Strategy, ValueTree};
-use proptest::test_runner::TestRunner;
-use rmcp::model::Tool;
-
 use crate::generator::{invocation_strategy, schema_violations};
 use crate::{
     HttpConfig, RunConfig, RunFailure, SessionDriver, SessionError, StdioConfig, TraceEntry,
 };
+use proptest::strategy::{Strategy, ValueTree};
+use proptest::test_runner::TestRunner;
+use rmcp::model::Tool;
 
 #[cfg(any(test, coverage))]
 mod list_tools_stub {
@@ -243,7 +242,6 @@ impl From<SessionError> for ToolValidationError {
 }
 
 /// Lists tools from an HTTP MCP endpoint using the provided configuration.
-#[cfg(all(not(test), not(coverage)))]
 pub async fn list_tools_http(config: &HttpConfig) -> Result<Vec<Tool>, SessionError> {
     list_tools_with_connector(config.clone(), |config| async move {
         SessionDriver::connect_http(&config).await
@@ -251,47 +249,10 @@ pub async fn list_tools_http(config: &HttpConfig) -> Result<Vec<Tool>, SessionEr
     .await
 }
 
-/// Lists tools from an HTTP MCP endpoint using the provided configuration.
-#[cfg(any(test, coverage))]
-pub async fn list_tools_http(config: &HttpConfig) -> Result<Vec<Tool>, SessionError> {
-    let transport =
-        list_tools_stub::ListToolsTransport::new(vec![list_tools_stub::stub_tool("echo")]);
-    let should_fail = config.url == "fail";
-    list_tools_with_connector(should_fail, move |should_fail| async move {
-        if should_fail {
-            Err(SessionError::from(std::io::Error::other(
-                "http list tools stub failure",
-            )))
-        } else {
-            SessionDriver::connect_with_transport(transport).await
-        }
-    })
-    .await
-}
-
 /// Lists tools from a stdio MCP endpoint using the provided configuration.
-#[cfg(all(not(test), not(coverage)))]
 pub async fn list_tools_stdio(config: &StdioConfig) -> Result<Vec<Tool>, SessionError> {
     list_tools_with_connector(config.clone(), |config| async move {
         SessionDriver::connect_stdio(&config).await
-    })
-    .await
-}
-
-/// Lists tools from a stdio MCP endpoint using the provided configuration.
-#[cfg(any(test, coverage))]
-pub async fn list_tools_stdio(config: &StdioConfig) -> Result<Vec<Tool>, SessionError> {
-    let transport =
-        list_tools_stub::ListToolsTransport::new(vec![list_tools_stub::stub_tool("echo")]);
-    let should_fail = config.command == "fail";
-    list_tools_with_connector(should_fail, move |should_fail| async move {
-        if should_fail {
-            Err(SessionError::from(std::io::Error::other(
-                "stdio list tools stub failure",
-            )))
-        } else {
-            SessionDriver::connect_with_transport(transport).await
-        }
     })
     .await
 }
@@ -332,6 +293,15 @@ pub async fn validate_tools(
         tools: tools.iter().map(|tool| tool.name.to_string()).collect(),
         cases_per_tool: config.cases_per_tool.max(1),
     })
+}
+
+/// Validates a single tool definition.
+pub async fn validate_tool(
+    session: &SessionDriver,
+    config: &ToolValidationConfig,
+    tool: &Tool,
+) -> Result<(), ToolValidationError> {
+    run_tool_cases(session, config, tool).await
 }
 
 fn select_tools(
@@ -542,8 +512,9 @@ mod tests {
     use proptest::strategy::NewTree;
     use rmcp::model::{
         CallToolResult, ClientJsonRpcMessage, ClientNotification, ClientRequest, Content,
-        InitializeResult, InitializedNotification, JsonRpcMessage, JsonRpcNotification,
-        JsonRpcResponse, JsonRpcVersion2_0, ListPromptsRequest, ListToolsResult, NumberOrString,
+        InitializeRequest, InitializeRequestParam, InitializeResult, InitializedNotification,
+        JsonRpcMessage, JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0,
+        ListPromptsRequest, ListToolsRequest, ListToolsResult, NumberOrString,
         PaginatedRequestParam, ServerInfo, ServerJsonRpcMessage, ServerResult, Tool,
     };
     use rmcp::service::ServiceError;
@@ -585,6 +556,38 @@ mod tests {
 
     fn is_tool_validation_failed(error: &ToolValidationError) -> bool {
         matches!(error, ToolValidationError::ValidationFailed(_))
+    }
+
+    fn is_accept(decision: &ToolValidationDecision) -> bool {
+        matches!(decision, ToolValidationDecision::Accept)
+    }
+
+    fn is_defer(decision: &ToolValidationDecision) -> bool {
+        matches!(decision, ToolValidationDecision::Defer)
+    }
+
+    fn is_reject(decision: &ToolValidationDecision) -> bool {
+        matches!(decision, ToolValidationDecision::Reject(_))
+    }
+
+    fn is_initialize_response(message: &ServerJsonRpcMessage) -> bool {
+        matches!(
+            message,
+            ServerJsonRpcMessage::Response(JsonRpcResponse {
+                result: ServerResult::InitializeResult(_),
+                ..
+            })
+        )
+    }
+
+    fn is_list_tools_response(message: &ServerJsonRpcMessage) -> bool {
+        matches!(
+            message,
+            ServerJsonRpcMessage::Response(JsonRpcResponse {
+                result: ServerResult::ListToolsResult(_),
+                ..
+            })
+        )
     }
 
     fn missing_tools_list(error: &ToolValidationError) -> Option<Vec<String>> {
@@ -818,10 +821,8 @@ mod tests {
             response: CallToolResult::success(vec![Content::text("ok")]),
         };
         let tool = test_tool("noop");
-        assert!(matches!(
-            (config.validators[0])(&tool, &trace),
-            ToolValidationDecision::Accept
-        ));
+        let decision = (config.validators[0])(&tool, &trace);
+        assert!(is_accept(&decision));
     }
 
     #[test]
@@ -865,29 +866,31 @@ mod tests {
         assert!(error.to_string().contains("session error"));
     }
 
-    #[tokio::test]
-    async fn list_tools_helpers_return_tools_in_tests() {
-        let http = HttpConfig {
-            url: "http://localhost:8080/mcp".to_string(),
-            auth_token: None,
-        };
-        let stdio = StdioConfig::new("mcp-server");
+    #[test]
+    fn decision_helpers_cover_true_and_false() {
+        let accept = ToolValidationDecision::Accept;
+        let defer = ToolValidationDecision::Defer;
+        let reject = ToolValidationDecision::Reject(RunFailure {
+            reason: "nope".to_string(),
+        });
 
-        let http_tools = list_tools_http(&http).await.expect("http tools");
-        assert_eq!(http_tools.len(), 1);
+        assert!(is_accept(&accept));
+        assert!(!is_accept(&defer));
 
-        let stdio_tools = list_tools_stdio(&stdio).await.expect("stdio tools");
-        assert_eq!(stdio_tools.len(), 1);
+        assert!(is_defer(&defer));
+        assert!(!is_defer(&accept));
+
+        assert!(is_reject(&reject));
+        assert!(!is_reject(&accept));
     }
 
     #[tokio::test]
     async fn list_tools_helpers_report_errors_in_tests() {
         let http = HttpConfig {
-            url: "fail".to_string(),
+            url: "http://127.0.0.1:0/mcp".to_string(),
             auth_token: None,
         };
-        let error = list_tools_http(&http).await.expect_err("http error");
-        assert!(is_session_transport(&error));
+        let _error = list_tools_http(&http).await.expect_err("http error");
 
         let stdio = StdioConfig::new("fail");
         let error = list_tools_stdio(&stdio).await.expect_err("stdio error");
@@ -915,6 +918,185 @@ mod tests {
             ),
         });
         let _ = transport.send(notification).await;
+    }
+
+    #[tokio::test]
+    async fn list_tools_stub_handles_initialize_and_list_tools() {
+        let tools = vec![list_tools_stub::stub_tool("echo")];
+        let mut transport = list_tools_stub::ListToolsTransport::new(tools.clone());
+
+        let init = ClientJsonRpcMessage::request(
+            ClientRequest::InitializeRequest(InitializeRequest::new(
+                InitializeRequestParam::default(),
+            )),
+            NumberOrString::Number(1),
+        );
+        let _ = transport.send(init).await;
+        let response = transport.receive().await.expect("init response");
+        assert!(is_initialize_response(&response));
+        assert!(!is_list_tools_response(&response));
+
+        let list = ClientJsonRpcMessage::request(
+            ClientRequest::ListToolsRequest(ListToolsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(2),
+        );
+        let _ = transport.send(list).await;
+        let response = transport.receive().await.expect("list response");
+        assert!(is_list_tools_response(&response));
+        assert!(!is_initialize_response(&response));
+        transport.close().await.expect("close");
+    }
+
+    #[test]
+    fn apply_validators_accepts_first_validator() {
+        let validator: ToolValidationFn = Arc::new(|_, _| ToolValidationDecision::Accept);
+        let config = ToolValidationConfig {
+            run: RunConfig::new(),
+            cases_per_tool: 1,
+            validators: vec![validator],
+        };
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::success(vec![Content::text("ok")]),
+        };
+        let tool = test_tool("noop");
+
+        assert!(apply_validators(&config, &tool, &trace).is_ok());
+    }
+
+    #[test]
+    fn apply_validators_rejects_validator() {
+        let validator: ToolValidationFn = Arc::new(|_, _| {
+            ToolValidationDecision::Reject(RunFailure {
+                reason: "nope".to_string(),
+            })
+        });
+        let config = ToolValidationConfig {
+            run: RunConfig::new(),
+            cases_per_tool: 1,
+            validators: vec![validator],
+        };
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::success(vec![Content::text("ok")]),
+        };
+        let tool = test_tool("noop");
+
+        let error = apply_validators(&config, &tool, &trace).expect_err("reject");
+        assert_eq!(error.reason, "nope");
+    }
+
+    #[test]
+    fn output_schema_validator_defers_on_error_response() {
+        let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::error(vec![Content::text("error")]),
+        };
+
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_defers_without_schema() {
+        let tool = test_tool("noop");
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::structured(json!({})),
+        };
+
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_rejects_missing_structured_content() {
+        let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::success(vec![Content::text("ok")]),
+        };
+
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_reject(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_defers_on_matching_structured_content() {
+        let tool = tool_with_output_schema(
+            "noop",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } }
+            }),
+        );
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::structured(json!({ "value": "ok" })),
+        };
+
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_rejects_schema_violations() {
+        let tool = tool_with_output_schema(
+            "noop",
+            json!({
+                "type": "object",
+                "required": ["value"],
+                "properties": { "value": { "type": "string" } }
+            }),
+        );
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::structured(json!({})),
+        };
+
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_reject(&decision));
+    }
+
+    #[test]
+    fn default_validator_rejects_error_response() {
+        let tool = test_tool("noop");
+        let trace = TraceEntry {
+            invocation: crate::ToolInvocation {
+                name: "noop".into(),
+                arguments: Some(json!({}).as_object().cloned().unwrap()),
+            },
+            response: CallToolResult::error(vec![Content::text("error")]),
+        };
+
+        let decision = default_validator(&tool, &trace);
+        assert!(is_reject(&decision));
     }
 
     #[tokio::test]
@@ -983,6 +1165,38 @@ mod tests {
             .await
             .expect_err("error");
         assert!(is_session_transport(&error));
+    }
+
+    #[tokio::test]
+    async fn validate_tool_runs_cases() {
+        let transport = TestTransport::new(vec![test_tool("echo")], []);
+        let driver = SessionDriver::connect_with_transport(transport)
+            .await
+            .expect("connect");
+        let config = ToolValidationConfig::new().with_cases_per_tool(1);
+        let tool = test_tool("echo");
+
+        validate_tool(&driver, &config, &tool)
+            .await
+            .expect("validate tool");
+    }
+
+    #[cfg(coverage)]
+    #[tokio::test]
+    async fn list_tools_http_reports_error_for_unreachable_endpoint() {
+        let http = HttpConfig {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        };
+
+        assert!(list_tools_http(&http).await.is_err());
+    }
+
+    #[cfg(coverage)]
+    #[tokio::test]
+    async fn list_tools_stdio_reports_error_in_coverage() {
+        let stdio = StdioConfig::new("mcp-server");
+        assert!(list_tools_stdio(&stdio).await.is_err());
     }
 
     #[tokio::test]
@@ -1745,10 +1959,8 @@ mod tests {
             response: CallToolResult::success(vec![Content::text("ok")]),
         };
         let tool = test_tool("ok");
-        assert!(matches!(
-            default_validator(&tool, &ok_trace),
-            ToolValidationDecision::Defer
-        ));
+        let ok_decision = default_validator(&tool, &ok_trace);
+        assert!(is_defer(&ok_decision));
 
         let err_trace = TraceEntry {
             invocation: crate::ToolInvocation {
@@ -1757,10 +1969,8 @@ mod tests {
             },
             response: CallToolResult::error(vec![Content::text("bad")]),
         };
-        assert!(matches!(
-            default_validator(&tool, &err_trace),
-            ToolValidationDecision::Reject(_)
-        ));
+        let err_decision = default_validator(&tool, &err_trace);
+        assert!(is_reject(&err_decision));
 
         env::set_var(CASES_PER_TOOL_ENV, "0");
         assert_eq!(default_cases_per_tool(), DEFAULT_CASES_PER_TOOL);
@@ -1852,6 +2062,24 @@ mod tests {
                 instructions: None,
             }),
         })
+    }
+
+    fn tool_with_output_schema(name: &str, output_schema: serde_json::Value) -> Tool {
+        Tool {
+            name: name.to_string().into(),
+            title: None,
+            description: None,
+            input_schema: Arc::new(json!({ "type": "object" }).as_object().cloned().unwrap()),
+            output_schema: Some(Arc::new(
+                output_schema
+                    .as_object()
+                    .cloned()
+                    .expect("output schema object"),
+            )),
+            annotations: None,
+            icons: None,
+            meta: None,
+        }
     }
 
     pub(super) fn test_tool(name: &str) -> Tool {

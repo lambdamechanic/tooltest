@@ -124,15 +124,12 @@ impl SessionDriver {
     }
 }
 
-#[cfg(all(not(test), not(coverage)))]
-/// Builds an HTTP transport for MCP communication.
-///
-/// Errors are surfaced as `SessionError` to preserve rmcp error context.
-fn build_http_transport(
+/// Builds an HTTP transport config for MCP communication.
+#[cfg_attr(coverage, allow(dead_code))]
+fn http_transport_config(
     config: &HttpConfig,
-) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {
+) -> rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
     use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-    use rmcp::transport::StreamableHttpClientTransport;
 
     let mut transport_config = StreamableHttpClientTransportConfig::with_uri(config.url.as_str());
     if let Some(auth_token) = &config.auth_token {
@@ -140,5 +137,55 @@ fn build_http_transport(
         let token = token.strip_prefix("Bearer ").unwrap_or(token);
         transport_config = transport_config.auth_header(token.to_string());
     }
-    Ok(StreamableHttpClientTransport::from_config(transport_config))
+    transport_config
+}
+
+#[cfg(all(not(test), not(coverage)))]
+/// Builds an HTTP transport for MCP communication.
+///
+/// Errors are surfaced as `SessionError` to preserve rmcp error context.
+fn build_http_transport(
+    config: &HttpConfig,
+) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {
+    use rmcp::transport::StreamableHttpClientTransport;
+
+    Ok(StreamableHttpClientTransport::from_config(
+        http_transport_config(config),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_transport_config;
+    use crate::HttpConfig;
+
+    #[test]
+    fn http_transport_config_strips_bearer_prefix() {
+        let config = HttpConfig {
+            url: "https://example.com/mcp".to_string(),
+            auth_token: Some("Bearer test-token".to_string()),
+        };
+        let transport_config = http_transport_config(&config);
+        assert_eq!(transport_config.auth_header.as_deref(), Some("test-token"));
+    }
+
+    #[test]
+    fn http_transport_config_preserves_raw_token() {
+        let config = HttpConfig {
+            url: "https://example.com/mcp".to_string(),
+            auth_token: Some("raw-token".to_string()),
+        };
+        let transport_config = http_transport_config(&config);
+        assert_eq!(transport_config.auth_header.as_deref(), Some("raw-token"));
+    }
+
+    #[test]
+    fn http_transport_config_skips_missing_token() {
+        let config = HttpConfig {
+            url: "https://example.com/mcp".to_string(),
+            auth_token: None,
+        };
+        let transport_config = http_transport_config(&config);
+        assert!(transport_config.auth_header.is_none());
+    }
 }

@@ -122,6 +122,12 @@ impl SessionDriver {
         }
         Ok(trace)
     }
+
+    /// Lists all tools available from the MCP session.
+    pub async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, SessionError> {
+        let tools = self.service.peer().list_all_tools().await?;
+        Ok(tools)
+    }
 }
 
 /// Builds an HTTP transport config for MCP communication.
@@ -140,7 +146,6 @@ fn http_transport_config(
     transport_config
 }
 
-#[cfg(all(not(test), not(coverage)))]
 /// Builds an HTTP transport for MCP communication.
 ///
 /// Errors are surfaced as `SessionError` to preserve rmcp error context.

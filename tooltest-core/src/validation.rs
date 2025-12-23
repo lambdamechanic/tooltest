@@ -2,16 +2,18 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::future::Future;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use rmcp::model::Tool;
 
-use crate::generator::invocation_strategy;
-use crate::{HttpConfig, RunConfig, RunFailure, SessionDriver, SessionError, StdioConfig, TraceEntry};
+use crate::generator::{invocation_strategy, schema_violations};
+use crate::{
+    HttpConfig, RunConfig, RunFailure, SessionDriver, SessionError, StdioConfig, TraceEntry,
+};
 
 #[cfg(any(test, coverage))]
 mod list_tools_stub {
@@ -117,8 +119,19 @@ mod list_tools_stub {
 const DEFAULT_CASES_PER_TOOL: usize = 50;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_CASES_PER_TOOL";
 
+/// Middleware decision returned by a tool validator.
+#[derive(Clone, Debug)]
+pub enum ToolValidationDecision {
+    /// Accept the tool response and stop the validation chain.
+    Accept,
+    /// Reject the tool response with a failure.
+    Reject(RunFailure),
+    /// Defer to the next validator in the chain.
+    Defer,
+}
+
 /// Callable used to validate a tool response.
-pub type ToolValidationFn = Arc<dyn Fn(&TraceEntry) -> Result<(), RunFailure> + Send + Sync>;
+pub type ToolValidationFn = Arc<dyn Fn(&Tool, &TraceEntry) -> ToolValidationDecision + Send + Sync>;
 
 /// Configuration for bulk tool validation.
 #[derive(Clone)]
@@ -127,8 +140,8 @@ pub struct ToolValidationConfig {
     pub run: RunConfig,
     /// Number of cases to exercise per tool.
     pub cases_per_tool: usize,
-    /// Validator invoked after each tool call.
-    pub validator: ToolValidationFn,
+    /// Validators invoked after each tool call.
+    pub validators: Vec<ToolValidationFn>,
 }
 
 impl ToolValidationConfig {
@@ -137,7 +150,7 @@ impl ToolValidationConfig {
         Self {
             run: RunConfig::new(),
             cases_per_tool: default_cases_per_tool(),
-            validator: Arc::new(default_validator),
+            validators: default_validators(),
         }
     }
 
@@ -153,9 +166,9 @@ impl ToolValidationConfig {
         self
     }
 
-    /// Sets the response validator for each tool invocation.
+    /// Adds a response validator ahead of the defaults.
     pub fn with_validator(mut self, validator: ToolValidationFn) -> Self {
-        self.validator = validator;
+        self.validators.insert(0, validator);
         self
     }
 }
@@ -206,9 +219,17 @@ impl fmt::Display for ToolValidationError {
         match self {
             ToolValidationError::Session(error) => write!(f, "session error: {error:?}"),
             ToolValidationError::NoToolsAvailable => write!(f, "no tools available for validation"),
-            ToolValidationError::MissingTools { tools } => write!(f, "missing tools: {}", tools.join(", ")),
-            ToolValidationError::Generation { tool, reason } => write!(f, "failed to generate invocation for '{tool}': {reason}"),
-            ToolValidationError::ValidationFailed(failure) => write!(f, "tool '{}' failed validation: {}", failure.tool, failure.failure.reason),
+            ToolValidationError::MissingTools { tools } => {
+                write!(f, "missing tools: {}", tools.join(", "))
+            }
+            ToolValidationError::Generation { tool, reason } => {
+                write!(f, "failed to generate invocation for '{tool}': {reason}")
+            }
+            ToolValidationError::ValidationFailed(failure) => write!(
+                f,
+                "tool '{}' failed validation: {}",
+                failure.tool, failure.failure.reason
+            ),
         }
     }
 }
@@ -348,28 +369,29 @@ async fn run_tool_cases(
     config: &ToolValidationConfig,
     tool: &Tool,
 ) -> Result<(), ToolValidationError> {
-    let strategy = invocation_strategy(&[tool.clone()], config.run.predicate.as_ref())
+    let strategy = invocation_strategy(std::slice::from_ref(tool), config.run.predicate.as_ref())
         .map_err(|error| ToolValidationError::Generation {
-            tool: tool.name.to_string(),
-            reason: error.to_string(),
-        })?;
+        tool: tool.name.to_string(),
+        reason: error.to_string(),
+    })?;
 
     let cases = config.cases_per_tool.max(1);
     let mut runner = TestRunner::default();
 
     for _ in 0..cases {
-        let tree = strategy
-            .new_tree(&mut runner)
-            .map_err(|reason| ToolValidationError::Generation {
-                tool: tool.name.to_string(),
-                reason: reason.to_string(),
-            })?;
+        let tree =
+            strategy
+                .new_tree(&mut runner)
+                .map_err(|reason| ToolValidationError::Generation {
+                    tool: tool.name.to_string(),
+                    reason: reason.to_string(),
+                })?;
 
-        if run_invocation(session, config, tool.name.as_ref(), tree.current())
+        if run_invocation(session, config, tool, tree.current())
             .await?
             .is_some()
         {
-            let minimized = shrink_failure(session, config, tool.name.as_ref(), tree).await?;
+            let minimized = shrink_failure(session, config, tool, tree).await?;
             return Err(ToolValidationError::ValidationFailed(minimized));
         }
     }
@@ -380,13 +402,13 @@ async fn run_tool_cases(
 async fn run_invocation(
     session: &SessionDriver,
     config: &ToolValidationConfig,
-    tool_name: &str,
+    tool: &Tool,
     invocation: crate::ToolInvocation,
 ) -> Result<Option<ToolValidationFailure>, ToolValidationError> {
     let trace = session.send_tool_call(invocation).await?;
-    if let Err(failure) = (config.validator)(&trace) {
+    if let Err(failure) = apply_validators(config, tool, &trace) {
         return Ok(Some(ToolValidationFailure {
-            tool: tool_name.to_string(),
+            tool: tool.name.to_string(),
             failure,
             trace: vec![trace],
         }));
@@ -397,16 +419,15 @@ async fn run_invocation(
 async fn shrink_failure<T>(
     session: &SessionDriver,
     config: &ToolValidationConfig,
-    tool_name: &str,
+    tool: &Tool,
     mut tree: T,
 ) -> Result<ToolValidationFailure, ToolValidationError>
 where
     T: ValueTree<Value = crate::ToolInvocation>,
 {
-    let Some(mut best) = run_invocation(session, config, tool_name, tree.current()).await?
-    else {
+    let Some(mut best) = run_invocation(session, config, tool, tree.current()).await? else {
         return Err(ToolValidationError::Generation {
-            tool: tool_name.to_string(),
+            tool: tool.name.to_string(),
             reason: "expected failing case to shrink".to_string(),
         });
     };
@@ -416,7 +437,7 @@ where
             break;
         }
 
-        match run_invocation(session, config, tool_name, tree.current()).await? {
+        match run_invocation(session, config, tool, tree.current()).await? {
             Some(failure) => {
                 best = failure;
                 continue;
@@ -425,7 +446,7 @@ where
                 let mut restored = false;
                 while tree.complicate() {
                     if let Some(failure) =
-                        run_invocation(session, config, tool_name, tree.current()).await?
+                        run_invocation(session, config, tool, tree.current()).await?
                     {
                         best = failure;
                         restored = true;
@@ -442,13 +463,63 @@ where
     Ok(best)
 }
 
-fn default_validator(trace: &TraceEntry) -> Result<(), RunFailure> {
+fn apply_validators(
+    config: &ToolValidationConfig,
+    tool: &Tool,
+    trace: &TraceEntry,
+) -> Result<(), RunFailure> {
+    for validator in &config.validators {
+        match validator(tool, trace) {
+            ToolValidationDecision::Accept => return Ok(()),
+            ToolValidationDecision::Reject(failure) => return Err(failure),
+            ToolValidationDecision::Defer => continue,
+        }
+    }
+    Ok(())
+}
+
+fn default_validators() -> Vec<ToolValidationFn> {
+    vec![
+        Arc::new(output_schema_validator),
+        Arc::new(default_validator),
+    ]
+}
+
+fn output_schema_validator(tool: &Tool, trace: &TraceEntry) -> ToolValidationDecision {
+    let Some(schema) = &tool.output_schema else {
+        return ToolValidationDecision::Defer;
+    };
     if trace.response.is_error == Some(true) {
-        return Err(RunFailure {
+        return ToolValidationDecision::Defer;
+    }
+    let Some(structured) = &trace.response.structured_content else {
+        return ToolValidationDecision::Reject(RunFailure {
+            reason: format!(
+                "tool '{}' returned no structured_content for output schema",
+                tool.name
+            ),
+        });
+    };
+    let violations = schema_violations(schema.as_ref(), structured);
+    if violations.is_empty() {
+        ToolValidationDecision::Defer
+    } else {
+        ToolValidationDecision::Reject(RunFailure {
+            reason: format!(
+                "tool '{}' output schema violations: {violations:?}",
+                tool.name
+            ),
+        })
+    }
+}
+
+fn default_validator(_tool: &Tool, trace: &TraceEntry) -> ToolValidationDecision {
+    if trace.response.is_error == Some(true) {
+        return ToolValidationDecision::Reject(RunFailure {
             reason: "tool returned error".to_string(),
         });
     }
-    Ok(())
+    ToolValidationDecision::Defer
 }
 
 fn default_cases_per_tool() -> usize {
@@ -467,14 +538,14 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex, OnceLock};
 
+    use proptest::prelude::*;
+    use proptest::strategy::NewTree;
     use rmcp::model::{
         CallToolResult, ClientJsonRpcMessage, ClientNotification, ClientRequest, Content,
         InitializeResult, InitializedNotification, JsonRpcMessage, JsonRpcNotification,
         JsonRpcResponse, JsonRpcVersion2_0, ListPromptsRequest, ListToolsResult, NumberOrString,
         PaginatedRequestParam, ServerInfo, ServerJsonRpcMessage, ServerResult, Tool,
     };
-    use proptest::prelude::*;
-    use proptest::strategy::NewTree;
     use rmcp::service::ServiceError;
     use rmcp::transport::Transport;
     use serde_json::json;
@@ -688,8 +759,7 @@ mod tests {
                         if fail_on_list {
                             return std::future::ready(Err(TransportError("list tools")));
                         }
-                        let _ =
-                            response_tx.send(list_tools_response(request.id.clone(), &tools));
+                        let _ = response_tx.send(list_tools_response(request.id.clone(), &tools));
                     }
                     ClientRequest::CallToolRequest(_) => {
                         if let Some(fail_after) = call_fail_after {
@@ -728,7 +798,7 @@ mod tests {
         let _default = ToolValidationConfig::default();
         let predicate: crate::ToolPredicate = Arc::new(|_, _| true);
         let run = RunConfig::new().with_predicate(predicate);
-        let validator: ToolValidationFn = Arc::new(|_| Ok(()));
+        let validator: ToolValidationFn = Arc::new(|_, _| ToolValidationDecision::Accept);
 
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(0)
@@ -737,7 +807,8 @@ mod tests {
 
         assert_eq!(config.cases_per_tool, 1);
         assert!(config.run.predicate.is_some());
-        assert!(Arc::ptr_eq(&config.validator, &validator));
+        assert_eq!(config.validators.len(), 3);
+        assert!(Arc::ptr_eq(&config.validators[0], &validator));
 
         let trace = TraceEntry {
             invocation: crate::ToolInvocation {
@@ -746,7 +817,11 @@ mod tests {
             },
             response: CallToolResult::success(vec![Content::text("ok")]),
         };
-        assert!((config.validator)(&trace).is_ok());
+        let tool = test_tool("noop");
+        assert!(matches!(
+            (config.validators[0])(&tool, &trace),
+            ToolValidationDecision::Accept
+        ));
     }
 
     #[test]
@@ -835,14 +910,17 @@ mod tests {
 
         let notification = ClientJsonRpcMessage::Notification(JsonRpcNotification {
             jsonrpc: JsonRpcVersion2_0,
-            notification: ClientNotification::InitializedNotification(InitializedNotification::default()),
+            notification: ClientNotification::InitializedNotification(
+                InitializedNotification::default(),
+            ),
         });
         let _ = transport.send(notification).await;
     }
 
     #[tokio::test]
     async fn list_tools_session_uses_driver() {
-        let transport = TestTransport::new(vec![test_tool("echo")], []);
+        let tool = test_tool("echo");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
@@ -1031,8 +1109,8 @@ mod tests {
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_| {
-            Err(RunFailure {
+        let validator: ToolValidationFn = Arc::new(|_, _| {
+            ToolValidationDecision::Reject(RunFailure {
                 reason: "always".to_string(),
             })
         });
@@ -1051,11 +1129,11 @@ mod tests {
     async fn validate_tools_reports_shrink_failure_error() {
         let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen_clone = Arc::clone(&seen);
-        let validator: ToolValidationFn = Arc::new(move |_| {
+        let validator: ToolValidationFn = Arc::new(move |_, _| {
             if seen_clone.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                Ok(())
+                ToolValidationDecision::Defer
             } else {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "first".to_string(),
                 })
             }
@@ -1076,7 +1154,8 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_reports_error_without_failure() {
-        let transport = TestTransport::new(vec![test_tool("echo")], []);
+        let tool = test_tool("echo");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
@@ -1086,7 +1165,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).unwrap();
 
-        let error = shrink_failure(&driver, &config, "echo", tree)
+        let error = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect_err("expected shrink error");
         assert!(is_tool_validation_generation(&error));
@@ -1094,11 +1173,12 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_breaks_when_simplified_case_passes() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|trace| {
+        let validator: ToolValidationFn = Arc::new(|_, trace| {
             let value = trace
                 .invocation
                 .arguments
@@ -1107,9 +1187,9 @@ mod tests {
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 0 {
-                Ok(())
+                ToolValidationDecision::Defer
             } else {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "non-zero".to_string(),
                 })
             }
@@ -1124,7 +1204,7 @@ mod tests {
             Vec::new(),
         );
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "non-zero");
@@ -1132,18 +1212,19 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_reports_generation_error_for_sequence_tree() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_| Ok(()));
+        let validator: ToolValidationFn = Arc::new(|_, _| ToolValidationDecision::Defer);
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
 
         let tree = SequenceTree::new(invocation_with_value("num", 0), None, Vec::new());
 
-        let error = shrink_failure(&driver, &config, "num", tree)
+        let error = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect_err("expected shrink error");
         assert!(is_tool_validation_generation(&error));
@@ -1151,12 +1232,13 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_sequence_tree_handles_failure_after_simplify() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_| {
-            Err(RunFailure {
+        let validator: ToolValidationFn = Arc::new(|_, _| {
+            ToolValidationDecision::Reject(RunFailure {
                 reason: "non-zero".to_string(),
             })
         });
@@ -1170,7 +1252,7 @@ mod tests {
             Vec::new(),
         );
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "non-zero");
@@ -1178,11 +1260,12 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_breaks_when_complicate_cases_pass_for_sequence_tree() {
-        let transport = TestTransport::new(vec![test_value_tool("num")], []);
+        let tool = test_value_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|trace| {
+        let validator: ToolValidationFn = Arc::new(|_, trace| {
             let value = trace
                 .invocation
                 .arguments
@@ -1191,11 +1274,11 @@ mod tests {
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 1 {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "non-zero".to_string(),
                 })
             } else {
-                Ok(())
+                ToolValidationDecision::Defer
             }
         });
         let config = ToolValidationConfig::new()
@@ -1208,7 +1291,7 @@ mod tests {
             vec![invocation_with_value("num", 0)],
         );
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "non-zero");
@@ -1216,12 +1299,13 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_handles_failure_for_boxed_tree() {
-        let transport = TestTransport::new(vec![test_value_tool("num")], []);
+        let tool = test_value_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_| {
-            Err(RunFailure {
+        let validator: ToolValidationFn = Arc::new(|_, _| {
+            ToolValidationDecision::Reject(RunFailure {
                 reason: "always".to_string(),
             })
         });
@@ -1238,7 +1322,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).expect("tree");
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "always");
@@ -1246,11 +1330,12 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_breaks_when_complicate_cases_pass_for_boxed_tree() {
-        let transport = TestTransport::new(vec![test_value_tool("num")], []);
+        let tool = test_value_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|trace| {
+        let validator: ToolValidationFn = Arc::new(|_, trace| {
             let value = trace
                 .invocation
                 .arguments
@@ -1259,11 +1344,11 @@ mod tests {
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 1 {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "non-zero".to_string(),
                 })
             } else {
-                Ok(())
+                ToolValidationDecision::Defer
             }
         });
         let config = ToolValidationConfig::new()
@@ -1279,7 +1364,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).expect("tree");
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "non-zero");
@@ -1287,7 +1372,8 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_handles_restore_for_boxed_tree() {
-        let transport = TestTransport::new(vec![test_value_tool("num")], []);
+        let tool = test_value_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
@@ -1301,12 +1387,15 @@ mod tests {
             }),
         ]));
         let outcomes_clone = Arc::clone(&outcomes);
-        let validator: ToolValidationFn = Arc::new(move |_| {
+        let validator: ToolValidationFn = Arc::new(move |_, _| {
             outcomes_clone
                 .lock()
                 .expect("outcomes")
                 .pop()
                 .unwrap_or(Ok(()))
+                .map_or_else(ToolValidationDecision::Reject, |_| {
+                    ToolValidationDecision::Defer
+                })
         });
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
@@ -1321,7 +1410,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).expect("tree");
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "first");
@@ -1329,11 +1418,12 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_restores_after_complicate_failure() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|trace| {
+        let validator: ToolValidationFn = Arc::new(|_, trace| {
             let value = trace
                 .invocation
                 .arguments
@@ -1342,9 +1432,9 @@ mod tests {
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 0 {
-                Ok(())
+                ToolValidationDecision::Defer
             } else {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "non-zero".to_string(),
                 })
             }
@@ -1359,7 +1449,7 @@ mod tests {
             vec![invocation_with_value("num", 2)],
         );
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "non-zero");
@@ -1367,12 +1457,13 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_maintains_failure_when_always_invalid() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_| {
-            Err(RunFailure {
+        let validator: ToolValidationFn = Arc::new(|_, _| {
+            ToolValidationDecision::Reject(RunFailure {
                 reason: "always".to_string(),
             })
         });
@@ -1384,7 +1475,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).unwrap();
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "always");
@@ -1392,11 +1483,12 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_restores_after_passing_case() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|trace| {
+        let validator: ToolValidationFn = Arc::new(|_, trace| {
             let value = trace
                 .invocation
                 .arguments
@@ -1405,9 +1497,9 @@ mod tests {
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 0 {
-                Ok(())
+                ToolValidationDecision::Defer
             } else {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "non-zero".to_string(),
                 })
             }
@@ -1435,7 +1527,7 @@ mod tests {
             tree = strategy.new_tree(&mut runner).unwrap();
         }
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "non-zero");
@@ -1443,18 +1535,19 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_breaks_when_restore_missing() {
-        let transport = TestTransport::new(vec![test_tool("num")], []);
+        let tool = test_tool("num");
+        let transport = TestTransport::new(vec![tool.clone()], []);
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
 
         let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen_clone = Arc::clone(&seen);
-        let validator: ToolValidationFn = Arc::new(move |_| {
+        let validator: ToolValidationFn = Arc::new(move |_, _| {
             if seen_clone.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                Ok(())
+                ToolValidationDecision::Defer
             } else {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "first".to_string(),
                 })
             }
@@ -1467,7 +1560,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).unwrap();
 
-        let failure = shrink_failure(&driver, &config, "num", tree)
+        let failure = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect("failure");
         assert_eq!(failure.failure.reason, "first");
@@ -1475,7 +1568,8 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_reports_session_error_on_initial_call() {
-        let transport = FaultyTransport::new(vec![test_tool("num")], false, Some(0));
+        let tool = test_tool("num");
+        let transport = FaultyTransport::new(vec![tool.clone()], false, Some(0));
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
@@ -1485,7 +1579,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).unwrap();
 
-        let error = shrink_failure(&driver, &config, "num", tree)
+        let error = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect_err("session error");
         assert!(is_tool_validation_session(&error));
@@ -1493,12 +1587,13 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_reports_session_error_in_loop() {
-        let transport = FaultyTransport::new(vec![test_tool("num")], false, Some(1));
+        let tool = test_tool("num");
+        let transport = FaultyTransport::new(vec![tool.clone()], false, Some(1));
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_| {
-            Err(RunFailure {
+        let validator: ToolValidationFn = Arc::new(|_, _| {
+            ToolValidationDecision::Reject(RunFailure {
                 reason: "always".to_string(),
             })
         });
@@ -1510,7 +1605,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).unwrap();
 
-        let error = shrink_failure(&driver, &config, "num", tree)
+        let error = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect_err("session error");
         assert!(is_tool_validation_session(&error));
@@ -1518,17 +1613,18 @@ mod tests {
 
     #[tokio::test]
     async fn shrink_failure_reports_session_error_in_complicate() {
-        let transport = FaultyTransport::new(vec![test_tool("num")], false, Some(2));
+        let tool = test_tool("num");
+        let transport = FaultyTransport::new(vec![tool.clone()], false, Some(2));
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
         let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen_clone = Arc::clone(&seen);
-        let validator: ToolValidationFn = Arc::new(move |_| {
+        let validator: ToolValidationFn = Arc::new(move |_, _| {
             if seen_clone.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                Ok(())
+                ToolValidationDecision::Defer
             } else {
-                Err(RunFailure {
+                ToolValidationDecision::Reject(RunFailure {
                     reason: "first".to_string(),
                 })
             }
@@ -1541,7 +1637,7 @@ mod tests {
         let mut runner = TestRunner::default();
         let tree = strategy.new_tree(&mut runner).unwrap();
 
-        let error = shrink_failure(&driver, &config, "num", tree)
+        let error = shrink_failure(&driver, &config, &tool, tree)
             .await
             .expect_err("session error");
         assert!(is_tool_validation_session(&error));
@@ -1634,8 +1730,7 @@ mod tests {
         assert_eq!(all_tools.len(), 2);
 
         let missing = vec!["missing".to_string()];
-        let missing_error =
-            select_tools(tools.clone(), Some(&missing)).expect_err("missing tools");
+        let missing_error = select_tools(tools.clone(), Some(&missing)).expect_err("missing tools");
         assert!(is_tool_validation_missing_tools(&missing_error));
         assert_eq!(missing_tools_list(&missing_error), Some(missing.clone()));
 
@@ -1649,7 +1744,11 @@ mod tests {
             },
             response: CallToolResult::success(vec![Content::text("ok")]),
         };
-        assert!(default_validator(&ok_trace).is_ok());
+        let tool = test_tool("ok");
+        assert!(matches!(
+            default_validator(&tool, &ok_trace),
+            ToolValidationDecision::Defer
+        ));
 
         let err_trace = TraceEntry {
             invocation: crate::ToolInvocation {
@@ -1658,7 +1757,10 @@ mod tests {
             },
             response: CallToolResult::error(vec![Content::text("bad")]),
         };
-        assert!(default_validator(&err_trace).is_err());
+        assert!(matches!(
+            default_validator(&tool, &err_trace),
+            ToolValidationDecision::Reject(_)
+        ));
 
         env::set_var(CASES_PER_TOOL_ENV, "0");
         assert_eq!(default_cases_per_tool(), DEFAULT_CASES_PER_TOOL);
@@ -1715,7 +1817,10 @@ mod tests {
         assert_eq!(trace.response.is_error, Some(false));
     }
 
-    fn call_tool_response(id: rmcp::model::RequestId, result: CallToolResult) -> ServerJsonRpcMessage {
+    fn call_tool_response(
+        id: rmcp::model::RequestId,
+        result: CallToolResult,
+    ) -> ServerJsonRpcMessage {
         ServerJsonRpcMessage::Response(JsonRpcResponse {
             jsonrpc: JsonRpcVersion2_0,
             id,
@@ -1778,12 +1883,7 @@ mod tests {
         let name = name.to_string();
         any::<i64>().prop_map(move |value| crate::ToolInvocation {
             name: name.clone().into(),
-            arguments: Some(
-                json!({ "value": value })
-                    .as_object()
-                    .cloned()
-                    .unwrap(),
-            ),
+            arguments: Some(json!({ "value": value }).as_object().cloned().unwrap()),
         })
     }
 

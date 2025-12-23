@@ -65,7 +65,7 @@ pub fn init_response(id: RequestId) -> ServerJsonRpcMessage {
     })
 }
 
-// tooltest-8r4.9: shared transport stub for runner tests; simulates list/call flows and error injection.
+// tooltest-8r4.9: shared transport stub for runner tests in that task; simulates list/call flows and error injection.
 pub struct RunnerTransport {
     tools: Vec<Tool>,
     response: CallToolResult,

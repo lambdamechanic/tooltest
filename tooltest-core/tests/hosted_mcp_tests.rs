@@ -12,7 +12,7 @@ const HOSTED_MCP_URLS: [&str; 3] = [
 ];
 
 fn should_run_hosted_tests() -> bool {
-    std::env::var("RUN_HOSTED_MCP_TESTS").is_ok()
+    std::env::var("SKIP_HOSTED_MCP_TESTS").is_err()
 }
 
 fn auth_header_token() -> Option<String> {
@@ -33,7 +33,7 @@ fn build_transport(url: &str) -> StreamableHttpClientTransport<reqwest::Client> 
 #[tokio::test]
 async fn hosted_mcp_servers_list_tools() {
     if !should_run_hosted_tests() {
-        eprintln!("set RUN_HOSTED_MCP_TESTS=1 to run hosted MCP integration tests");
+        eprintln!("set SKIP_HOSTED_MCP_TESTS=1 to skip hosted MCP integration tests");
         return;
     }
 

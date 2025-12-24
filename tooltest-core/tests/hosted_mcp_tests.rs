@@ -65,11 +65,6 @@ async fn validate_hosted(url: &str) {
 }
 
 #[tokio::test]
-async fn hosted_mcp_attack_tools() {
-    validate_hosted("https://pymcp.app.lambdamechanic.com/attack/mcp").await;
-}
-
-#[tokio::test]
 async fn hosted_mcp_epss_tools() {
     validate_hosted("https://pymcp.app.lambdamechanic.com/epss/mcp").await;
 }

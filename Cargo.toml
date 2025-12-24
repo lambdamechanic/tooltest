@@ -1,6 +1,6 @@
 [workspace]
-members = ["tooltest-core", "tooltest-ffi", "tooltest-test-support"]
+members = ["tooltest-core", "tooltest-ffi", "tooltest-test-support", "tooltest-cli"]
 resolver = "2"
 
 [workspace.metadata.llvm-cov]
-ignore-filename-regex = ["stdio_test_server.rs"]
+ignore-filename-regex = ["stdio_test_server.rs", "tooltest_cli_test_server.rs"]

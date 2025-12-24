@@ -1273,43 +1273,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn run_http_succeeds_with_test_transport() {
-        let config = HttpConfig {
-            url: "http://localhost:0/ok".to_string(),
-            auth_token: None,
-        };
-        let result = run_http(
-            &config,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-        assert_success(&result);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn run_stdio_reports_transport_error() {
         let config = StdioConfig::new("mcp-server");
         let result = run_stdio(&config, &RunConfig::new(), RunnerOptions::default()).await;
         assert_failure(&result);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_stdio_succeeds_with_test_transport() {
-        let config = StdioConfig::new("mcp-ok");
-        let result = run_stdio(
-            &config,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-        assert_success(&result);
     }
 
     #[tokio::test(flavor = "multi_thread")]

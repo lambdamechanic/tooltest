@@ -21,6 +21,10 @@ async fn connect_runner_transport(
     .await
 }
 
+fn stdio_server_config() -> StdioConfig {
+    StdioConfig::new(env!("CARGO_BIN_EXE_stdio_test_server"))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_returns_minimized_failure() {
     let tool = tool_with_schemas(
@@ -361,4 +365,19 @@ async fn run_stdio_reports_transport_error() {
     let result =
         tooltest_core::run_stdio(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_stdio_succeeds_with_real_transport() {
+    let config = stdio_server_config();
+    let result = tooltest_core::run_stdio(
+        &config,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, RunOutcome::Success));
 }

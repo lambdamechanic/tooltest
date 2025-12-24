@@ -11,14 +11,22 @@ use serde_json::Value as JsonValue;
 mod generator;
 pub mod schema;
 pub mod session;
+mod validation;
 
-pub use rmcp::model::{CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject};
+pub use rmcp::model::{
+    CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,
+};
 pub use rmcp::service::{ClientInitializeError, ServiceError};
 pub use schema::{
     parse_call_tool_request, parse_call_tool_result, parse_list_tools, schema_version_label,
     SchemaError,
 };
 pub use session::{SessionDriver, SessionError};
+pub use validation::{
+    list_tools_http, list_tools_stdio, validate_tools, BulkToolValidationSummary,
+    ToolValidationConfig, ToolValidationDecision, ToolValidationError, ToolValidationFailure,
+    ToolValidationFn,
+};
 
 #[cfg(test)]
 mod tests;

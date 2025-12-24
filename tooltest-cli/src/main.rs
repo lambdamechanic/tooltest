@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use tooltest_core::{HttpConfig, RunConfig, RunOutcome, RunnerOptions, StdioConfig};
@@ -49,12 +50,12 @@ enum Command {
 }
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let sequence_len = match build_sequence_len(cli.min_sequence_len, cli.max_sequence_len) {
         Ok(range) => range,
-        Err(message) => exit_with_error(&message),
+        Err(message) => return error_exit(&message),
     };
 
     let options = RunnerOptions {
@@ -72,7 +73,7 @@ async fn main() {
         } => {
             let env = match parse_env_vars(env) {
                 Ok(env) => env,
-                Err(message) => exit_with_error(&message),
+                Err(message) => return error_exit(&message),
             };
             let config = StdioConfig {
                 command,
@@ -92,8 +93,8 @@ async fn main() {
     println!("{payload}");
 
     match result.outcome {
-        RunOutcome::Success => std::process::exit(0),
-        RunOutcome::Failure(_) => std::process::exit(1),
+        RunOutcome::Success => ExitCode::SUCCESS,
+        RunOutcome::Failure(_) => ExitCode::from(1),
     }
 }
 
@@ -121,7 +122,7 @@ fn parse_env_vars(entries: Vec<String>) -> Result<BTreeMap<String, String>, Stri
     Ok(env)
 }
 
-fn exit_with_error(message: &str) -> ! {
+fn error_exit(message: &str) -> ExitCode {
     eprintln!("{message}");
-    std::process::exit(2)
+    ExitCode::from(2)
 }

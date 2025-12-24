@@ -274,10 +274,11 @@ fn invalid_input_object_strategy(
                         .map(|mutated| (constraint, mutated))
                 })
                 .collect::<Vec<_>>();
-            (!viable.is_empty()).then_some(viable)
+            NonEmpty::from_vec(viable)
         })
         .prop_flat_map(move |viable| {
             let schema = schema.clone();
+            let viable: Vec<_> = viable.into();
             proptest::sample::select(viable)
                 .prop_filter_map(
                     "must violate exactly one schema constraint",

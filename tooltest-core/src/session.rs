@@ -61,7 +61,7 @@ impl SessionDriver {
 
     /// Connects to an MCP server over HTTP using rmcp streamable HTTP transport.
     pub async fn connect_http(config: &HttpConfig) -> Result<Self, SessionError> {
-        let transport = build_http_transport(config)?;
+        let transport = build_http_transport(config);
         Self::connect_with_transport(transport).await
     }
 
@@ -123,16 +123,12 @@ fn http_transport_config(
 }
 
 /// Builds an HTTP transport for MCP communication.
-///
-/// Errors are surfaced as `SessionError` to preserve rmcp error context.
 fn build_http_transport(
     config: &HttpConfig,
-) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {
+) -> rmcp::transport::StreamableHttpClientTransport<reqwest::Client> {
     use rmcp::transport::StreamableHttpClientTransport;
 
-    Ok(StreamableHttpClientTransport::from_config(
-        http_transport_config(config),
-    ))
+    StreamableHttpClientTransport::from_config(http_transport_config(config))
 }
 
 #[cfg(test)]

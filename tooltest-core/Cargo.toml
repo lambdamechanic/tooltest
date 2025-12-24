@@ -4,12 +4,21 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+stdio-test-server = []
+
+[[bin]]
+name = "stdio_test_server"
+path = "src/bin/stdio_test_server.rs"
+required-features = ["stdio-test-server"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rmcp = { version = "0.12", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 proptest = "1"
+proptest_async = { version = "0.2", default-features = false, features = ["tokio"] }
 jsonschema = "0.26"
 regex = "1"
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }

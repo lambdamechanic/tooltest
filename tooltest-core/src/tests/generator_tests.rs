@@ -638,7 +638,7 @@ fn invocation_strategy_rejects_non_object_schema() {
     }
 }
 
-proptest! {
+proptest_async::proptest! {
     #[test]
     fn invocation_strategy_generates_values_matching_schema(schema in schema_strategy()) {
         let schema_object = schema.as_object().cloned().expect("schema object");
@@ -1458,6 +1458,12 @@ fn path_from_pointer_decodes_indices_and_keys() {
             PathSegment::Key("a~b".to_string())
         ]
     );
+}
+
+#[test]
+fn path_from_pointer_empty_returns_empty_vec() {
+    let path = path_from_pointer("");
+    assert!(path.is_empty());
 }
 
 #[test]

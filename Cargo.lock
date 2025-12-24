@@ -1046,6 +1046,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest_async"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94fbddd46d5ac1ec9a2c00b036b1f52656cd2b47c98b3fd8e584e6b4eae2d6cd"
+dependencies = [
+ "proptest",
+ "tokio",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1748,6 +1758,7 @@ dependencies = [
  "jsonschema",
  "nonempty",
  "proptest",
+ "proptest_async",
  "regex",
  "reqwest",
  "rmcp",

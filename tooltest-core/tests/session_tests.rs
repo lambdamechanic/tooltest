@@ -257,6 +257,31 @@ async fn connect_stdio_stub_returns_error() {
 
 #[cfg(coverage)]
 #[tokio::test]
+async fn connect_stdio_applies_cwd() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let mut config = tooltest_core::StdioConfig::new("mcp-server");
+    config.cwd = Some(cwd.to_string_lossy().to_string());
+    let result = SessionDriver::connect_stdio(&config).await;
+    assert!(matches!(result, Err(SessionError::Transport(_))));
+}
+
+#[cfg(coverage)]
+#[tokio::test]
+async fn connect_stdio_attempts_child_process_spawn() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut config = tooltest_core::StdioConfig::new(shell);
+    config.args = vec!["-c".to_string(), "exit 0".to_string()];
+    let result = SessionDriver::connect_stdio(&config).await;
+    assert!(matches!(
+        result,
+        Err(SessionError::Transport(_))
+            | Err(SessionError::Service(_))
+            | Err(SessionError::Initialize(_))
+    ));
+}
+
+#[cfg(coverage)]
+#[tokio::test]
 async fn connect_http_reports_error_for_invalid_url() {
     let config = tooltest_core::HttpConfig {
         url: "http://127.0.0.1:0/mcp".to_string(),

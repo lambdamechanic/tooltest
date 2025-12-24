@@ -91,8 +91,26 @@ pub type ToolPredicate = Arc<dyn Fn(&str, &JsonValue) -> bool + Send + Sync>;
 /// Declarative JSON assertion DSL container.
 ///
 /// Runs also apply default assertions that fail on tool error responses and
-/// enforce declared output schemas. When a tool has an output schema, the
-/// response must include structured output.
+/// validate structured output against declared output schemas when present.
+///
+/// Example:
+/// ```
+/// use serde_json::json;
+/// use tooltest_core::{
+///     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, ResponseAssertion,
+/// };
+///
+/// let assertions = AssertionSet {
+///     rules: vec![AssertionRule::Response(ResponseAssertion {
+///         tool: Some("echo".to_string()),
+///         checks: vec![AssertionCheck {
+///             target: AssertionTarget::StructuredOutput,
+///             pointer: "/status".to_string(),
+///             expected: json!("ok"),
+///         }],
+///     })],
+/// };
+/// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AssertionSet {
     /// Assertion rules evaluated during or after a run.
@@ -126,6 +144,8 @@ pub struct SequenceAssertion {
 }
 
 /// A single JSON-pointer based check.
+///
+/// `pointer` uses RFC 6901 JSON Pointer syntax.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssertionCheck {
     /// The target payload to inspect.

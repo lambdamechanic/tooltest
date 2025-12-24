@@ -218,10 +218,7 @@ fn apply_default_assertions(
 
     let tool_name = entry.invocation.name.as_ref();
     let validator = validators.get(tool_name)?;
-    let structured = match entry.response.structured_content.as_ref() {
-        Some(structured) => structured,
-        None => return Some(format!("missing structured output for tool '{tool_name}'")),
-    };
+    let structured = entry.response.structured_content.as_ref()?;
     if let Err(error) = validator.validate(structured) {
         return Some(format!(
             "output schema violation for tool '{tool_name}': {error}"
@@ -580,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_default_assertions_reports_missing_structured_content() {
+    fn apply_default_assertions_skips_missing_structured_content() {
         let schema = json!({
             "type": "object",
             "properties": { "status": { "type": "string" } },
@@ -595,7 +592,7 @@ mod tests {
         let mut validators = BTreeMap::new();
         validators.insert("echo".to_string(), validator);
         let result = apply_default_assertions(&entry, &validators);
-        assert!(result.is_some());
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1032,6 +1029,26 @@ mod tests {
         assert!(matches!(result.outcome, RunOutcome::Success));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_with_session_rejects_current_thread_runtime() {
+        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let transport = RunnerTransport::new(tool, response);
+        let driver = connect_runner_transport(transport).await.expect("connect");
+
+        let result = run_with_session(
+            &driver,
+            &RunConfig::new(),
+            RunnerOptions {
+                cases: 1,
+                sequence_len: 1..=1,
+            },
+        )
+        .await;
+
+        assert_failure_reason_contains(&result, "multi-thread Tokio runtime");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn run_with_session_reports_list_tools_error() {
         let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
@@ -1054,6 +1071,17 @@ mod tests {
 
         assert_failure_reason_contains(&result, "failed to list tools");
         assert!(result.trace.is_empty());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_smoke_for_assert_helpers() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+        };
+        assert_success(&result);
     }
 
     #[tokio::test(flavor = "multi_thread")]

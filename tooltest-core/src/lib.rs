@@ -91,7 +91,7 @@ pub type ToolPredicate = Arc<dyn Fn(&str, &JsonValue) -> bool + Send + Sync>;
 /// Declarative JSON assertion DSL container.
 ///
 /// Runs also apply default assertions that fail on tool error responses and
-/// validate structured output against declared output schemas when present.
+/// validate structured output against declared output schemas.
 ///
 /// Example:
 /// ```

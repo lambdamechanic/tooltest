@@ -218,7 +218,11 @@ fn apply_default_assertions(
 
     let tool_name = entry.invocation.name.as_ref();
     let validator = validators.get(tool_name)?;
-    let structured = entry.response.structured_content.as_ref()?;
+    let Some(structured) = entry.response.structured_content.as_ref() else {
+        return Some(format!(
+            "tool '{tool_name}' returned no structured_content for output schema"
+        ));
+    };
     if let Err(error) = validator.validate(structured) {
         return Some(format!(
             "output schema violation for tool '{tool_name}': {error}"
@@ -577,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_default_assertions_skips_missing_structured_content() {
+    fn apply_default_assertions_reports_missing_structured_content() {
         let schema = json!({
             "type": "object",
             "properties": { "status": { "type": "string" } },
@@ -592,7 +596,7 @@ mod tests {
         let mut validators = BTreeMap::new();
         validators.insert("echo".to_string(), validator);
         let result = apply_default_assertions(&entry, &validators);
-        assert!(result.is_none());
+        assert!(result.is_some());
     }
 
     #[test]

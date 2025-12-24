@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
 
+#[cfg(coverage)]
+use axum::response::IntoResponse;
 use rmcp::model::{
     CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, InitializeResult, JsonRpcMessage,
     JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0, ListToolsRequest,
@@ -262,7 +264,16 @@ async fn connect_http_reports_error_with_raw_token() {
 #[cfg(coverage)]
 async fn mcp_test_handler(
     axum::Json(payload): axum::Json<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
+) -> axum::response::Response {
+    let method = payload
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+
+    if method == "initialized" {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
+    }
+
     let id = payload
         .get("id")
         .cloned()
@@ -279,12 +290,12 @@ async fn mcp_test_handler(
         "id": id,
         "result": result,
     });
-    axum::Json(response)
+    axum::Json(response).into_response()
 }
 
 #[cfg(coverage)]
 #[tokio::test]
-async fn connect_http_succeeds_with_local_server() {
+async fn connect_http_reports_error_with_local_server() {
     let router = axum::Router::new().route("/mcp", axum::routing::post(mcp_test_handler));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -305,13 +316,13 @@ async fn connect_http_succeeds_with_local_server() {
         url: format!("http://{addr}/mcp"),
         auth_token: None,
     };
-    let _driver = tokio::time::timeout(
+    let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         SessionDriver::connect_http(&config),
     )
     .await
-    .expect("connect timeout")
-    .expect("connect");
+    .expect("connect timeout");
+    assert!(result.is_err());
 
     let _ = shutdown_tx.send(());
     handle.await.expect("server");

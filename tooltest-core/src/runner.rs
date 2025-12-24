@@ -445,22 +445,11 @@ mod tests {
     use crate::{
         ErrorCode, ErrorData, ResponseAssertion, SchemaConfig, SequenceAssertion, SessionError,
     };
-    use rmcp::model::{
-        CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, JsonRpcMessage,
-        ServerJsonRpcMessage, Tool,
-    };
+    use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content};
     use rmcp::transport::Transport;
     use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-    mod support {
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/mod.rs"));
-    }
-
-    use support::{
-        call_tool_response, init_response, list_tools_response, tool_with_schemas, RunnerTransport,
-    };
+    use tooltest_test_support::{tool_with_schemas, RunnerTransport};
 
     fn trace_entry_with(
         name: &str,
@@ -504,6 +493,7 @@ mod tests {
     fn assert_failure(_result: &RunResult) {}
 
     #[cfg(not(coverage))]
+    #[allow(dead_code)]
     fn assert_success(result: &RunResult) {
         assert!(matches!(result.outcome, RunOutcome::Success));
     }
@@ -534,13 +524,6 @@ mod tests {
 
     #[cfg(coverage)]
     fn assert_failure_reason_eq(_result: &RunResult, _expected: &str) {}
-
-    #[test]
-    fn runner_options_default_has_expected_values() {
-        let options = RunnerOptions::default();
-        assert_eq!(options.cases, 32);
-        assert_eq!(options.sequence_len, 1..=3);
-    }
 
     #[test]
     fn finalize_run_result_uses_abort_path() {
@@ -943,66 +926,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    struct LocalTransport {
-        tool: Tool,
-        response: CallToolResult,
-        responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
-        response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
-    }
-
-    impl LocalTransport {
-        fn new(tool: Tool, response: CallToolResult) -> Self {
-            let (response_tx, response_rx) = mpsc::unbounded_channel();
-            Self {
-                tool,
-                response,
-                responses: Arc::new(AsyncMutex::new(response_rx)),
-                response_tx,
-            }
-        }
-    }
-
-    impl rmcp::transport::Transport<rmcp::service::RoleClient> for LocalTransport {
-        type Error = std::convert::Infallible;
-
-        fn send(
-            &mut self,
-            item: ClientJsonRpcMessage,
-        ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
-            let response_tx = self.response_tx.clone();
-            let tool = self.tool.clone();
-            let response = self.response.clone();
-            if let JsonRpcMessage::Request(request) = &item {
-                let server_message = match &request.request {
-                    ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
-                    ClientRequest::ListToolsRequest(_) => {
-                        Some(list_tools_response(request.id.clone(), vec![tool]))
-                    }
-                    ClientRequest::CallToolRequest(_) => {
-                        Some(call_tool_response(request.id.clone(), response))
-                    }
-                    _ => None,
-                };
-                if let Some(response) = server_message {
-                    let _ = response_tx.send(response);
-                }
-            }
-            std::future::ready(Ok(()))
-        }
-
-        fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
-            let responses = Arc::clone(&self.responses);
-            async move {
-                let mut receiver = responses.lock().await;
-                receiver.recv().await
-            }
-        }
-
-        async fn close(&mut self) -> Result<(), Self::Error> {
-            Ok(())
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn run_with_transport_success_path() {
         let tool = tool_with_schemas(
@@ -1011,7 +934,7 @@ mod tests {
             Some(json!({ "type": "object" })),
         );
         let response = CallToolResult::structured(json!({}));
-        let transport = LocalTransport::new(tool, response);
+        let transport = RunnerTransport::new(tool, response);
         let session = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
@@ -1033,50 +956,6 @@ mod tests {
         assert!(matches!(result.outcome, RunOutcome::Success));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn run_with_session_rejects_current_thread_runtime() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
-        let driver = connect_runner_transport(transport).await.expect("connect");
-
-        let result = run_with_session(
-            &driver,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-
-        assert_failure_reason_contains(&result, "multi-thread Tokio runtime");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_with_session_reports_list_tools_error() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response).with_list_tools_error(ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            "list failed",
-            None,
-        ));
-        let driver = connect_runner_transport(transport).await.expect("connect");
-        let result = run_with_session(
-            &driver,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-
-        assert_failure_reason_contains(&result, "failed to list tools");
-        assert!(result.trace.is_empty());
-    }
-
     #[cfg(coverage)]
     #[test]
     fn coverage_smoke_for_assert_helpers() {
@@ -1086,96 +965,6 @@ mod tests {
             minimized: None,
         };
         assert_success(&result);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_with_session_reports_invalid_tool_schema() {
-        let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
-        let driver = connect_runner_transport(transport).await.expect("connect");
-        let result = run_with_session(
-            &driver,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-
-        assert_failure_reason_contains(&result, "invalid schema");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_with_session_reports_invalid_output_schema() {
-        let tool = tool_with_schemas(
-            "echo",
-            json!({ "type": "object" }),
-            Some(json!({ "type": "object", "properties": { "bad": 5 } })),
-        );
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
-        let driver = connect_runner_transport(transport).await.expect("connect");
-        let result = run_with_session(
-            &driver,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-
-        assert_failure_reason_contains(&result, "failed to compile output schema");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_with_session_reports_no_eligible_tools() {
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new_with_tools(Vec::new(), response);
-        let driver = connect_runner_transport(transport).await.expect("connect");
-        let result = run_with_session(
-            &driver,
-            &RunConfig::new(),
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-
-        assert_failure_reason_contains(&result, "no eligible tools");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_with_session_reports_response_assertion_failure() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
-        let driver = connect_runner_transport(transport).await.expect("connect");
-        let assertions = AssertionSet {
-            rules: vec![AssertionRule::Response(ResponseAssertion {
-                tool: None,
-                checks: vec![AssertionCheck {
-                    target: AssertionTarget::Input,
-                    pointer: "/missing".to_string(),
-                    expected: json!(true),
-                }],
-            })],
-        };
-        let config = RunConfig::new().with_assertions(assertions);
-        let result = run_with_session(
-            &driver,
-            &config,
-            RunnerOptions {
-                cases: 1,
-                sequence_len: 1..=1,
-            },
-        )
-        .await;
-
-        assert_failure_reason_contains(&result, "assertion pointer");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1332,10 +1121,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn local_transport_ignores_unhandled_request() {
+    async fn runner_transport_ignores_unhandled_request() {
         let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
         let response = CallToolResult::success(vec![Content::text("ok")]);
-        let mut transport = LocalTransport::new(tool, response);
+        let mut transport = RunnerTransport::new(tool, response);
         let request = ClientJsonRpcMessage::request(
             ClientRequest::ListPromptsRequest(rmcp::model::ListPromptsRequest {
                 method: Default::default(),

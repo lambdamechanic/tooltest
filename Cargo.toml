@@ -1,5 +1,5 @@
 [workspace]
-members = ["tooltest-core", "tooltest-ffi"]
+members = ["tooltest-core", "tooltest-ffi", "tooltest-test-support"]
 resolver = "2"
 
 [workspace.metadata.llvm-cov]

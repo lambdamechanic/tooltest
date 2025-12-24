@@ -4,8 +4,6 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tooltest_core::{validate_tool, HttpConfig, SessionDriver, ToolValidationConfig};
 
-mod support;
-
 const CASES_PER_TOOL_DEFAULT: usize = 10;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_HOSTED_CASES_PER_TOOL";
 const SKIP_ENV: &str = "SKIP_HOSTED_MCP_TESTS";
@@ -24,7 +22,7 @@ fn cases_per_tool() -> usize {
 }
 
 async fn validate_hosted(url: &str) {
-    support::init_tracing();
+    init_tracing();
 
     if skip_hosted_tests() {
         return;
@@ -62,6 +60,18 @@ async fn validate_hosted(url: &str) {
             eprintln!("  - {failure}");
         }
     }
+}
+
+fn init_tracing() {
+    static INIT_TRACING: std::sync::Once = std::sync::Once::new();
+    INIT_TRACING.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
 }
 
 #[tokio::test]

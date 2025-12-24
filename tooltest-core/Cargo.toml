@@ -27,6 +27,7 @@ nonempty = "0.10"
 [dev-dependencies]
 axum = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tooltest-test-support = { path = "../tooltest-test-support" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }

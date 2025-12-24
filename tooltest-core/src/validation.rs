@@ -14,107 +14,6 @@ use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use rmcp::model::Tool;
 
-#[cfg(any(test, coverage))]
-mod list_tools_stub {
-    use std::sync::Arc;
-
-    use rmcp::model::{
-        ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage, JsonRpcResponse,
-        JsonRpcVersion2_0, ListToolsResult, RequestId, ServerInfo, ServerJsonRpcMessage,
-        ServerResult, Tool,
-    };
-    use rmcp::service::RoleClient;
-    use rmcp::transport::Transport;
-    use serde_json::json;
-    use tokio::sync::{mpsc, Mutex as AsyncMutex};
-
-    pub struct ListToolsTransport {
-        tools: Vec<Tool>,
-        responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
-        response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
-    }
-
-    pub fn stub_tool(name: &str) -> Tool {
-        Tool::new(
-            name.to_string(),
-            "stub tool",
-            json!({ "type": "object" }).as_object().cloned().unwrap(),
-        )
-    }
-
-    impl ListToolsTransport {
-        pub fn new(tools: Vec<Tool>) -> Self {
-            let (response_tx, response_rx) = mpsc::unbounded_channel();
-            Self {
-                tools,
-                responses: Arc::new(AsyncMutex::new(response_rx)),
-                response_tx,
-            }
-        }
-    }
-
-    impl Transport<RoleClient> for ListToolsTransport {
-        type Error = std::convert::Infallible;
-
-        fn send(
-            &mut self,
-            item: ClientJsonRpcMessage,
-        ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
-            let response_tx = self.response_tx.clone();
-            let tools = self.tools.clone();
-            if let JsonRpcMessage::Request(request) = &item {
-                let mut response = None;
-                if let ClientRequest::InitializeRequest(_) = &request.request {
-                    response = Some(init_response(request.id.clone()));
-                } else if let ClientRequest::ListToolsRequest(_) = &request.request {
-                    response = Some(list_tools_response(request.id.clone(), tools));
-                }
-                if let Some(response) = response {
-                    let _ = response_tx.send(response);
-                }
-            }
-            std::future::ready(Ok(()))
-        }
-
-        fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
-            let responses = Arc::clone(&self.responses);
-            async move {
-                let mut receiver = responses.lock().await;
-                receiver.recv().await
-            }
-        }
-
-        async fn close(&mut self) -> Result<(), Self::Error> {
-            Ok(())
-        }
-    }
-
-    fn init_response(id: RequestId) -> ServerJsonRpcMessage {
-        ServerJsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            result: ServerResult::InitializeResult(InitializeResult {
-                protocol_version: ServerInfo::default().protocol_version,
-                capabilities: ServerInfo::default().capabilities,
-                server_info: ServerInfo::default().server_info,
-                instructions: None,
-            }),
-        })
-    }
-
-    fn list_tools_response(id: RequestId, tools: Vec<Tool>) -> ServerJsonRpcMessage {
-        ServerJsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            result: ServerResult::ListToolsResult(ListToolsResult {
-                tools,
-                next_cursor: None,
-                meta: None,
-            }),
-        })
-    }
-}
-
 const DEFAULT_CASES_PER_TOOL: usize = 50;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_CASES_PER_TOOL";
 
@@ -512,10 +411,10 @@ mod tests {
     use proptest::strategy::NewTree;
     use rmcp::model::{
         CallToolResult, ClientJsonRpcMessage, ClientNotification, ClientRequest, Content,
-        InitializeRequest, InitializeRequestParam, InitializeResult, InitializedNotification,
-        JsonRpcMessage, JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0,
-        ListPromptsRequest, ListToolsRequest, ListToolsResult, NumberOrString,
-        PaginatedRequestParam, ServerInfo, ServerJsonRpcMessage, ServerResult, Tool,
+        InitializeRequest, InitializeRequestParam, InitializedNotification, JsonRpcMessage,
+        JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0, ListPromptsRequest,
+        ListToolsRequest, NumberOrString, PaginatedRequestParam, ServerJsonRpcMessage,
+        ServerResult, Tool,
     };
     use rmcp::service::ServiceError;
     use rmcp::transport::Transport;
@@ -524,6 +423,9 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     use super::*;
+    use tooltest_test_support::{
+        call_tool_response, init_response, list_tools_response, stub_tool, ListToolsTransport,
+    };
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -708,7 +610,7 @@ mod tests {
                 let response = match &request.request {
                     ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
                     ClientRequest::ListToolsRequest(_) => {
-                        Some(list_tools_response(request.id.clone(), &tools))
+                        Some(list_tools_response(request.id.clone(), tools.clone()))
                     }
                     ClientRequest::CallToolRequest(call_request) => {
                         let tool_name = call_request.params.name.as_ref();
@@ -762,7 +664,8 @@ mod tests {
                         if fail_on_list {
                             return std::future::ready(Err(TransportError("list tools")));
                         }
-                        let _ = response_tx.send(list_tools_response(request.id.clone(), &tools));
+                        let _ = response_tx
+                            .send(list_tools_response(request.id.clone(), tools.clone()));
                     }
                     ClientRequest::CallToolRequest(_) => {
                         if let Some(fail_after) = call_fail_after {
@@ -899,8 +802,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tools_stub_ignores_other_requests() {
-        let mut transport =
-            list_tools_stub::ListToolsTransport::new(vec![list_tools_stub::stub_tool("echo")]);
+        let mut transport = ListToolsTransport::new(vec![stub_tool("echo")]);
         let request = ClientJsonRpcMessage::request(
             ClientRequest::ListPromptsRequest(ListPromptsRequest {
                 method: Default::default(),
@@ -922,8 +824,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_tools_stub_handles_initialize_and_list_tools() {
-        let tools = vec![list_tools_stub::stub_tool("echo")];
-        let mut transport = list_tools_stub::ListToolsTransport::new(tools.clone());
+        let tools = vec![stub_tool("echo")];
+        let mut transport = ListToolsTransport::new(tools.clone());
 
         let init = ClientJsonRpcMessage::request(
             ClientRequest::InitializeRequest(InitializeRequest::new(
@@ -2025,43 +1927,6 @@ mod tests {
         };
         let trace = driver.send_tool_call(invocation).await.expect("trace");
         assert_eq!(trace.response.is_error, Some(false));
-    }
-
-    fn call_tool_response(
-        id: rmcp::model::RequestId,
-        result: CallToolResult,
-    ) -> ServerJsonRpcMessage {
-        ServerJsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            result: ServerResult::CallToolResult(result),
-        })
-    }
-
-    fn list_tools_response(id: rmcp::model::RequestId, tools: &[Tool]) -> ServerJsonRpcMessage {
-        let result = ListToolsResult {
-            tools: tools.to_vec(),
-            next_cursor: None,
-            meta: None,
-        };
-        ServerJsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            result: ServerResult::ListToolsResult(result),
-        })
-    }
-
-    fn init_response(id: rmcp::model::RequestId) -> ServerJsonRpcMessage {
-        ServerJsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            result: ServerResult::InitializeResult(InitializeResult {
-                protocol_version: ServerInfo::default().protocol_version,
-                capabilities: ServerInfo::default().capabilities,
-                server_info: ServerInfo::default().server_info,
-                instructions: None,
-            }),
-        })
     }
 
     fn tool_with_output_schema(name: &str, output_schema: serde_json::Value) -> Tool {

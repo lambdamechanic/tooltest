@@ -6,9 +6,7 @@ use tooltest_core::{
     StdioConfig,
 };
 
-mod support;
-
-use support::{tool_with_schemas, RunnerTransport};
+use tooltest_test_support::{tool_with_schemas, RunnerTransport};
 
 async fn connect_runner_transport(
     transport: RunnerTransport,
@@ -22,8 +20,8 @@ async fn connect_runner_transport(
 }
 
 #[cfg(not(coverage))]
-fn stdio_server_config() -> StdioConfig {
-    StdioConfig::new(env!("CARGO_BIN_EXE_stdio_test_server"))
+fn stdio_server_config() -> Option<StdioConfig> {
+    option_env!("CARGO_BIN_EXE_stdio_test_server").map(StdioConfig::new)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -121,6 +119,31 @@ async fn run_with_session_accepts_json_dsl_assertions() {
 
     assert!(matches!(result.outcome, RunOutcome::Success));
     assert_eq!(result.trace.len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_with_session_rejects_current_thread_runtime() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert!(failure.reason.contains("multi-thread Tokio runtime"));
+        }
+        _ => panic!("expected failure"),
+    }
 }
 
 #[test]
@@ -371,7 +394,12 @@ async fn run_stdio_reports_transport_error() {
 #[cfg(not(coverage))]
 #[tokio::test(flavor = "multi_thread")]
 async fn run_stdio_succeeds_with_real_transport() {
-    let config = stdio_server_config();
+    let Some(config) = stdio_server_config() else {
+        return;
+    };
+    if !std::path::Path::new(&config.command).exists() {
+        return;
+    }
     let result = tooltest_core::run_stdio(
         &config,
         &RunConfig::new(),

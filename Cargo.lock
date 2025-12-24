@@ -1765,6 +1765,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tooltest-test-support",
  "tracing-subscriber",
 ]
 
@@ -1773,6 +1774,15 @@ name = "tooltest-ffi"
 version = "0.1.0"
 dependencies = [
  "tooltest-core",
+]
+
+[[package]]
+name = "tooltest-test-support"
+version = "0.1.0"
+dependencies = [
+ "rmcp",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

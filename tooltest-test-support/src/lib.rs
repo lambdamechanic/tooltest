@@ -5,21 +5,10 @@ use rmcp::model::{
     JsonRpcMessage, JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo,
     ServerJsonRpcMessage, ServerResult, Tool,
 };
+use rmcp::service::RoleClient;
 use rmcp::transport::Transport;
+use serde_json::json;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
-
-static INIT_TRACING: std::sync::Once = std::sync::Once::new();
-
-pub fn init_tracing() {
-    INIT_TRACING.call_once(|| {
-        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off"));
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::io::stderr)
-            .try_init();
-    });
-}
 
 pub fn tool_with_schemas(
     name: &str,
@@ -77,7 +66,67 @@ pub fn init_response(id: RequestId) -> ServerJsonRpcMessage {
     })
 }
 
-// tooltest-8r4.9: shared transport stub for runner tests in that task; simulates list/call flows and error injection.
+pub fn stub_tool(name: &str) -> Tool {
+    Tool::new(
+        name.to_string(),
+        "stub tool",
+        json!({ "type": "object" }).as_object().cloned().unwrap(),
+    )
+}
+
+pub struct ListToolsTransport {
+    tools: Vec<Tool>,
+    responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
+    response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+}
+
+impl ListToolsTransport {
+    pub fn new(tools: Vec<Tool>) -> Self {
+        let (response_tx, response_rx) = mpsc::unbounded_channel();
+        Self {
+            tools,
+            responses: Arc::new(AsyncMutex::new(response_rx)),
+            response_tx,
+        }
+    }
+}
+
+impl Transport<RoleClient> for ListToolsTransport {
+    type Error = std::convert::Infallible;
+
+    fn send(
+        &mut self,
+        item: ClientJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let response_tx = self.response_tx.clone();
+        let tools = self.tools.clone();
+        if let JsonRpcMessage::Request(request) = &item {
+            let mut response = None;
+            if let ClientRequest::InitializeRequest(_) = &request.request {
+                response = Some(init_response(request.id.clone()));
+            } else if let ClientRequest::ListToolsRequest(_) = &request.request {
+                response = Some(list_tools_response(request.id.clone(), tools));
+            }
+            if let Some(response) = response {
+                let _ = response_tx.send(response);
+            }
+        }
+        std::future::ready(Ok(()))
+    }
+
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+        let responses = Arc::clone(&self.responses);
+        async move {
+            let mut receiver = responses.lock().await;
+            receiver.recv().await
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 pub struct RunnerTransport {
     tools: Vec<Tool>,
     response: CallToolResult,
@@ -117,7 +166,7 @@ impl RunnerTransport {
     }
 }
 
-impl Transport<rmcp::service::RoleClient> for RunnerTransport {
+impl Transport<RoleClient> for RunnerTransport {
     type Error = std::convert::Infallible;
 
     fn send(

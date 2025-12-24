@@ -303,6 +303,28 @@ fn parse_call_tool_result_rejects_invalid_payload() {
 }
 
 #[test]
+fn parse_list_tools_rejects_output_schema_with_string_type() {
+    let payload = json!({
+        "tools": [
+            {
+                "name": "echo",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "string" }
+                    }
+                },
+                "outputSchema": {
+                    "type": 5
+                }
+            }
+        ]
+    });
+    let result = parse_list_tools(payload, &default_config());
+    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+}
+
+#[test]
 fn schema_error_formats_messages() {
     let errors = vec![
         SchemaError::UnsupportedSchemaVersion("2025-12-01".to_string()),

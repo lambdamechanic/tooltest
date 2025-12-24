@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 mod generator;
+mod runner;
 pub mod schema;
 pub mod session;
 mod validation;
@@ -17,6 +18,7 @@ pub use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,
 };
 pub use rmcp::service::{ClientInitializeError, ServiceError};
+pub use runner::{run_http, run_stdio, run_with_session, RunnerOptions};
 pub use schema::{
     parse_call_tool_request, parse_call_tool_result, parse_list_tools, schema_version_label,
     SchemaError,

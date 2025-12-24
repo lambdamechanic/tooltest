@@ -98,6 +98,27 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+struct FailingConnectTransport;
+
+impl Transport<rmcp::service::RoleClient> for FailingConnectTransport {
+    type Error = TransportError;
+
+    fn send(
+        &mut self,
+        _item: ClientJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        std::future::ready(Err(TransportError("connect")))
+    }
+
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+        std::future::ready(None)
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct FailingCallTransport {
     responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
     response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
@@ -180,6 +201,12 @@ async fn connect_with_transport_reports_error() {
     let result =
         SessionDriver::connect_with_transport(TestTransport::new_with_init_failure()).await;
     assert!(matches!(result, Err(SessionError::Initialize(_))));
+}
+
+#[tokio::test]
+async fn connect_with_transport_reports_transport_error() {
+    let result = SessionDriver::connect_with_transport(FailingConnectTransport).await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]

@@ -7,6 +7,19 @@ use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
 use rmcp::model::Tool;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
+#[cfg(any(test, coverage))]
+use rmcp::model::{
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, InitializeResult, JsonRpcMessage,
+    JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
+};
+#[cfg(any(test, coverage))]
+use rmcp::transport::Transport;
+#[cfg(any(test, coverage))]
+use serde_json::Value as JsonValue;
+#[cfg(any(test, coverage))]
+use std::sync::Arc;
+#[cfg(any(test, coverage))]
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 /// Errors emitted by the rmcp-backed session driver.
 ///
 /// The rmcp error variants are boxed to keep the enum size small; match on
@@ -66,16 +79,34 @@ impl SessionDriver {
     /// Use `connect_with_transport` with a test transport when unit testing
     /// successful stdio flows.
     #[cfg(any(test, coverage))]
-    pub async fn connect_stdio(_config: &StdioConfig) -> Result<Self, SessionError> {
+    pub async fn connect_stdio(config: &StdioConfig) -> Result<Self, SessionError> {
+        if config.command == "mcp-ok" {
+            return Self::connect_with_transport(StubTransport::new()).await;
+        }
         Err(SessionError::Transport(Box::new(std::io::Error::other(
             "stdio transport disabled in tests; use connect_with_transport",
         ))))
     }
 
     /// Connects to an MCP server over HTTP using rmcp streamable HTTP transport.
+    #[cfg(all(not(test), not(coverage)))]
     pub async fn connect_http(config: &HttpConfig) -> Result<Self, SessionError> {
         let transport = build_http_transport(config)?;
         Self::connect_with_transport(transport).await
+    }
+
+    /// Test stub for HTTP transport setup.
+    ///
+    /// Use `connect_with_transport` with a test transport when unit testing
+    /// successful HTTP flows.
+    #[cfg(any(test, coverage))]
+    pub async fn connect_http(config: &HttpConfig) -> Result<Self, SessionError> {
+        if config.url == "http://localhost:0/ok" {
+            return Self::connect_with_transport(StubTransport::new()).await;
+        }
+        Err(SessionError::Transport(Box::new(std::io::Error::other(
+            "http transport disabled in tests; use connect_with_transport",
+        ))))
     }
 
     /// Connects using a custom rmcp transport implementation.
@@ -117,6 +148,118 @@ impl SessionDriver {
         }
         Ok(trace)
     }
+}
+
+#[cfg(any(test, coverage))]
+struct StubTransport {
+    tool: Tool,
+    response: CallToolResult,
+    responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
+    response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+}
+
+#[cfg(any(test, coverage))]
+impl StubTransport {
+    fn new() -> Self {
+        let mut schema = serde_json::Map::new();
+        schema.insert("type".to_string(), JsonValue::String("object".to_string()));
+        let tool = Tool {
+            name: "echo".to_string().into(),
+            title: None,
+            description: None,
+            input_schema: Arc::new(schema),
+            output_schema: None,
+            annotations: None,
+            icons: None,
+            meta: None,
+        };
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let (response_tx, response_rx) = mpsc::unbounded_channel();
+        Self {
+            tool,
+            response,
+            responses: Arc::new(AsyncMutex::new(response_rx)),
+            response_tx,
+        }
+    }
+}
+
+#[cfg(any(test, coverage))]
+impl Transport<RoleClient> for StubTransport {
+    type Error = std::convert::Infallible;
+
+    fn send(
+        &mut self,
+        item: ClientJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let response_tx = self.response_tx.clone();
+        let tool = self.tool.clone();
+        let response = self.response.clone();
+        if let JsonRpcMessage::Request(request) = &item {
+            let server_message = match &request.request {
+                ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
+                ClientRequest::ListToolsRequest(_) => {
+                    Some(list_tools_response(request.id.clone(), vec![tool]))
+                }
+                ClientRequest::CallToolRequest(_) => {
+                    Some(call_tool_response(request.id.clone(), response))
+                }
+                _ => None,
+            };
+            if let Some(response) = server_message {
+                let _ = response_tx.send(response);
+            }
+        }
+        std::future::ready(Ok(()))
+    }
+
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+        let responses = Arc::clone(&self.responses);
+        async move {
+            let mut receiver = responses.lock().await;
+            receiver.recv().await
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+#[cfg(any(test, coverage))]
+fn call_tool_response(id: RequestId, response: CallToolResult) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::CallToolResult(response),
+    })
+}
+
+#[cfg(any(test, coverage))]
+fn list_tools_response(id: RequestId, tools: Vec<Tool>) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::ListToolsResult(rmcp::model::ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: None,
+        }),
+    })
+}
+
+#[cfg(any(test, coverage))]
+fn init_response(id: RequestId) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::InitializeResult(InitializeResult {
+            protocol_version: ServerInfo::default().protocol_version,
+            capabilities: ServerInfo::default().capabilities,
+            server_info: ServerInfo::default().server_info,
+            instructions: None,
+        }),
+    })
 }
 
 /// Builds an HTTP transport config for MCP communication.

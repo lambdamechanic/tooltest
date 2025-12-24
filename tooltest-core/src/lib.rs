@@ -89,6 +89,10 @@ pub struct HttpConfig {
 pub type ToolPredicate = Arc<dyn Fn(&str, &JsonValue) -> bool + Send + Sync>;
 
 /// Declarative JSON assertion DSL container.
+///
+/// Runs also apply default assertions that fail on tool error responses and
+/// enforce declared output schemas. When a tool has an output schema, the
+/// response must include structured output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AssertionSet {
     /// Assertion rules evaluated during or after a run.
@@ -110,7 +114,7 @@ pub enum AssertionRule {
 pub struct ResponseAssertion {
     /// Optional tool name filter; when set, only matching tools are checked.
     pub tool: Option<String>,
-    /// Checks applied to the response payloads.
+    /// Checks applied to the response payloads (input, output, or structured output).
     pub checks: Vec<AssertionCheck>,
 }
 
@@ -140,7 +144,7 @@ pub enum AssertionTarget {
     Input,
     /// The raw tool output object.
     Output,
-    /// The structured tool output object, when present.
+    /// The structured tool output object, when present or required by schema.
     StructuredOutput,
     /// The full run sequence payload.
     Sequence,

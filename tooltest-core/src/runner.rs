@@ -37,6 +37,12 @@ impl Default for RunnerOptions {
 }
 
 /// Execute a tooltest run using a pre-initialized session.
+///
+/// Runs apply default assertions that fail on error responses and validate
+/// structured output against declared output schemas, plus any user-supplied
+/// assertion rules.
+///
+/// Requires a multi-thread Tokio runtime; current-thread runtimes are rejected.
 pub async fn run_with_session(
     session: &SessionDriver,
     config: &RunConfig,
@@ -76,6 +82,13 @@ pub async fn run_with_session(
     }));
     let validators = Rc::new(validators);
     let handle = tokio::runtime::Handle::current();
+    if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+        return failure_result(
+            "run_with_session requires a multi-thread Tokio runtime".to_string(),
+            Vec::new(),
+            None,
+        );
+    }
 
     let mut runner = TestRunner::new(ProptestConfig {
         cases: options.cases,
@@ -115,6 +128,8 @@ pub async fn run_with_session(
 }
 
 /// Execute a tooltest run against a stdio MCP endpoint.
+///
+/// Uses the same default and declarative assertions as [`run_with_session`].
 pub async fn run_stdio(
     endpoint: &StdioConfig,
     config: &RunConfig,
@@ -130,6 +145,8 @@ pub async fn run_stdio(
 }
 
 /// Execute a tooltest run against an HTTP MCP endpoint.
+///
+/// Uses the same default and declarative assertions as [`run_with_session`].
 pub async fn run_http(
     endpoint: &HttpConfig,
     config: &RunConfig,
@@ -201,7 +218,10 @@ fn apply_default_assertions(
 
     let tool_name = entry.invocation.name.as_ref();
     let validator = validators.get(tool_name)?;
-    let structured = entry.response.structured_content.as_ref()?;
+    let structured = match entry.response.structured_content.as_ref() {
+        Some(structured) => structured,
+        None => return Some(format!("missing structured output for tool '{tool_name}'")),
+    };
     if let Err(error) = validator.validate(structured) {
         return Some(format!(
             "output schema violation for tool '{tool_name}': {error}"
@@ -560,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_default_assertions_skips_when_missing_structured_content() {
+    fn apply_default_assertions_reports_missing_structured_content() {
         let schema = json!({
             "type": "object",
             "properties": { "status": { "type": "string" } },
@@ -575,7 +595,7 @@ mod tests {
         let mut validators = BTreeMap::new();
         validators.insert("echo".to_string(), validator);
         let result = apply_default_assertions(&entry, &validators);
-        assert!(result.is_none());
+        assert!(result.is_some());
     }
 
     #[test]
@@ -989,7 +1009,7 @@ mod tests {
             json!({ "type": "object" }),
             Some(json!({ "type": "object" })),
         );
-        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let response = CallToolResult::structured(json!({}));
         let transport = LocalTransport::new(tool, response);
         let session = SessionDriver::connect_with_transport(transport)
             .await

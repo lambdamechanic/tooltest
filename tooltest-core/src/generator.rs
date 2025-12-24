@@ -262,12 +262,11 @@ fn invalid_input_object_strategy(
     let valid_inputs = input_object_strategy(tool)?;
 
     let schema = tool.input_schema.clone();
+    let schema_for_filter = schema.clone();
     Ok(valid_inputs
-        .prop_flat_map(move |args| {
+        .prop_filter_map("must have a viable invalid mutation", move |args| {
             let value = JsonValue::Object(args.clone());
-            let constraints = applicable_constraints(schema.as_ref(), &value);
-            debug_assert!(!constraints.is_empty());
-            let schema = schema.clone();
+            let constraints = applicable_constraints(schema_for_filter.as_ref(), &value);
             let viable = constraints
                 .into_iter()
                 .filter_map(|constraint| {
@@ -275,7 +274,10 @@ fn invalid_input_object_strategy(
                         .map(|mutated| (constraint, mutated))
                 })
                 .collect::<Vec<_>>();
-            debug_assert!(!viable.is_empty());
+            (!viable.is_empty()).then_some(viable)
+        })
+        .prop_flat_map(move |viable| {
+            let schema = schema.clone();
             proptest::sample::select(viable)
                 .prop_filter_map(
                     "must violate exactly one schema constraint",

@@ -117,7 +117,6 @@ impl SessionDriver {
         }
         Ok(trace)
     }
-
 }
 
 /// Builds an HTTP transport config for MCP communication.

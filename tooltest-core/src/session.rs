@@ -4,6 +4,7 @@
 //! session layers aligned and to retain full error context for debugging.
 
 use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
+use rmcp::model::Tool;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
 
 /// Errors emitted by the rmcp-backed session driver.
@@ -72,21 +73,9 @@ impl SessionDriver {
     }
 
     /// Connects to an MCP server over HTTP using rmcp streamable HTTP transport.
-    #[cfg(all(not(test), not(coverage)))]
     pub async fn connect_http(config: &HttpConfig) -> Result<Self, SessionError> {
         let transport = build_http_transport(config)?;
         Self::connect_with_transport(transport).await
-    }
-
-    /// Test stub for HTTP transport setup.
-    ///
-    /// Use `connect_with_transport` with a test transport when unit testing
-    /// successful HTTP flows.
-    #[cfg(any(test, coverage))]
-    pub async fn connect_http(_config: &HttpConfig) -> Result<Self, SessionError> {
-        Err(SessionError::Transport(Box::new(std::io::Error::other(
-            "http transport disabled in tests; use connect_with_transport",
-        ))))
     }
 
     /// Connects using a custom rmcp transport implementation.
@@ -111,6 +100,12 @@ impl SessionDriver {
         })
     }
 
+    /// Lists all tools available from the MCP session.
+    pub async fn list_tools(&self) -> Result<Vec<Tool>, SessionError> {
+        let tools = self.service.peer().list_all_tools().await?;
+        Ok(tools)
+    }
+
     /// Sends a sequence of tool invocations via rmcp.
     pub async fn run_invocations<I>(&self, invocations: I) -> Result<Vec<TraceEntry>, SessionError>
     where
@@ -121,12 +116,6 @@ impl SessionDriver {
             trace.push(self.send_tool_call(invocation).await?);
         }
         Ok(trace)
-    }
-
-    /// Lists all tools available from the MCP session.
-    pub async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, SessionError> {
-        let tools = self.service.peer().list_all_tools().await?;
-        Ok(tools)
     }
 }
 

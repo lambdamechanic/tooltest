@@ -23,7 +23,7 @@ pub use schema::{
 };
 pub use session::{SessionDriver, SessionError};
 pub use validation::{
-    list_tools_http, list_tools_stdio, validate_tools, BulkToolValidationSummary,
+    list_tools_http, list_tools_stdio, validate_tool, validate_tools, BulkToolValidationSummary,
     ToolValidationConfig, ToolValidationDecision, ToolValidationError, ToolValidationFailure,
     ToolValidationFn,
 };

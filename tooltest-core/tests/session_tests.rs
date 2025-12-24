@@ -98,6 +98,27 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+struct FailingConnectTransport;
+
+impl Transport<rmcp::service::RoleClient> for FailingConnectTransport {
+    type Error = TransportError;
+
+    fn send(
+        &mut self,
+        _item: ClientJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        std::future::ready(Err(TransportError("connect")))
+    }
+
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+        std::future::ready(None)
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct FailingCallTransport {
     responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
     response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
@@ -183,6 +204,12 @@ async fn connect_with_transport_reports_error() {
 }
 
 #[tokio::test]
+async fn connect_with_transport_reports_transport_error() {
+    let result = SessionDriver::connect_with_transport(FailingConnectTransport).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
 async fn run_invocations_collects_trace() {
     let transport = TestTransport::new();
     let driver = SessionDriver::connect_with_transport(transport)
@@ -226,6 +253,31 @@ async fn connect_stdio_stub_returns_error() {
     let config = tooltest_core::StdioConfig::new("mcp-server");
     let result = SessionDriver::connect_stdio(&config).await;
     assert!(matches!(result, Err(SessionError::Transport(_))));
+}
+
+#[cfg(coverage)]
+#[tokio::test]
+async fn connect_stdio_applies_cwd() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let mut config = tooltest_core::StdioConfig::new("mcp-server");
+    config.cwd = Some(cwd.to_string_lossy().to_string());
+    let result = SessionDriver::connect_stdio(&config).await;
+    assert!(matches!(result, Err(SessionError::Transport(_))));
+}
+
+#[cfg(coverage)]
+#[tokio::test]
+async fn connect_stdio_attempts_child_process_spawn() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut config = tooltest_core::StdioConfig::new(shell);
+    config.args = vec!["-c".to_string(), "exit 0".to_string()];
+    let result = SessionDriver::connect_stdio(&config).await;
+    assert!(matches!(
+        result,
+        Err(SessionError::Transport(_))
+            | Err(SessionError::Service(_))
+            | Err(SessionError::Initialize(_))
+    ));
 }
 
 #[cfg(coverage)]

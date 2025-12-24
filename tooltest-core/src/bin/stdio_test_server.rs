@@ -1,0 +1,303 @@
+use std::io::{self, BufRead, Write};
+use std::sync::Arc;
+
+use rmcp::model::{
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
+    JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
+    Tool,
+};
+use serde_json::json;
+
+fn main() {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    run_server(stdin.lock().lines(), &mut stdout);
+}
+
+fn run_server<I, W>(lines: I, stdout: &mut W)
+where
+    I: IntoIterator<Item = io::Result<String>>,
+    W: Write,
+{
+    for line in lines {
+        let Ok(line) = line else {
+            break;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let message: ClientJsonRpcMessage = match serde_json::from_str(&line) {
+            Ok(message) => message,
+            Err(_) => continue,
+        };
+        let Some(response) = handle_message(message) else {
+            continue;
+        };
+        write_response(stdout, &response);
+    }
+}
+
+fn write_response<W: Write>(stdout: &mut W, response: &ServerJsonRpcMessage) {
+    let payload = serde_json::to_string(response).expect("serialize response");
+    let _ = writeln!(stdout, "{payload}");
+    let _ = stdout.flush();
+}
+
+fn handle_message(message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMessage> {
+    match message {
+        JsonRpcMessage::Request(request) => match &request.request {
+            ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
+            ClientRequest::ListToolsRequest(_) => {
+                Some(list_tools_response(request.id.clone(), vec![tool_stub()]))
+            }
+            ClientRequest::CallToolRequest(_) => {
+                Some(call_tool_response(request.id.clone(), tool_response()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn tool_stub() -> Tool {
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "value": { "type": "string" }
+        }
+    });
+    let output_schema = json!({
+        "type": "object",
+        "properties": {
+            "status": { "type": "string", "const": "ok" }
+        },
+        "required": ["status"]
+    });
+    Tool {
+        name: "echo".to_string().into(),
+        title: None,
+        description: None,
+        input_schema: Arc::new(
+            input_schema
+                .as_object()
+                .cloned()
+                .expect("input schema object"),
+        ),
+        output_schema: Some(Arc::new(
+            output_schema
+                .as_object()
+                .cloned()
+                .expect("output schema object"),
+        )),
+        annotations: None,
+        icons: None,
+        meta: None,
+    }
+}
+
+fn tool_response() -> CallToolResult {
+    CallToolResult::structured(json!({ "status": "ok" }))
+}
+
+fn call_tool_response(id: RequestId, response: CallToolResult) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::CallToolResult(response),
+    })
+}
+
+fn list_tools_response(id: RequestId, tools: Vec<Tool>) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::ListToolsResult(rmcp::model::ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: None,
+        }),
+    })
+}
+
+fn init_response(id: RequestId) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::InitializeResult(InitializeResult {
+            protocol_version: ServerInfo::default().protocol_version,
+            capabilities: ServerInfo::default().capabilities,
+            server_info: ServerInfo::default().server_info,
+            instructions: None,
+        }),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::{
+        CallToolRequestParam, ClientNotification, ErrorData, InitializedNotification,
+        JsonRpcNotification, ListPromptsRequest, ListToolsRequest, NumberOrString,
+        PaginatedRequestParam, Request, ServerJsonRpcMessage, ServerNotification, ServerRequest,
+        ServerResult, ToolListChangedNotification,
+    };
+    use std::io::Write;
+
+    fn unwrap_call_tool_result(message: ServerJsonRpcMessage) -> CallToolResult {
+        let (result, _) = message.into_response().expect("expected response message");
+        match result {
+            ServerResult::CallToolResult(result) => result,
+            _ => panic!("expected call tool result"),
+        }
+    }
+
+    #[test]
+    fn run_server_handles_empty_input() {
+        let lines: Vec<io::Result<String>> = Vec::new();
+        let mut output = Vec::new();
+        run_server(lines, &mut output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn run_server_skips_empty_and_invalid_input() {
+        let lines = vec![
+            Ok("   ".to_string()),
+            Ok("not-json".to_string()),
+            Err(io::Error::new(io::ErrorKind::Other, "boom")),
+        ];
+        let mut output = Vec::new();
+        run_server(lines, &mut output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn handle_message_ignores_unhandled_request() {
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::ListPromptsRequest(ListPromptsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(1),
+        );
+        assert!(handle_message(request).is_none());
+    }
+
+    #[test]
+    fn handle_message_handles_tool_call() {
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::CallToolRequest(Request::new(CallToolRequestParam {
+                name: "echo".into(),
+                arguments: None,
+            })),
+            NumberOrString::Number(3),
+        );
+        let response = handle_message(request).expect("response");
+        let result = unwrap_call_tool_result(response);
+        assert!(result.structured_content.is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "expected response message")]
+    fn unwrap_call_tool_result_panics_on_error_response() {
+        let message = ServerJsonRpcMessage::error(
+            ErrorData::internal_error("boom", None),
+            NumberOrString::Number(9),
+        );
+        let _ = unwrap_call_tool_result(message);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected response message")]
+    fn unwrap_call_tool_result_panics_on_request() {
+        let message = ServerJsonRpcMessage::request(
+            ServerRequest::PingRequest(Default::default()),
+            NumberOrString::Number(10),
+        );
+        let _ = unwrap_call_tool_result(message);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected response message")]
+    fn unwrap_call_tool_result_panics_on_notification() {
+        let message = ServerJsonRpcMessage::notification(
+            ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
+        );
+        let _ = unwrap_call_tool_result(message);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected call tool result")]
+    fn unwrap_call_tool_result_panics_on_non_call_tool_result() {
+        let message = list_tools_response(NumberOrString::Number(4), vec![]);
+        let _ = unwrap_call_tool_result(message);
+    }
+
+    #[test]
+    fn handle_message_ignores_notifications() {
+        let notification = ClientJsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: JsonRpcVersion2_0,
+            notification: ClientNotification::InitializedNotification(
+                InitializedNotification::default(),
+            ),
+        });
+        assert!(handle_message(notification).is_none());
+    }
+
+    #[test]
+    fn handle_message_ignores_error() {
+        let error = ClientJsonRpcMessage::error(
+            ErrorData::internal_error("boom", None),
+            NumberOrString::Number(9),
+        );
+        assert!(handle_message(error).is_none());
+    }
+
+    #[test]
+    fn write_response_handles_write_errors() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::Other, "write failed"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::Other, "flush failed"))
+            }
+        }
+
+        let mut writer = FailingWriter;
+        let response = list_tools_response(NumberOrString::Number(5), vec![]);
+        write_response(&mut writer, &response);
+    }
+
+    #[test]
+    fn run_server_emits_responses() {
+        let unhandled = ClientJsonRpcMessage::request(
+            ClientRequest::ListPromptsRequest(ListPromptsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(1),
+        );
+        let list_tools = ClientJsonRpcMessage::request(
+            ClientRequest::ListToolsRequest(ListToolsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(2),
+        );
+        let lines = vec![
+            Ok(serde_json::to_string(&unhandled).expect("serialize unhandled")),
+            Ok(serde_json::to_string(&list_tools).expect("serialize list tools")),
+            Err(io::Error::new(io::ErrorKind::Other, "done")),
+        ];
+        let mut output = Vec::new();
+        run_server(lines, &mut output);
+        assert!(!output.is_empty());
+    }
+}

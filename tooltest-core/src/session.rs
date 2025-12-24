@@ -6,7 +6,6 @@
 use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
 use rmcp::model::Tool;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
-
 /// Errors emitted by the rmcp-backed session driver.
 ///
 /// The rmcp error variants are boxed to keep the enum size small; match on
@@ -47,7 +46,6 @@ pub struct SessionDriver {
 
 impl SessionDriver {
     /// Connects to an MCP server over stdio using rmcp child-process transport.
-    #[cfg(all(not(test), not(coverage)))]
     pub async fn connect_stdio(config: &StdioConfig) -> Result<Self, SessionError> {
         use rmcp::transport::TokioChildProcess;
         use tokio::process::Command;
@@ -61,20 +59,9 @@ impl SessionDriver {
         Self::connect_with_transport(transport).await
     }
 
-    /// Test stub for stdio transport setup.
-    ///
-    /// Use `connect_with_transport` with a test transport when unit testing
-    /// successful stdio flows.
-    #[cfg(any(test, coverage))]
-    pub async fn connect_stdio(_config: &StdioConfig) -> Result<Self, SessionError> {
-        Err(SessionError::Transport(Box::new(std::io::Error::other(
-            "stdio transport disabled in tests; use connect_with_transport",
-        ))))
-    }
-
     /// Connects to an MCP server over HTTP using rmcp streamable HTTP transport.
     pub async fn connect_http(config: &HttpConfig) -> Result<Self, SessionError> {
-        let transport = build_http_transport(config)?;
+        let transport = build_http_transport(config);
         Self::connect_with_transport(transport).await
     }
 
@@ -136,16 +123,12 @@ fn http_transport_config(
 }
 
 /// Builds an HTTP transport for MCP communication.
-///
-/// Errors are surfaced as `SessionError` to preserve rmcp error context.
 fn build_http_transport(
     config: &HttpConfig,
-) -> Result<rmcp::transport::StreamableHttpClientTransport<reqwest::Client>, SessionError> {
+) -> rmcp::transport::StreamableHttpClientTransport<reqwest::Client> {
     use rmcp::transport::StreamableHttpClientTransport;
 
-    Ok(StreamableHttpClientTransport::from_config(
-        http_transport_config(config),
-    ))
+    StreamableHttpClientTransport::from_config(http_transport_config(config))
 }
 
 #[cfg(test)]

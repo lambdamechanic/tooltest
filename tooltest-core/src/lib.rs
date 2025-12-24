@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 mod generator;
+mod runner;
 pub mod schema;
 pub mod session;
 mod validation;
@@ -17,6 +18,7 @@ pub use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,
 };
 pub use rmcp::service::{ClientInitializeError, ServiceError};
+pub use runner::{run_http, run_stdio, run_with_session, RunnerOptions};
 pub use schema::{
     parse_call_tool_request, parse_call_tool_result, parse_list_tools, schema_version_label,
     SchemaError,
@@ -87,6 +89,28 @@ pub struct HttpConfig {
 pub type ToolPredicate = Arc<dyn Fn(&str, &JsonValue) -> bool + Send + Sync>;
 
 /// Declarative JSON assertion DSL container.
+///
+/// Runs also apply default assertions that fail on tool error responses and
+/// validate structured output against declared output schemas.
+///
+/// Example:
+/// ```
+/// use serde_json::json;
+/// use tooltest_core::{
+///     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, ResponseAssertion,
+/// };
+///
+/// let assertions = AssertionSet {
+///     rules: vec![AssertionRule::Response(ResponseAssertion {
+///         tool: Some("echo".to_string()),
+///         checks: vec![AssertionCheck {
+///             target: AssertionTarget::StructuredOutput,
+///             pointer: "/status".to_string(),
+///             expected: json!("ok"),
+///         }],
+///     })],
+/// };
+/// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AssertionSet {
     /// Assertion rules evaluated during or after a run.
@@ -108,7 +132,7 @@ pub enum AssertionRule {
 pub struct ResponseAssertion {
     /// Optional tool name filter; when set, only matching tools are checked.
     pub tool: Option<String>,
-    /// Checks applied to the response payloads.
+    /// Checks applied to the response payloads (input, output, or structured output).
     pub checks: Vec<AssertionCheck>,
 }
 
@@ -120,6 +144,8 @@ pub struct SequenceAssertion {
 }
 
 /// A single JSON-pointer based check.
+///
+/// `pointer` uses RFC 6901 JSON Pointer syntax.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssertionCheck {
     /// The target payload to inspect.
@@ -138,7 +164,7 @@ pub enum AssertionTarget {
     Input,
     /// The raw tool output object.
     Output,
-    /// The structured tool output object, when present.
+    /// The structured tool output object, when present or required by schema.
     StructuredOutput,
     /// The full run sequence payload.
     Sequence,

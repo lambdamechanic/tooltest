@@ -638,7 +638,7 @@ fn invocation_strategy_rejects_non_object_schema() {
     }
 }
 
-proptest! {
+proptest_async::proptest! {
     #[test]
     fn invocation_strategy_generates_values_matching_schema(schema in schema_strategy()) {
         let schema_object = schema.as_object().cloned().expect("schema object");
@@ -1461,6 +1461,12 @@ fn path_from_pointer_decodes_indices_and_keys() {
 }
 
 #[test]
+fn path_from_pointer_empty_returns_empty_vec() {
+    let path = path_from_pointer("");
+    assert!(path.is_empty());
+}
+
+#[test]
 fn schema_violations_skips_missing_property_values() {
     let schema = json!({
         "type": "object",
@@ -1742,6 +1748,51 @@ fn mutate_to_violate_constraint_returns_none_for_unviable_cases() {
         kind: ConstraintKind::MinLength(1),
     };
     assert!(mutate_to_violate_constraint(&value, &invalid_path).is_none());
+}
+
+#[test]
+fn mutate_to_violate_constraint_rejects_missing_collection_paths() {
+    let value = json!({
+        "text": "ok",
+        "array": ["item"],
+        "object": { "key": "value" }
+    });
+
+    let missing_min_items = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MinItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_min_items).is_none());
+
+    let wrong_min_items = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::MinItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &wrong_min_items).is_none());
+
+    let missing_max_items = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::MaxItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_max_items).is_none());
+
+    let wrong_max_items = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::MaxItems(1),
+    };
+    assert!(mutate_to_violate_constraint(&value, &wrong_max_items).is_none());
+
+    let missing_required = Constraint {
+        path: nonempty![PathSegment::Key("missing".to_string())],
+        kind: ConstraintKind::Required("key".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &missing_required).is_none());
+
+    let wrong_required = Constraint {
+        path: nonempty![PathSegment::Key("text".to_string())],
+        kind: ConstraintKind::Required("key".to_string()),
+    };
+    assert!(mutate_to_violate_constraint(&value, &wrong_required).is_none());
 }
 
 #[test]

@@ -42,6 +42,7 @@ These dependencies are considered core and can be used freely:
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
 
 **Quality requirement:** Ensure tests pass before committing and pushing; Rust coverage must be 100% before pushing.
+Note: `if let` constructs often confuse coverage reports because you need a test that exercises the non-match case too.
 
 **MANDATORY WORKFLOW:**
 

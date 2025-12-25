@@ -19,9 +19,9 @@ async fn connect_runner_transport(
     .await
 }
 
-#[cfg(not(coverage))]
-fn stdio_server_config() -> Option<StdioConfig> {
-    option_env!("CARGO_BIN_EXE_stdio_test_server").map(StdioConfig::new)
+#[cfg(all(feature = "stdio-test-server", not(coverage)))]
+fn stdio_server_config() -> StdioConfig {
+    StdioConfig::new(env!("CARGO_BIN_EXE_stdio_test_server"))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -391,14 +391,12 @@ async fn run_stdio_reports_transport_error() {
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
 }
 
-#[cfg(not(coverage))]
+#[cfg(all(feature = "stdio-test-server", not(coverage)))]
 #[tokio::test(flavor = "multi_thread")]
 async fn run_stdio_succeeds_with_real_transport() {
-    let Some(config) = stdio_server_config() else {
-        return;
-    };
+    let config = stdio_server_config();
     if !std::path::Path::new(&config.command).exists() {
-        return;
+        panic!("stdio test server binary missing: {}", config.command);
     }
     let result = tooltest_core::run_stdio(
         &config,

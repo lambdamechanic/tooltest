@@ -1,12 +1,12 @@
 use std::io::{self, BufRead, Write};
-use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
-    JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
-    Tool,
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, JsonRpcMessage, ServerJsonRpcMessage, Tool,
 };
 use serde_json::json;
+use tooltest_test_support::{
+    call_tool_response, init_response, list_tools_response, tool_with_schemas,
+};
 
 fn main() {
     let stdin = io::stdin();
@@ -73,71 +73,20 @@ fn tool_stub() -> Tool {
         },
         "required": ["status"]
     });
-    Tool {
-        name: "echo".to_string().into(),
-        title: None,
-        description: None,
-        input_schema: Arc::new(
-            input_schema
-                .as_object()
-                .cloned()
-                .expect("input schema object"),
-        ),
-        output_schema: Some(Arc::new(
-            output_schema
-                .as_object()
-                .cloned()
-                .expect("output schema object"),
-        )),
-        annotations: None,
-        icons: None,
-        meta: None,
-    }
+    tool_with_schemas("echo", input_schema, Some(output_schema))
 }
 
 fn tool_response() -> CallToolResult {
     CallToolResult::structured(json!({ "status": "ok" }))
 }
 
-fn call_tool_response(id: RequestId, response: CallToolResult) -> ServerJsonRpcMessage {
-    ServerJsonRpcMessage::Response(JsonRpcResponse {
-        jsonrpc: JsonRpcVersion2_0,
-        id,
-        result: ServerResult::CallToolResult(response),
-    })
-}
-
-fn list_tools_response(id: RequestId, tools: Vec<Tool>) -> ServerJsonRpcMessage {
-    ServerJsonRpcMessage::Response(JsonRpcResponse {
-        jsonrpc: JsonRpcVersion2_0,
-        id,
-        result: ServerResult::ListToolsResult(rmcp::model::ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        }),
-    })
-}
-
-fn init_response(id: RequestId) -> ServerJsonRpcMessage {
-    ServerJsonRpcMessage::Response(JsonRpcResponse {
-        jsonrpc: JsonRpcVersion2_0,
-        id,
-        result: ServerResult::InitializeResult(InitializeResult {
-            protocol_version: ServerInfo::default().protocol_version,
-            capabilities: ServerInfo::default().capabilities,
-            server_info: ServerInfo::default().server_info,
-            instructions: None,
-        }),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rmcp::model::{
-        CallToolRequestParam, ClientNotification, ErrorData, InitializedNotification,
-        JsonRpcNotification, ListPromptsRequest, ListToolsRequest, NumberOrString,
+        CallToolRequestParam, ClientNotification, ErrorData, InitializeRequest,
+        InitializeRequestParam, InitializedNotification, JsonRpcNotification, JsonRpcResponse,
+        JsonRpcVersion2_0, ListPromptsRequest, ListToolsRequest, NumberOrString,
         PaginatedRequestParam, Request, ServerJsonRpcMessage, ServerNotification, ServerRequest,
         ServerResult, ToolListChangedNotification,
     };
@@ -172,6 +121,23 @@ mod tests {
     }
 
     #[test]
+    fn run_server_ignores_unhandled_message() {
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::ListPromptsRequest(ListPromptsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(1),
+        );
+        let payload = serde_json::to_string(&request).expect("serialize request");
+        let lines = vec![Ok(payload)];
+        let mut output = Vec::new();
+        run_server(lines, &mut output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn handle_message_ignores_unhandled_request() {
         let request = ClientJsonRpcMessage::request(
             ClientRequest::ListPromptsRequest(ListPromptsRequest {
@@ -196,6 +162,24 @@ mod tests {
         let response = handle_message(request).expect("response");
         let result = unwrap_call_tool_result(response);
         assert!(result.structured_content.is_some());
+    }
+
+    #[test]
+    fn handle_message_handles_initialize() {
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::InitializeRequest(InitializeRequest::new(
+                InitializeRequestParam::default(),
+            )),
+            NumberOrString::Number(1),
+        );
+        let response = handle_message(request).expect("response");
+        assert!(matches!(
+            response,
+            ServerJsonRpcMessage::Response(JsonRpcResponse {
+                result: ServerResult::InitializeResult(_),
+                ..
+            })
+        ));
     }
 
     #[test]

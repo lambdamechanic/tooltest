@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [features]
-stdio-test-server = []
+stdio-test-server = ["dep:tooltest-test-support"]
 
 [[bin]]
 name = "stdio_test_server"
@@ -23,6 +23,7 @@ jsonschema = "0.26"
 regex = "1"
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 nonempty = "0.10"
+tooltest-test-support = { path = "../tooltest-test-support", optional = true }
 
 [dev-dependencies]
 axum = "0.7"

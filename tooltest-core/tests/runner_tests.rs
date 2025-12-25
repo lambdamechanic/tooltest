@@ -398,7 +398,7 @@ async fn run_stdio_succeeds_with_real_transport() {
         return;
     };
     if !std::path::Path::new(&config.command).exists() {
-        return;
+        panic!("stdio test server binary missing: {}", config.command);
     }
     let result = tooltest_core::run_stdio(
         &config,

@@ -1,5 +1,20 @@
 # tooltest
 
+## CLI
+
+The `tooltest` binary wraps `tooltest-core` with stdio/HTTP runners.
+
+```bash
+cargo install --path tooltest-cli
+tooltest stdio --command ./mcp-server --arg --foo --env FOO=bar --cwd /tmp
+tooltest http --url http://127.0.0.1:8080/mcp --auth-token "Bearer token"
+```
+
+Output is JSON on stdout. Exit codes are:
+- `0` on success
+- `1` on run failure
+- `2` on argument/validation errors
+
 ## Hosted MCP integration tests
 
 By default the hosted MCP integration test runs and exercises the three public MCP servers used for validation. To skip it:

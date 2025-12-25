@@ -39,4 +39,4 @@ jobs:
       - name: Rust clippy
         run: cargo clippy --workspace -- -D warnings
       - name: Rust coverage
-        run: cargo llvm-cov --workspace --fail-under-lines 95
+        run: cargo llvm-cov --workspace --fail-under-lines 95 --features tooltest-cli/cli-test-server

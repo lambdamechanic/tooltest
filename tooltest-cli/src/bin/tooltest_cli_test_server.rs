@@ -1,4 +1,6 @@
+use std::env;
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
@@ -9,9 +11,44 @@ use rmcp::model::{
 use serde_json::json;
 
 fn main() {
+    if let Err(message) = validate_expectations() {
+        eprintln!("tooltest_cli_test_server: {message}");
+        std::process::exit(2);
+    }
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     run_server(stdin.lock().lines(), &mut stdout);
+}
+
+fn validate_expectations() -> Result<(), String> {
+    if let Ok(expected_arg) = env::var("EXPECT_ARG") {
+        let mut matched = false;
+        for arg in env::args() {
+            if arg == expected_arg {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Err(format!("expected arg '{expected_arg}' not found"));
+        }
+    }
+
+    if let Ok(expected_cwd) = env::var("EXPECT_CWD") {
+        let expected_path = PathBuf::from(expected_cwd);
+        let expected_path = expected_path.canonicalize().unwrap_or(expected_path);
+        let cwd = env::current_dir().map_err(|error| format!("failed to read cwd: {error}"))?;
+        let cwd = cwd.canonicalize().unwrap_or(cwd);
+        if cwd != expected_path {
+            return Err(format!(
+                "expected cwd '{}' but got '{}'",
+                expected_path.display(),
+                cwd.display()
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn run_server<I, W>(lines: I, stdout: &mut W)

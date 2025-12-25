@@ -14,6 +14,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Cache qlty downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.qlty/cache
+            ~/.qlty/downloads
+            ~/.qlty/bin
+          key: qlty-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            qlty-${{ runner.os }}-
       - name: Install qlty
         run: |
           curl -fsSL https://qlty.sh | sh
@@ -29,4 +39,4 @@ jobs:
       - name: Rust clippy
         run: cargo clippy --workspace -- -D warnings
       - name: Rust coverage
-        run: cargo llvm-cov --workspace --fail-under-lines 95
+        run: cargo llvm-cov --workspace --fail-under-lines 95 --features tooltest-cli/cli-test-server

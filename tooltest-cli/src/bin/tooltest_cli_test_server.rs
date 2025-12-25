@@ -20,27 +20,37 @@ where
     W: Write,
 {
     for line in lines {
-        let Ok(line) = line else {
-            break;
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                eprintln!("tooltest_cli_test_server: failed to read stdin: {error}");
+                break;
+            }
         };
         if line.trim().is_empty() {
             continue;
         }
         let message: ClientJsonRpcMessage = match serde_json::from_str(&line) {
             Ok(message) => message,
-            Err(_) => continue,
+            Err(error) => {
+                eprintln!("tooltest_cli_test_server: invalid json: {error}");
+                continue;
+            }
         };
         let Some(response) = handle_message(message) else {
             continue;
         };
-        write_response(stdout, &response);
+        if let Err(error) = write_response(stdout, &response) {
+            eprintln!("tooltest_cli_test_server: failed to write stdout: {error}");
+            break;
+        }
     }
 }
 
-fn write_response<W: Write>(stdout: &mut W, response: &ServerJsonRpcMessage) {
+fn write_response<W: Write>(stdout: &mut W, response: &ServerJsonRpcMessage) -> io::Result<()> {
     let payload = serde_json::to_string(response).expect("serialize response");
-    let _ = writeln!(stdout, "{payload}");
-    let _ = stdout.flush();
+    writeln!(stdout, "{payload}")?;
+    stdout.flush()
 }
 
 fn handle_message(message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMessage> {

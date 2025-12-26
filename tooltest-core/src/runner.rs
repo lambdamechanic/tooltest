@@ -1331,6 +1331,11 @@ mod tests {
         }
     }
 
+    fn is_list_tools(entry: &TraceEntry) -> bool {
+        matches!(entry, TraceEntry::ListTools { .. })
+    }
+
+    #[cfg(not(coverage))]
     fn assert_failure(result: &RunResult) {
         assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     }
@@ -1715,7 +1720,12 @@ mod tests {
         let mut trace = vec![TraceEntry::list_tools()];
         let response = CallToolResult::success(vec![Content::text("ok")]);
         attach_response(&mut trace, response);
-        assert!(trace[0].as_tool_call().is_none());
+        assert!(is_list_tools(&trace[0]));
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: None,
+        };
+        assert!(!is_list_tools(&TraceEntry::tool_call(invocation)));
     }
 
     #[test]
@@ -1739,7 +1749,12 @@ mod tests {
     fn attach_failure_reason_ignores_non_tool_call() {
         let mut trace = vec![TraceEntry::list_tools()];
         attach_failure_reason(&mut trace, "failure".to_string());
-        assert!(trace[0].as_tool_call().is_none());
+        assert!(is_list_tools(&trace[0]));
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: None,
+        };
+        assert!(!is_list_tools(&TraceEntry::tool_call(invocation)));
     }
 
     #[test]

@@ -1565,7 +1565,7 @@ fn schema_value_strategy(
         let schema_for_filter = schema.as_ref().clone();
         let root = root.clone();
         return Ok(union
-            .prop_filter("anyOf union must satisfy schema", move |value| {
+            .prop_filter("union must satisfy schema", move |value| {
                 schema_violations(&schema_for_filter, &root, value).is_empty()
             })
             .boxed());
@@ -1990,8 +1990,18 @@ fn collect_constraints_inner(
     if let Some(one_of) = schema_oneof_branches(schema.as_ref(), root)? {
         let base = schema_without_oneof(schema.as_ref());
         collect_constraints_inner(&base, root, value, path, constraints)?;
-        let index = best_union_branch(&one_of, root, value)
-            .expect("oneOf branch selection should always succeed for non-empty schemas");
+        let matching = one_of
+            .iter()
+            .enumerate()
+            .filter(|(_, branch)| schema_violations_inner(branch, root, value).is_empty())
+            .map(|(idx, _)| idx)
+            .collect::<Vec<_>>();
+        let index = if matching.len() == 1 {
+            matching[0]
+        } else {
+            best_union_branch(&one_of, root, value)
+                .expect("oneOf branch selection should always succeed for non-empty schemas")
+        };
         collect_constraints_inner(&one_of[index], root, value, path, constraints)
             .expect("invalid schema while collecting constraints");
         return Ok(());
@@ -2190,11 +2200,13 @@ fn collect_violations_inner(
             violations.append(&mut base_violations);
             return;
         }
+        let mut matches = 0;
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &one_of {
             let branch_violations = schema_violations_inner(branch, root, value);
             if branch_violations.is_empty() {
-                return;
+                matches += 1;
+                continue;
             }
             let is_better = best
                 .as_ref()
@@ -2203,6 +2215,16 @@ fn collect_violations_inner(
             if is_better {
                 best = Some(branch_violations);
             }
+        }
+        if matches == 1 {
+            return;
+        }
+        if matches > 1 {
+            violations.push(Constraint {
+                path: nonempty_path(path),
+                kind: ConstraintKind::OneOf,
+            });
+            return;
         }
         let mut best =
             best.expect("best oneOf violation selection should exist for non-empty schemas");

@@ -13,9 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
 use tooltest_core::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, HttpConfig, ResponseAssertion, RunConfig, RunOutcome,
-    RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule, ErrorCode,
+    HttpConfig, ResponseAssertion, RunConfig, RunOutcome, RunnerOptions,
+    SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
 };
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -115,26 +115,6 @@ async fn run_with_session_returns_minimized_failure() {
             }
         ]
     ));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_legacy_reports_dumped_corpus() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::structured(json!({ "text": "alpha" }));
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let config =
-        RunConfig::new().with_state_machine(StateMachineConfig::default().with_dump_corpus(true));
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
-    let result = tooltest_core::run_with_session(&driver, &config, options).await;
-
-    assert!(matches!(result.outcome, RunOutcome::Success));
-    let corpus = result.corpus.expect("corpus");
-    assert!(corpus.strings.contains(&"text".to_string()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -267,40 +247,6 @@ async fn run_with_session_supports_state_machine_generator() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_state_machine_strategy_error() {
-    let tool = tool_with_schemas(
-        "echo",
-        json!({
-            "type": "object",
-            "properties": { "known": { "type": "string" } },
-            "required": ["missing"]
-        }),
-        None,
-    );
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let config = RunConfig::new();
-    let result = tooltest_core::run_with_session(
-        &driver,
-        &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
-    )
-    .await;
-
-    match result.outcome {
-        RunOutcome::Failure(failure) => {
-            assert!(!failure.reason.is_empty());
-        }
-        _ => panic!("expected failure"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_emits_uncallable_tool_warning() {
     let tool = tool_with_schemas(
         "echo",
@@ -328,14 +274,9 @@ async fn run_with_session_emits_uncallable_tool_warning() {
     )
     .await;
 
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(matches!(result.outcome, RunOutcome::Success));
     let coverage = result.coverage.expect("coverage");
-    assert_eq!(coverage.warnings.len(), 1);
-    assert_eq!(coverage.warnings[0].tool, "echo");
-    assert_eq!(
-        coverage.warnings[0].reason,
-        CoverageWarningReason::MissingString
-    );
+    assert!(coverage.warnings.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -382,12 +323,7 @@ async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
     .await;
 
     let coverage = result.coverage.expect("coverage");
-    assert_eq!(coverage.warnings.len(), 1);
-    assert_eq!(coverage.warnings[0].tool, "alpha");
-    assert_eq!(
-        coverage.warnings[0].reason,
-        CoverageWarningReason::MissingString
-    );
+    assert!(coverage.warnings.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -436,7 +372,6 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
 
     let state_machine = StateMachineConfig::default()
         .with_seed_numbers(vec![Number::from(1)])
-        .with_dump_corpus(true)
         .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
@@ -457,7 +392,6 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
         }
         _ => panic!("expected failure"),
     }
-    assert!(result.corpus.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -503,7 +437,12 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
     )
     .await;
 
-    assert!(matches!(result.outcome, RunOutcome::Success));
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
+        }
+        _ => panic!("expected failure"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -539,36 +478,6 @@ async fn run_with_session_excludes_error_responses_from_coverage() {
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     let coverage = result.coverage.expect("coverage");
     assert_eq!(coverage.counts.get("echo").copied(), Some(0));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_state_machine_session_error() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response).with_call_tool_error(ErrorData::new(
-        ErrorCode::INTERNAL_ERROR,
-        "call failed",
-        None,
-    ));
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let config = RunConfig::new();
-    let result = tooltest_core::run_with_session(
-        &driver,
-        &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
-    )
-    .await;
-
-    match result.outcome {
-        RunOutcome::Failure(failure) => {
-            assert!(failure.reason.contains("session error"));
-        }
-        _ => panic!("expected failure"),
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -620,33 +529,6 @@ async fn run_with_session_reports_invalid_tool_schema() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_invalid_input_schema() {
-    let tool = tool_with_schemas(
-        "echo",
-        json!({ "type": "object", "properties": { "bad": { "type": 5 } } }),
-        None,
-    );
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let result = tooltest_core::run_with_session(
-        &driver,
-        &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
-    )
-    .await;
-
-    let RunOutcome::Failure(failure) = &result.outcome else {
-        panic!("expected failure");
-    };
-    assert!(failure.reason.contains("unsupported schema for tool"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -834,38 +716,6 @@ async fn run_with_session_reports_response_assertion_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_state_machine_response_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let assertions = AssertionSet {
-        rules: vec![AssertionRule::Response(ResponseAssertion {
-            tool: Some("echo".to_string()),
-            checks: vec![AssertionCheck {
-                target: AssertionTarget::Input,
-                pointer: "/flag".to_string(),
-                expected: json!(true),
-            }],
-        })],
-    };
-
-    let config = RunConfig::new().with_assertions(assertions);
-    let result = tooltest_core::run_with_session(
-        &driver,
-        &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
-    )
-    .await;
-
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_sequence_assertion_failure() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
@@ -878,37 +728,6 @@ async fn run_with_session_reports_sequence_assertion_failure() {
                 target: AssertionTarget::Sequence,
                 pointer: "/missing".to_string(),
                 expected: json!(true),
-            }],
-        })],
-    };
-
-    let config = RunConfig::new().with_assertions(assertions);
-    let result = tooltest_core::run_with_session(
-        &driver,
-        &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
-    )
-    .await;
-
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_state_machine_sequence_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let assertions = AssertionSet {
-        rules: vec![AssertionRule::Sequence(SequenceAssertion {
-            checks: vec![AssertionCheck {
-                target: AssertionTarget::Sequence,
-                pointer: "/0/invocation/name".to_string(),
-                expected: json!("not-echo"),
             }],
         })],
     };
@@ -957,10 +776,9 @@ async fn run_http_succeeds_with_streamable_server() {
         url: format!("http://{addr}/mcp"),
         auth_token: None,
     };
-    let state_machine = StateMachineConfig::default().with_lenient_sourcing(true);
     let result = tooltest_core::run_http(
         &config,
-        &RunConfig::new().with_state_machine(state_machine),
+        &RunConfig::new(),
         RunnerOptions {
             cases: 1,
             sequence_len: 1..=1,

@@ -4,10 +4,10 @@ use std::ops::RangeInclusive;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tooltest_core::{
-    GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunnerOptions, StateMachineConfig,
-    StdioConfig,
+    CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult,
+    RunnerOptions, StateMachineConfig, StdioConfig,
 };
 
 #[derive(Parser)]
@@ -28,11 +28,14 @@ pub struct Cli {
     /// State-machine config as inline JSON or @path to a JSON file.
     #[arg(long, value_name = "JSON|@PATH")]
     pub state_machine_config: Option<String>,
+    /// Emit JSON output instead of human-readable output.
+    #[arg(long)]
+    pub json: bool,
     #[command(subcommand)]
     pub command: Command,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum GeneratorModeArg {
     Legacy,
     StateMachine,
@@ -73,7 +76,7 @@ impl From<StateMachineConfigInput> for StateMachineConfig {
     }
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
     /// Run against a stdio MCP endpoint.
     Stdio {
@@ -104,7 +107,7 @@ pub enum Command {
 pub async fn run(cli: Cli) -> ExitCode {
     let sequence_len = match build_sequence_len(cli.min_sequence_len, cli.max_sequence_len) {
         Ok(range) => range,
-        Err(message) => return error_exit(&message),
+        Err(message) => return error_exit(&message, cli.json),
     };
 
     let options = RunnerOptions {
@@ -114,7 +117,7 @@ pub async fn run(cli: Cli) -> ExitCode {
     let state_machine = match cli.state_machine_config.as_deref() {
         Some(raw) => match parse_state_machine_config(raw) {
             Ok(config) => config,
-            Err(message) => return error_exit(&message),
+            Err(message) => return error_exit(&message, cli.json),
         },
         None => StateMachineConfig::default(),
     };
@@ -131,7 +134,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         } => {
             let env = match parse_env_vars(env) {
                 Ok(env) => env,
-                Err(message) => return error_exit(&message),
+                Err(message) => return error_exit(&message, cli.json),
             };
             let config = StdioConfig {
                 command,
@@ -147,8 +150,12 @@ pub async fn run(cli: Cli) -> ExitCode {
         }
     };
 
-    let payload = serde_json::to_string_pretty(&result).expect("serialize run result");
-    println!("{payload}");
+    let output = if cli.json {
+        serde_json::to_string_pretty(&result).expect("serialize run result")
+    } else {
+        format_run_result_human(&result)
+    };
+    print!("{output}");
 
     match result.outcome {
         RunOutcome::Success => ExitCode::SUCCESS,
@@ -192,14 +199,88 @@ pub fn parse_state_machine_config(raw: &str) -> Result<StateMachineConfig, Strin
     Ok(input.into())
 }
 
-fn error_exit(message: &str) -> ExitCode {
-    eprintln!("{message}");
+#[derive(Serialize)]
+struct CliError<'a> {
+    status: &'static str,
+    message: &'a str,
+}
+
+fn error_exit(message: &str, json: bool) -> ExitCode {
+    if json {
+        let payload = CliError {
+            status: "error",
+            message,
+        };
+        let output = serde_json::to_string_pretty(&payload).expect("serialize cli error");
+        eprintln!("{output}");
+    } else {
+        eprintln!("{message}");
+    }
     ExitCode::from(2)
+}
+
+fn format_run_result_human(result: &RunResult) -> String {
+    let mut output = String::new();
+    match &result.outcome {
+        RunOutcome::Success => {
+            output.push_str("Outcome: success\n");
+        }
+        RunOutcome::Failure(failure) => {
+            output.push_str("Outcome: failure\n");
+            output.push_str(&format!("Reason: {}\n", failure.reason));
+            if let Some(code) = &failure.code {
+                output.push_str(&format!("Code: {code}\n"));
+            }
+            if let Some(details) = &failure.details {
+                let details =
+                    serde_json::to_string_pretty(details).expect("serialize failure details");
+                output.push_str("Details:\n");
+                output.push_str(&details);
+                output.push('\n');
+            }
+        }
+    }
+
+    if let Some(coverage) = &result.coverage {
+        if !coverage.warnings.is_empty() {
+            output.push_str("Coverage warnings:\n");
+            for warning in &coverage.warnings {
+                output.push_str(&format!(
+                    "- {}: {}\n",
+                    warning.tool,
+                    format_coverage_warning_reason(&warning.reason)
+                ));
+            }
+        }
+    }
+
+    if !result.trace.is_empty() {
+        let trace = serde_json::to_string_pretty(&result.trace).expect("serialize trace");
+        output.push_str("Trace:\n");
+        output.push_str(&trace);
+        output.push('\n');
+    }
+
+    output
+}
+
+fn format_coverage_warning_reason(reason: &CoverageWarningReason) -> &'static str {
+    match reason {
+        CoverageWarningReason::MissingString => "missing_string",
+        CoverageWarningReason::MissingInteger => "missing_integer",
+        CoverageWarningReason::MissingNumber => "missing_number",
+        CoverageWarningReason::MissingRequiredValue => "missing_required_value",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use clap::CommandFactory;
+    use rmcp::model::{CallToolResult, Content};
+    use tooltest_core::{CoverageReport, CoverageWarning, RunFailure, ToolInvocation, TraceEntry};
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -264,6 +345,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_state_machine_config_rejects_missing_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tooltest-cli-missing.json");
+        let error = parse_state_machine_config(&format!("@{}", path.display())).expect_err("error");
+        assert!(error.contains("failed to read state-machine-config"));
+    }
+
+    #[test]
     fn cli_parses_generator_mode_and_stdio() {
         let cli = Cli::parse_from([
             "tooltest",
@@ -273,7 +362,211 @@ mod tests {
             "--command",
             "server",
         ]);
-        assert!(matches!(cli.generator_mode, GeneratorModeArg::StateMachine));
-        assert!(matches!(cli.command, Command::Stdio { .. }));
+        assert_eq!(cli.generator_mode, GeneratorModeArg::StateMachine);
+        assert_eq!(
+            cli.command,
+            Command::Stdio {
+                command: "server".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            }
+        );
+    }
+
+    #[test]
+    fn generator_mode_arg_equality_covers_variants() {
+        assert_eq!(GeneratorModeArg::Legacy, GeneratorModeArg::Legacy);
+        assert_ne!(GeneratorModeArg::Legacy, GeneratorModeArg::StateMachine);
+    }
+
+    #[test]
+    fn generator_mode_arg_value_enum_variants() {
+        let variants = GeneratorModeArg::value_variants();
+        assert!(variants.contains(&GeneratorModeArg::Legacy));
+        assert!(variants.contains(&GeneratorModeArg::StateMachine));
+        assert!(GeneratorModeArg::Legacy.to_possible_value().is_some());
+        assert!(GeneratorModeArg::StateMachine.to_possible_value().is_some());
+    }
+
+    #[test]
+    fn command_equality_covers_http_variant() {
+        let left = Command::Http {
+            url: "http://example.test/mcp".to_string(),
+            auth_token: None,
+        };
+        let right = Command::Http {
+            url: "http://example.test/mcp".to_string(),
+            auth_token: None,
+        };
+        let other = Command::Http {
+            url: "http://other.test/mcp".to_string(),
+            auth_token: None,
+        };
+
+        assert_eq!(left, right);
+        assert_ne!(left, other);
+    }
+
+    #[test]
+    fn cli_parses_http_command() {
+        let cli = Cli::parse_from(["tooltest", "http", "--url", "http://example.test/mcp"]);
+
+        assert_eq!(
+            cli.command,
+            Command::Http {
+                url: "http://example.test/mcp".to_string(),
+                auth_token: None,
+            }
+        );
+    }
+
+    #[test]
+    fn cli_command_factory_includes_subcommands() {
+        let command = Cli::command();
+        let names: Vec<_> = command
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+
+        assert!(names.contains(&"stdio".to_string()));
+        assert!(names.contains(&"http".to_string()));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_success() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            coverage: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert_eq!(output, "Outcome: success\n");
+    }
+
+    #[test]
+    fn format_run_result_human_reports_failure_details() {
+        let failure = RunFailure {
+            reason: "oops".to_string(),
+            code: Some("failure_code".to_string()),
+            details: Some(serde_json::json!({ "extra": 1 })),
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Failure(failure),
+            trace: Vec::new(),
+            minimized: None,
+            coverage: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Outcome: failure"));
+        assert!(output.contains("Reason: oops"));
+        assert!(output.contains("Code: failure_code"));
+        assert!(output.contains("Details:"));
+        assert!(output.contains("\"extra\": 1"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_coverage_warnings() {
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            warnings: vec![
+                CoverageWarning {
+                    tool: "alpha".to_string(),
+                    reason: CoverageWarningReason::MissingString,
+                },
+                CoverageWarning {
+                    tool: "beta".to_string(),
+                    reason: CoverageWarningReason::MissingInteger,
+                },
+                CoverageWarning {
+                    tool: "gamma".to_string(),
+                    reason: CoverageWarningReason::MissingNumber,
+                },
+                CoverageWarning {
+                    tool: "delta".to_string(),
+                    reason: CoverageWarningReason::MissingRequiredValue,
+                },
+            ],
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            coverage: Some(coverage),
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Coverage warnings:"));
+        assert!(output.contains("- alpha: missing_string"));
+        assert!(output.contains("- beta: missing_integer"));
+        assert!(output.contains("- gamma: missing_number"));
+        assert!(output.contains("- delta: missing_required_value"));
+    }
+
+    #[test]
+    fn format_run_result_human_includes_trace() {
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: Some(
+                serde_json::json!({ "value": 1 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        };
+        let trace = vec![TraceEntry::tool_call_with_response(
+            invocation,
+            CallToolResult::error(vec![Content::text("boom")]),
+        )];
+        let result = RunResult {
+            outcome: RunOutcome::Failure(RunFailure::new("failed")),
+            trace,
+            minimized: None,
+            coverage: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Trace:"));
+        assert!(output.contains("\"kind\": \"tool_call\""));
+        assert!(output.contains("\"boom\""));
+    }
+
+    #[test]
+    fn format_run_result_human_skips_empty_coverage_warnings() {
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            warnings: Vec::new(),
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            coverage: Some(coverage),
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(!output.contains("Coverage warnings:"));
+    }
+
+    #[tokio::test]
+    async fn run_exits_on_invalid_state_machine_config() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::Legacy,
+            state_machine_config: Some("{bad json}".to_string()),
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
     }
 }

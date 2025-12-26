@@ -43,7 +43,18 @@ fn stdio_command_reports_success() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
+    assert!(stdout.contains("Outcome: success"));
+
+    let json_output = run_tooltest(&["--json", "stdio", "--command", server, "--env", "FOO=bar"]);
+
+    assert!(
+        json_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    let payload: serde_json::Value = serde_json::from_str(json_stdout.trim()).expect("json output");
     assert_eq!(payload["outcome"]["status"], "success");
 }
 
@@ -53,6 +64,7 @@ fn stdio_command_reports_success_with_state_machine_mode() {
         return;
     };
     let output = run_tooltest(&[
+        "--json",
         "--generator-mode",
         "state-machine",
         "--state-machine-config",
@@ -163,6 +175,48 @@ fn sequence_len_inverted_exits() {
 }
 
 #[test]
+fn state_machine_config_invalid_json_exits() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        "{bad json}",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid state-machine-config"));
+}
+
+#[test]
+fn state_machine_config_invalid_json_exits_with_json_error() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--json",
+        "--state-machine-config",
+        "{bad json}",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let payload: serde_json::Value = serde_json::from_str(stderr.trim()).expect("json error");
+    assert_eq!(payload["status"], "error");
+    assert!(payload["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("state-machine-config"));
+}
+
+#[test]
 fn stdio_command_passes_args() {
     let Some(server) = test_server() else {
         return;
@@ -217,13 +271,14 @@ fn http_command_reports_failure() {
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
-    assert_eq!(payload["outcome"]["status"], "failure");
+    assert!(stdout.contains("Outcome: failure"));
+    assert!(stdout.contains("Reason:"));
 }
 
 #[test]
 fn http_command_accepts_auth_token() {
     let output = run_tooltest(&[
+        "--json",
         "http",
         "--url",
         "http://127.0.0.1:0/mcp",
@@ -244,6 +299,7 @@ async fn run_http_failure_returns_exit_code_1() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::StateMachine,
+        json: false,
         state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -262,6 +318,7 @@ async fn run_invalid_sequence_len_returns_exit_code_2() {
         min_sequence_len: 0,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: None,
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -280,6 +337,7 @@ async fn run_invalid_state_machine_config_returns_exit_code_2() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: Some("not-json".to_string()),
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -298,6 +356,7 @@ async fn run_missing_state_machine_config_file_returns_exit_code_2() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -319,6 +378,7 @@ async fn run_stdio_success_returns_exit_code_0() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: None,
         command: TooltestCommand::Stdio {
             command: server.to_string(),

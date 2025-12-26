@@ -326,7 +326,7 @@ struct CoverageTracker<'a> {
     blocklist: Option<Vec<String>>,
 }
 
-const LIST_TOOLS_COUNT_LABEL: &str = "list_tools";
+const LIST_TOOLS_COUNT_LABEL: &str = "tools/list";
 
 #[derive(Clone, Debug)]
 struct CoverageValidationFailure {

@@ -181,6 +181,30 @@ fn state_machine_config_invalid_json_exits() {
 }
 
 #[test]
+fn state_machine_config_invalid_json_exits_with_json_error() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--json",
+        "--state-machine-config",
+        "{bad json}",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let payload: serde_json::Value = serde_json::from_str(stderr.trim()).expect("json error");
+    assert_eq!(payload["status"], "error");
+    assert!(payload["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("state-machine-config"));
+}
+
+#[test]
 fn stdio_command_passes_args() {
     let Some(server) = test_server() else {
         return;

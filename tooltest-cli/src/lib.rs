@@ -4,7 +4,7 @@ use std::ops::RangeInclusive;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tooltest_core::{
     CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult,
     RunnerOptions, StateMachineConfig, StdioConfig,
@@ -107,7 +107,7 @@ pub enum Command {
 pub async fn run(cli: Cli) -> ExitCode {
     let sequence_len = match build_sequence_len(cli.min_sequence_len, cli.max_sequence_len) {
         Ok(range) => range,
-        Err(message) => return error_exit(&message),
+        Err(message) => return error_exit(&message, cli.json),
     };
 
     let options = RunnerOptions {
@@ -117,7 +117,7 @@ pub async fn run(cli: Cli) -> ExitCode {
     let state_machine = match cli.state_machine_config.as_deref() {
         Some(raw) => match parse_state_machine_config(raw) {
             Ok(config) => config,
-            Err(message) => return error_exit(&message),
+            Err(message) => return error_exit(&message, cli.json),
         },
         None => StateMachineConfig::default(),
     };
@@ -134,7 +134,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         } => {
             let env = match parse_env_vars(env) {
                 Ok(env) => env,
-                Err(message) => return error_exit(&message),
+                Err(message) => return error_exit(&message, cli.json),
             };
             let config = StdioConfig {
                 command,
@@ -199,8 +199,23 @@ pub fn parse_state_machine_config(raw: &str) -> Result<StateMachineConfig, Strin
     Ok(input.into())
 }
 
-fn error_exit(message: &str) -> ExitCode {
-    eprintln!("{message}");
+#[derive(Serialize)]
+struct CliError<'a> {
+    status: &'static str,
+    message: &'a str,
+}
+
+fn error_exit(message: &str, json: bool) -> ExitCode {
+    if json {
+        let payload = CliError {
+            status: "error",
+            message,
+        };
+        let output = serde_json::to_string_pretty(&payload).expect("serialize cli error");
+        eprintln!("{output}");
+    } else {
+        eprintln!("{message}");
+    }
     ExitCode::from(2)
 }
 
@@ -239,6 +254,13 @@ fn format_run_result_human(result: &RunResult) -> String {
         }
     }
 
+    if !result.trace.is_empty() {
+        let trace = serde_json::to_string_pretty(&result.trace).expect("serialize trace");
+        output.push_str("Trace:\n");
+        output.push_str(&trace);
+        output.push('\n');
+    }
+
     output
 }
 
@@ -257,7 +279,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use clap::CommandFactory;
-    use tooltest_core::{CoverageReport, CoverageWarning, RunFailure};
+    use rmcp::model::{CallToolResult, Content};
+    use tooltest_core::{CoverageReport, CoverageWarning, RunFailure, ToolInvocation, TraceEntry};
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -481,6 +504,34 @@ mod tests {
         assert!(output.contains("- beta: missing_integer"));
         assert!(output.contains("- gamma: missing_number"));
         assert!(output.contains("- delta: missing_required_value"));
+    }
+
+    #[test]
+    fn format_run_result_human_includes_trace() {
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: Some(
+                serde_json::json!({ "value": 1 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        };
+        let trace = vec![TraceEntry::tool_call_with_response(
+            invocation,
+            CallToolResult::error(vec![Content::text("boom")]),
+        )];
+        let result = RunResult {
+            outcome: RunOutcome::Failure(RunFailure::new("failed")),
+            trace,
+            minimized: None,
+            coverage: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Trace:"));
+        assert!(output.contains("\"kind\": \"tool_call\""));
+        assert!(output.contains("\"boom\""));
     }
 
     #[test]

@@ -10,7 +10,7 @@ tooltest stdio --command ./mcp-server --arg --foo --env FOO=bar --cwd /tmp
 tooltest http --url http://127.0.0.1:8080/mcp --auth-token "Bearer token"
 ```
 
-Output is human-readable on stdout by default; pass `--json` for JSON output. Exit codes are:
+Output is human-readable on stdout by default; pass `--json` for JSON output (including error messages). Exit codes are:
 - `0` on success
 - `1` on run failure
 - `2` on argument/validation errors

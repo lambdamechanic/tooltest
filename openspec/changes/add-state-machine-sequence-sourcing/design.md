@@ -19,6 +19,8 @@ Tooltest currently generates tool invocations using proptest strategies derived 
   - Rationale: Matches request scope, treats keys as domain-relevant strings, and avoids ambiguity in output/error shapes.
 - Decision: Traverse `structured_content` deterministically using array index order and lexicographically sorted object keys.
   - Rationale: Guarantees stable corpus indexing across runs.
+- Decision: Recompute callable tools after each step using the updated corpus (Sequential state-machine strategy).
+  - Rationale: Tool callability depends on values discovered during prior steps, so selection must reflect the current corpus instead of the initial seed.
 - Decision: Keep the existing generator intact and add a generator mode selector at the run entry point.
   - Rationale: Provides backwards compatibility while enabling opt-in state-machine generation.
 - Decision: Provide optional coverage validation hooks only for the state-machine generator mode, with coverage counts based on successful tool responses and exclude tools outside allowlists/inside blocklists.

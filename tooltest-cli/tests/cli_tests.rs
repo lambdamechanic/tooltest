@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::process::{Command, ExitCode, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,13 +13,13 @@ fn run_tooltest(args: &[&str]) -> Output {
         .expect("run tooltest")
 }
 
-fn test_server() -> Option<&'static str> {
-    let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
-    if std::path::Path::new(server).exists() {
-        Some(server)
-    } else {
-        None
-    }
+fn test_server() -> &'static str {
+    let server = env!("CARGO_BIN_EXE_tooltest_cli_test_server");
+    assert!(
+        Path::new(server).exists(),
+        "tooltest_cli_test_server binary missing at {server}"
+    );
+    server
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -31,9 +32,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn stdio_command_reports_success() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&["stdio", "--command", server, "--env", "FOO=bar"]);
 
     assert!(
@@ -60,9 +59,7 @@ fn stdio_command_reports_success() {
 
 #[test]
 fn stdio_command_reports_success_with_state_machine_mode() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&[
         "--json",
         "--generator-mode",
@@ -87,9 +84,7 @@ fn stdio_command_reports_success_with_state_machine_mode() {
 
 #[test]
 fn test_server_exits_on_expectation_failure() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = Command::new(server)
         .env("EXPECT_ARG", "missing-arg")
         .output()
@@ -101,9 +96,7 @@ fn test_server_exits_on_expectation_failure() {
 
 #[test]
 fn test_server_exits_cleanly_without_input() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = Command::new(server)
         .env_remove("EXPECT_ARG")
         .env_remove("EXPECT_CWD")
@@ -120,9 +113,7 @@ fn test_server_exits_cleanly_without_input() {
 
 #[test]
 fn stdio_command_rejects_bad_env_entry() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&["stdio", "--command", server, "--env", "NOPE"]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -132,9 +123,7 @@ fn stdio_command_rejects_bad_env_entry() {
 
 #[test]
 fn stdio_command_rejects_empty_env_key() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&["stdio", "--command", server, "--env", "=value"]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -144,9 +133,7 @@ fn stdio_command_rejects_empty_env_key() {
 
 #[test]
 fn sequence_len_zero_exits() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&["--min-sequence-len", "0", "stdio", "--command", server]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -156,9 +143,7 @@ fn sequence_len_zero_exits() {
 
 #[test]
 fn sequence_len_inverted_exits() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&[
         "--min-sequence-len",
         "4",
@@ -176,9 +161,7 @@ fn sequence_len_inverted_exits() {
 
 #[test]
 fn state_machine_config_invalid_json_exits() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&[
         "--state-machine-config",
         "{bad json}",
@@ -194,9 +177,7 @@ fn state_machine_config_invalid_json_exits() {
 
 #[test]
 fn state_machine_config_invalid_json_exits_with_json_error() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&[
         "--json",
         "--state-machine-config",
@@ -218,9 +199,7 @@ fn state_machine_config_invalid_json_exits_with_json_error() {
 
 #[test]
 fn stdio_command_passes_args() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let output = run_tooltest(&[
         "stdio",
         "--command",
@@ -240,9 +219,7 @@ fn stdio_command_passes_args() {
 
 #[test]
 fn stdio_command_sets_cwd() {
-    let Some(server) = test_server() else {
-        return;
-    };
+    let server = test_server();
     let dir = temp_dir("cwd");
     fs::create_dir_all(&dir).expect("create temp dir");
     let dir_string = dir.to_string_lossy().into_owned();
@@ -369,10 +346,29 @@ async fn run_missing_state_machine_config_file_returns_exit_code_2() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_stdio_success_returns_exit_code_0() {
-    let Some(server) = test_server() else {
-        return;
+async fn run_stdio_missing_command_returns_exit_code_1() {
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 1,
+        max_sequence_len: 1,
+        generator_mode: GeneratorModeArg::Legacy,
+        json: false,
+        state_machine_config: None,
+        command: TooltestCommand::Stdio {
+            command: "tooltest-missing-binary".to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        },
     };
+
+    let code = run(cli).await;
+    assert_eq!(code, ExitCode::from(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_stdio_success_returns_exit_code_0() {
+    let server = test_server();
     let cli = Cli {
         cases: 1,
         min_sequence_len: 1,

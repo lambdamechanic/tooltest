@@ -8,7 +8,11 @@ The system SHALL support a proptest-state-machine generator that produces sequen
 
 #### Scenario: Tool selection per step
 - **WHEN** generating each step in the sequence
-- **THEN** the generator selects a single callable tool to invoke for that step
+- **THEN** the generator selects a single callable tool to invoke for that step based on the current corpus state
+
+#### Scenario: New corpus values unlock tools
+- **WHEN** a tool response adds values to the corpus
+- **THEN** subsequent steps consider newly callable tools during selection
 
 #### Scenario: No callable tools ends the run
 - **WHEN** no callable tools remain for the next step
@@ -73,6 +77,10 @@ The system SHALL treat a tool as callable only when all required inputs can be g
 #### Scenario: Missing required corpus values makes tool uncallable
 - **WHEN** a required number, integer, or string input cannot be satisfied from the corpus
 - **THEN** the tool is excluded from selection as uncallable
+
+#### Scenario: Callability recomputed after each step
+- **WHEN** a tool response adds new corpus values
+- **THEN** callability is recomputed before selecting the next tool
 
 #### Scenario: Optional corpus-backed fields may be omitted
 - **WHEN** an optional number or string field lacks corpus values

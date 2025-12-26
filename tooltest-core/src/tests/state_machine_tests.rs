@@ -1,7 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::generator::{state_machine_sequence_strategy, ValueCorpus};
+use crate::generator::{
+    invocation_strategy_from_corpus, state_machine_sequence_strategy, ValueCorpus,
+};
 use crate::StateMachineConfig;
 use proptest::prelude::*;
 use rmcp::model::Tool;
@@ -99,31 +101,60 @@ fn state_machine_generator_uses_integer_corpus_values() {
         }),
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(7)]);
-    let strategy =
-        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
-
-    let sequence = sample(strategy);
-    assert_eq!(sequence.len(), 1);
-    let args = sequence[0].arguments.as_ref().expect("args");
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_numbers(config.seed_numbers.clone());
+    let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus)
+        .expect("strategy")
+        .expect("callable");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.as_ref().expect("args");
     assert_eq!(args.get("count"), Some(&json!(7)));
 }
 
 #[test]
 fn state_machine_generator_returns_empty_when_no_callable_tools() {
-    let tool = tool_with_schema(
-        "echo",
-        json!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string" }
-            },
-            "required": ["text"]
-        }),
-    );
     let config = StateMachineConfig::default();
-    let strategy =
-        state_machine_sequence_strategy(&[tool], None, &config, 1..=3).expect("strategy");
+    let strategy = state_machine_sequence_strategy(&[], None, &config, 1..=3).expect("strategy");
 
     let sequence = sample(strategy);
-    assert!(sequence.is_empty());
+    assert!(sequence.transitions.is_empty());
+}
+
+#[test]
+fn state_machine_generator_returns_transitions_when_callable() {
+    let tool = tool_with_schema("echo", json!({ "type": "object", "properties": {} }));
+    let config = StateMachineConfig::default();
+    let strategy =
+        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
+
+    let sequence = sample(strategy);
+    assert_eq!(sequence.transitions.len(), 1);
+    assert!(matches!(
+        sequence.transitions.first(),
+        Some(crate::generator::StateMachineTransition::Invoke(_))
+    ));
+}
+
+#[test]
+fn state_machine_generator_supports_kev_schema_without_seeds() {
+    let schema: JsonValue = serde_json::from_str(include_str!(
+        "../../tests/fixtures/kev_get_related_cves_schema.json"
+    ))
+    .expect("schema json");
+    let tool = tool_with_schema("get_related_cves", schema);
+    let config = StateMachineConfig::default();
+    let strategy =
+        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
+
+    let sequence = sample(strategy);
+    assert_eq!(sequence.transitions.len(), 1);
+    let invocation = match sequence.transitions.first() {
+        Some(crate::generator::StateMachineTransition::Invoke(invocation)) => invocation,
+        Some(crate::generator::StateMachineTransition::Skip { .. }) => {
+            panic!("expected invocation")
+        }
+        None => panic!("expected transition"),
+    };
+    let args = invocation.arguments.as_ref().expect("arguments");
+    assert!(args.contains_key("vendor") || args.contains_key("product"));
 }

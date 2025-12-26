@@ -1,16 +1,40 @@
 //! Proptest-based tool invocation generation driven by MCP schemas.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
+use proptest_state_machine::ReferenceStateMachine;
 use regex::Regex;
 use rmcp::model::{JsonObject, Tool};
 use serde_json::{Number, Value as JsonValue};
 
 use crate::{StateMachineConfig, ToolInvocation, ToolPredicate};
+
+thread_local! {
+    static LAST_REJECT_CONTEXT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn clear_reject_context() {
+    LAST_REJECT_CONTEXT.with(|context| {
+        *context.borrow_mut() = None;
+    });
+}
+
+pub(crate) fn take_reject_context() -> Option<String> {
+    LAST_REJECT_CONTEXT.with(|context| context.borrow_mut().take())
+}
+
+fn record_reject_context(context: String) {
+    LAST_REJECT_CONTEXT.with(|stored| {
+        *stored.borrow_mut() = Some(context);
+    });
+}
 
 /// Errors emitted while generating tool invocations from schema data.
 #[derive(Debug)]
@@ -71,6 +95,26 @@ pub(crate) struct ValueCorpus {
     integer_set: HashSet<i64>,
     number_set: HashSet<Number>,
     string_set: HashSet<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StateMachineTransition {
+    pub(crate) seed: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StateMachineSequence {
+    pub(crate) transitions: Vec<StateMachineTransition>,
+    pub(crate) seen_counter: Option<Arc<AtomicUsize>>,
+}
+
+impl StateMachineSequence {
+    fn empty() -> Self {
+        Self {
+            transitions: Vec::new(),
+            seen_counter: None,
+        }
+    }
 }
 
 impl ValueCorpus {
@@ -217,75 +261,20 @@ pub(crate) fn invocation_sequence_strategy(
     Ok(proptest::collection::vec(invocation, len_range).boxed())
 }
 
-pub(crate) fn state_machine_sequence_strategy(
+pub(crate) fn invocation_strategy_from_corpus(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
-    config: &StateMachineConfig,
-    len_range: std::ops::RangeInclusive<usize>,
-) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
-    validate_state_machine_tools(tools)?;
-    let mut corpus = ValueCorpus::default();
-    corpus.seed_numbers(config.seed_numbers.clone());
-    corpus.seed_strings(config.seed_strings.clone());
-
+    corpus: &ValueCorpus,
+) -> Result<Option<BoxedStrategy<ToolInvocation>>, InvocationError> {
     let mut strategies = Vec::new();
-    let mut has_callable = false;
     for tool in tools {
-        match invocation_from_corpus(tool, predicate, &corpus) {
-            Some(strategy) => {
-                has_callable = true;
-                strategies.push(strategy.prop_map(Some).boxed());
-            }
-            None => {
-                strategies.push(Just(None).boxed());
-            }
+        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus) {
+            strategies.push(strategy.boxed());
         }
     }
 
-    if strategies.is_empty() || !has_callable {
-        return Ok(Just(Vec::new()).boxed());
-    }
-
-    let invocation = proptest::strategy::Union::new(strategies)
-        .prop_filter_map("tool inputs not callable with current corpus", |value| {
-            value
-        })
-        .boxed();
-    Ok(proptest::collection::vec(invocation, len_range).boxed())
-}
-
-/// Builds a strategy that yields tool invocations with inputs that violate exactly one schema rule.
-pub(crate) fn invalid_invocation_strategy(
-    tools: &[Tool],
-    predicate: Option<&ToolPredicate>,
-) -> Result<BoxedStrategy<ToolInvocation>, InvocationError> {
-    let mut strategies = Vec::new();
-    for tool in tools {
-        let tool_name = tool.name.clone();
-        let predicate_name = tool.name.to_string();
-        let arguments = invalid_input_object_strategy(tool)?;
-        let predicate = predicate.cloned();
-
-        let strategy = arguments
-            .prop_filter_map("predicate rejected tool input", move |args| {
-                if let Some(predicate) = &predicate {
-                    let input = JsonValue::Object(args.clone());
-                    if !predicate(&predicate_name, &input) {
-                        return None;
-                    }
-                }
-                Some(ToolInvocation {
-                    name: tool_name.clone(),
-                    arguments: Some(args),
-                })
-            })
-            .boxed();
-
-        strategies.push(strategy);
-    }
-
     if strategies.is_empty() {
-        return Err(InvocationError::NoEligibleTools);
+        return Ok(None);
     }
 
     let union = proptest::strategy::Union::new(strategies).boxed();
@@ -293,7 +282,51 @@ pub(crate) fn invalid_invocation_strategy(
     if union.new_tree(&mut runner).is_err() {
         return Err(InvocationError::NoEligibleTools);
     }
-    Ok(union)
+    Ok(Some(union))
+}
+
+struct StateMachineSeedModel;
+
+impl ReferenceStateMachine for StateMachineSeedModel {
+    type State = ();
+    type Transition = StateMachineTransition;
+
+    fn init_state() -> BoxedStrategy<Self::State> {
+        Just(()).boxed()
+    }
+
+    fn transitions(_state: &Self::State) -> BoxedStrategy<Self::Transition> {
+        any::<u64>()
+            .prop_map(|seed| StateMachineTransition { seed })
+            .boxed()
+    }
+
+    fn apply(state: Self::State, _transition: &Self::Transition) -> Self::State {
+        state
+    }
+}
+
+pub(crate) fn state_machine_sequence_strategy(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    config: &StateMachineConfig,
+    len_range: std::ops::RangeInclusive<usize>,
+) -> Result<BoxedStrategy<StateMachineSequence>, InvocationError> {
+    validate_state_machine_tools(tools)?;
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_numbers(config.seed_numbers.clone());
+    corpus.seed_strings(config.seed_strings.clone());
+    if invocation_strategy_from_corpus(tools, predicate, &corpus)?.is_none() {
+        return Ok(Just(StateMachineSequence::empty()).boxed());
+    }
+
+    let strategy = StateMachineSeedModel::sequential_strategy(len_range)
+        .prop_map(|(_, transitions, seen_counter)| StateMachineSequence {
+            transitions,
+            seen_counter,
+        })
+        .boxed();
+    Ok(strategy)
 }
 
 fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
@@ -403,6 +436,95 @@ fn invocation_from_corpus(
     corpus: &ValueCorpus,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
     let schema = tool.input_schema.as_ref();
+    match schema_object_union_branches(schema, tool) {
+        Ok(Some((kind, branches, base))) => {
+            let omit_optional = matches!(kind, ObjectUnionKind::OneOf);
+            let mut required_sets = Vec::with_capacity(branches.len());
+            let mut merged_branches = Vec::with_capacity(branches.len());
+            for branch in branches {
+                let merged = merge_object_schema(&base, &branch);
+                required_sets.push(required_key_set(&merged));
+                merged_branches.push(merged);
+            }
+            let mut strategies = Vec::new();
+            for (idx, merged) in merged_branches.into_iter().enumerate() {
+                let mut forbidden = HashSet::new();
+                if matches!(kind, ObjectUnionKind::OneOf) {
+                    for (other_idx, required) in required_sets.iter().enumerate() {
+                        if other_idx == idx {
+                            continue;
+                        }
+                        for key in required {
+                            if !required_sets[idx].contains(key) {
+                                forbidden.insert(key.clone());
+                            }
+                        }
+                    }
+                }
+                if let Some(strategy) = invocation_from_corpus_for_schema(
+                    tool,
+                    &merged,
+                    predicate,
+                    corpus,
+                    omit_optional,
+                    &forbidden,
+                ) {
+                    strategies.push(strategy);
+                }
+            }
+            if strategies.is_empty() {
+                return None;
+            }
+            let schema = schema.clone();
+            let union = proptest::strategy::Union::new(strategies).boxed();
+            let tool_name = tool.name.to_string();
+            return Some(
+                union
+                    .prop_filter("union must satisfy schema", move |invocation| {
+                        let args = invocation.arguments.clone().unwrap_or_else(JsonObject::new);
+                        let value = JsonValue::Object(args);
+                        let violations = schema_violations(&schema, &value);
+                        if !violations.is_empty() {
+                            record_reject_context(format!(
+                                "tool '{tool_name}' input rejected: {violations:?} value={value:?}"
+                            ));
+                            return false;
+                        }
+                        true
+                    })
+                    .boxed(),
+            );
+        }
+        Ok(None) => {}
+        Err(_) => return None,
+    }
+
+    let omit_keys = HashSet::new();
+    invocation_from_corpus_for_schema(tool, schema, predicate, corpus, false, &omit_keys)
+}
+
+fn invocation_from_corpus_for_schema(
+    tool: &Tool,
+    schema: &JsonObject,
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    omit_optional: bool,
+    omit_keys: &HashSet<String>,
+) -> Option<BoxedStrategy<ToolInvocation>> {
+    if schema.get("$ref").is_some() || schema.get("allOf").is_some() {
+        let resolved = resolve_object_schema(schema, tool).ok()?;
+        if &resolved != schema {
+            return invocation_from_corpus_for_schema(
+                tool,
+                &resolved,
+                predicate,
+                corpus,
+                omit_optional,
+                omit_keys,
+            );
+        }
+    }
+
     let properties = match schema.get("properties") {
         Some(JsonValue::Object(map)) => map,
         Some(_) => return None,
@@ -423,23 +545,21 @@ fn invocation_from_corpus(
         }
     };
 
-    let required_keys = schema
-        .get("required")
-        .and_then(JsonValue::as_array)
-        .map(|required| {
-            required
-                .iter()
-                .filter_map(JsonValue::as_str)
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
+    let required_keys = required_key_set(schema);
 
     let mut property_strategies = Vec::with_capacity(properties.len());
     for (name, schema_value) in properties {
         let schema_object = schema_value.as_object()?;
-        let required = required_keys.contains(name.as_str());
+        let required = required_keys.contains(name);
         match property_strategy_from_corpus(schema_object, required, corpus, tool) {
             PropertyOutcome::Include(strategy) => {
+                let strategy = if omit_optional && !required {
+                    prop_oneof![Just(None), strategy.prop_map(Some)].boxed()
+                } else if omit_keys.contains(name) && !required {
+                    Just(None).boxed()
+                } else {
+                    strategy.prop_map(Some).boxed()
+                };
                 property_strategies.push((name.clone(), strategy));
             }
             PropertyOutcome::Omit => {}
@@ -447,7 +567,7 @@ fn invocation_from_corpus(
         }
     }
 
-    let mut strategy: BoxedStrategy<Vec<(String, JsonValue)>> = Just(Vec::new()).boxed();
+    let mut strategy: BoxedStrategy<Vec<(String, Option<JsonValue>)>> = Just(Vec::new()).boxed();
     for (name, value_strategy) in property_strategies {
         strategy = strategy
             .prop_flat_map(move |entries| {
@@ -469,7 +589,9 @@ fn invocation_from_corpus(
             .prop_filter_map("predicate rejected tool input", move |entries| {
                 let mut map = JsonObject::new();
                 for (name, value) in entries {
-                    map.insert(name, value);
+                    if let Some(value) = value {
+                        map.insert(name, value);
+                    }
                 }
                 let allowed = if let Some(predicate) = &predicate {
                     let input = JsonValue::Object(map.clone());
@@ -678,7 +800,23 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
 }
 
 fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
-    let schema = tool.input_schema.as_ref();
+    let omit_keys = HashSet::new();
+    input_object_strategy_for_schema(tool.input_schema.as_ref(), tool, false, &omit_keys)
+}
+
+fn input_object_strategy_for_schema(
+    schema: &JsonObject,
+    tool: &Tool,
+    omit_optional: bool,
+    omit_keys: &HashSet<String>,
+) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
+    if schema.get("$ref").is_some() || schema.get("allOf").is_some() {
+        let resolved = resolve_object_schema(schema, tool)?;
+        if &resolved != schema {
+            return input_object_strategy_for_schema(&resolved, tool, omit_optional, omit_keys);
+        }
+    }
+
     match schema.get("type") {
         Some(JsonValue::String(schema_type)) if schema_type == "object" => {}
         Some(JsonValue::String(other)) => {
@@ -699,6 +837,54 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
                 reason: "inputSchema missing type".to_string(),
             })
         }
+    }
+
+    if let Some((kind, branches, base)) = schema_object_union_branches(schema, tool)? {
+        let omit_optional = matches!(kind, ObjectUnionKind::OneOf);
+        let mut required_sets = Vec::with_capacity(branches.len());
+        let mut merged_branches = Vec::with_capacity(branches.len());
+        for branch in branches {
+            let merged = merge_object_schema(&base, &branch);
+            required_sets.push(required_key_set(&merged));
+            merged_branches.push(merged);
+        }
+        let mut strategies = Vec::with_capacity(merged_branches.len());
+        for (idx, merged) in merged_branches.into_iter().enumerate() {
+            let mut forbidden = HashSet::new();
+            if matches!(kind, ObjectUnionKind::OneOf) {
+                for (other_idx, required) in required_sets.iter().enumerate() {
+                    if other_idx == idx {
+                        continue;
+                    }
+                    for key in required {
+                        if !required_sets[idx].contains(key) {
+                            forbidden.insert(key.clone());
+                        }
+                    }
+                }
+            }
+            strategies.push(input_object_strategy_for_schema(
+                &merged,
+                tool,
+                omit_optional,
+                &forbidden,
+            )?);
+        }
+        let union = proptest::strategy::Union::new(strategies).boxed();
+        let schema = schema.clone();
+        let tool_name = tool.name.to_string();
+        return Ok(union
+            .prop_filter("union must satisfy schema", move |value| {
+                let violations = schema_violations(&schema, &JsonValue::Object(value.clone()));
+                if !violations.is_empty() {
+                    record_reject_context(format!(
+                        "tool '{tool_name}' input rejected: {violations:?} value={value:?}"
+                    ));
+                    return false;
+                }
+                true
+            })
+            .boxed());
     }
 
     let properties = match schema.get("properties") {
@@ -723,20 +909,13 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
         }
     };
 
-    if let Some(JsonValue::Array(required)) = schema.get("required") {
-        let required_keys = required
-            .iter()
-            .filter_map(JsonValue::as_str)
-            .collect::<Vec<_>>();
-        if !required_keys
-            .iter()
-            .all(|key| properties.contains_key(*key))
-        {
-            return Err(InvocationError::UnsupportedSchema {
-                tool: tool.name.to_string(),
-                reason: "inputSchema required must reference known properties".to_string(),
-            });
-        }
+    let required_keys = required_key_set(schema);
+
+    if !required_keys.iter().all(|key| properties.contains_key(key)) {
+        return Err(InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: "inputSchema required must reference known properties".to_string(),
+        });
     }
 
     let mut property_strategies = Vec::with_capacity(properties.len());
@@ -749,10 +928,18 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
                     reason: format!("property '{name}' schema must be an object"),
                 })?;
         let strategy = schema_value_strategy(schema_object, tool)?;
+        let required = required_keys.contains(name);
+        let strategy = if omit_optional && !required {
+            prop_oneof![Just(None), strategy.prop_map(Some)].boxed()
+        } else if omit_keys.contains(name) && !required {
+            Just(None).boxed()
+        } else {
+            strategy.prop_map(Some).boxed()
+        };
         property_strategies.push((name.clone(), strategy));
     }
 
-    let mut strategy: BoxedStrategy<Vec<(String, JsonValue)>> = Just(Vec::new()).boxed();
+    let mut strategy: BoxedStrategy<Vec<(String, Option<JsonValue>)>> = Just(Vec::new()).boxed();
     for (name, value_strategy) in property_strategies {
         strategy = strategy
             .prop_flat_map(move |entries| {
@@ -771,51 +958,11 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
         .prop_map(|entries| {
             let mut map = JsonObject::new();
             for (name, value) in entries {
-                map.insert(name, value);
+                if let Some(value) = value {
+                    map.insert(name, value);
+                }
             }
             map
-        })
-        .boxed())
-}
-
-fn invalid_input_object_strategy(
-    tool: &Tool,
-) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
-    let valid_inputs = input_object_strategy(tool)?;
-
-    let schema = tool.input_schema.clone();
-    let schema_for_filter = schema.clone();
-    Ok(valid_inputs
-        .prop_filter_map("must have a viable invalid mutation", move |args| {
-            let value = JsonValue::Object(args.clone());
-            let constraints = applicable_constraints(schema_for_filter.as_ref(), &value);
-            let viable = constraints
-                .into_iter()
-                .filter_map(|constraint| {
-                    mutate_to_violate_constraint(&value, &constraint)
-                        .map(|mutated| (constraint, mutated))
-                })
-                .collect::<Vec<_>>();
-            NonEmpty::from_vec(viable)
-        })
-        .prop_flat_map(move |viable| {
-            let schema = schema.clone();
-            let viable: Vec<_> = viable.into();
-            proptest::sample::select(viable)
-                .prop_filter_map(
-                    "must violate exactly one schema constraint",
-                    move |(constraint, mutated)| {
-                        let violations = schema_violations(schema.as_ref(), &mutated);
-                        let is_valid = violations.len() == 1 && violations[0] == constraint;
-                        is_valid
-                            .then_some(mutated)
-                            .and_then(|mutated| match mutated {
-                                JsonValue::Object(map) => Some(map),
-                                _ => None,
-                            })
-                    },
-                )
-                .boxed()
         })
         .boxed())
 }
@@ -824,6 +971,16 @@ fn schema_value_strategy(
     schema: &JsonObject,
     tool: &Tool,
 ) -> Result<BoxedStrategy<JsonValue>, InvocationError> {
+    if let Some(resolved) = resolve_schema_ref(schema, tool)? {
+        return schema_value_strategy(&resolved, tool);
+    }
+    if schema.get("allOf").is_some() {
+        let resolved = resolve_object_schema(schema, tool)?;
+        if &resolved != schema {
+            return schema_value_strategy(&resolved, tool);
+        }
+    }
+
     if let Some(value) = schema.get("const") {
         return Ok(Just(value.clone()).boxed());
     }
@@ -847,9 +1004,17 @@ fn schema_value_strategy(
         }
         let union = proptest::strategy::Union::new(strategies).boxed();
         let schema = schema.clone();
+        let tool_name = tool.name.to_string();
         return Ok(union
             .prop_filter("union must satisfy schema", move |value| {
-                schema_violations(&schema, value).is_empty()
+                let violations = schema_violations(&schema, value);
+                if !violations.is_empty() {
+                    record_reject_context(format!(
+                        "tool '{tool_name}' value rejected: {violations:?} value={value:?}"
+                    ));
+                    return false;
+                }
+                true
             })
             .boxed());
     }
@@ -1050,6 +1215,124 @@ fn schema_value_strategy(
     }
 }
 
+fn resolve_schema_ref(
+    schema: &JsonObject,
+    tool: &Tool,
+) -> Result<Option<JsonObject>, InvocationError> {
+    let Some(JsonValue::String(reference)) = schema.get("$ref") else {
+        return Ok(None);
+    };
+    if !reference.starts_with("#/") && reference != "#" {
+        return Err(InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: format!("schema $ref must be a local reference, got '{reference}'"),
+        });
+    }
+    let root = JsonValue::Object(tool.input_schema.as_ref().clone());
+    let target = resolve_pointer_value(&root, reference).ok_or_else(|| {
+        InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: format!("schema $ref '{reference}' must point to a schema object"),
+        }
+    })?;
+    let target_object = target
+        .as_object()
+        .ok_or_else(|| InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: format!("schema $ref '{reference}' must point to a schema object"),
+        })?;
+    let mut merged = target_object.clone();
+    for (key, value) in schema {
+        if key != "$ref" {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(Some(merged))
+}
+
+fn resolve_object_schema(schema: &JsonObject, tool: &Tool) -> Result<JsonObject, InvocationError> {
+    if let Some(resolved) = resolve_schema_ref(schema, tool)? {
+        return resolve_object_schema(&resolved, tool);
+    }
+
+    if let Some(JsonValue::Array(all_of)) = schema.get("allOf") {
+        if all_of.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "allOf must include at least one schema object".to_string(),
+            });
+        }
+        let mut merged = schema.clone();
+        merged.remove("allOf");
+        for (idx, value) in all_of.iter().enumerate() {
+            let schema_object =
+                value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("allOf[{idx}] schema must be an object"),
+                    })?;
+            let resolved = resolve_object_schema(schema_object, tool)?;
+            merged = merge_object_schema(&merged, &resolved);
+        }
+        return Ok(merged);
+    }
+
+    Ok(schema.clone())
+}
+
+fn resolve_pointer_value<'a>(root: &'a JsonValue, pointer: &str) -> Option<&'a JsonValue> {
+    if pointer == "#" {
+        return Some(root);
+    }
+    let mut current = root;
+    for segment in pointer.split('/').skip(1) {
+        let decoded = decode_pointer_segment(segment);
+        match current {
+            JsonValue::Object(map) => {
+                current = map.get(&decoded)?;
+            }
+            JsonValue::Array(items) => {
+                let index = decoded.parse::<usize>().ok()?;
+                current = items.get(index)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+fn resolve_schema_for_validation(schema: &JsonObject, root: &JsonObject) -> Option<JsonObject> {
+    if let Some(JsonValue::String(reference)) = schema.get("$ref") {
+        if !reference.starts_with("#/") && reference != "#" {
+            return None;
+        }
+        let root_value = JsonValue::Object(root.clone());
+        let target = resolve_pointer_value(&root_value, reference)?;
+        let target_object = target.as_object()?;
+        let mut merged = target_object.clone();
+        for (key, value) in schema {
+            if key != "$ref" {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+        return Some(merged);
+    }
+
+    let JsonValue::Array(all_of) = schema.get("allOf")? else {
+        return None;
+    };
+    let mut merged = schema.clone();
+    merged.remove("allOf");
+    for value in all_of {
+        let schema_object = value.as_object()?;
+        let resolved = resolve_schema_for_validation(schema_object, root)
+            .unwrap_or_else(|| schema_object.clone());
+        merged = merge_object_schema(&merged, &resolved);
+    }
+    Some(merged)
+}
+
 fn schema_union_branches_for_generation(
     schema: &JsonObject,
     tool: &Tool,
@@ -1070,7 +1353,7 @@ fn schema_union_branches_for_generation(
                         tool: tool.name.to_string(),
                         reason: format!("oneOf[{idx}] schema must be an object"),
                     })?;
-            branches.push(schema_object.clone());
+            branches.push(resolve_object_schema(schema_object, tool)?);
         }
         return Ok(Some(branches));
     }
@@ -1091,7 +1374,7 @@ fn schema_union_branches_for_generation(
                         tool: tool.name.to_string(),
                         reason: format!("anyOf[{idx}] schema must be an object"),
                     })?;
-            branches.push(schema_object.clone());
+            branches.push(resolve_object_schema(schema_object, tool)?);
         }
         return Ok(Some(branches));
     }
@@ -1187,13 +1470,6 @@ fn is_escaped(bytes: &[u8], idx: usize) -> bool {
     count % 2 == 1
 }
 
-pub(crate) fn applicable_constraints(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
-    let mut constraints = Vec::new();
-    let mut path = Vec::new();
-    collect_constraints(schema, value, &mut path, &mut constraints);
-    constraints
-}
-
 fn nonempty_path(path: &[PathSegment]) -> NonEmpty<PathSegment> {
     match path.split_first() {
         Some((head, tail)) => NonEmpty {
@@ -1201,171 +1477,6 @@ fn nonempty_path(path: &[PathSegment]) -> NonEmpty<PathSegment> {
             tail: tail.to_vec(),
         },
         None => NonEmpty::new(PathSegment::Root),
-    }
-}
-
-fn collect_constraints(
-    schema: &JsonObject,
-    value: &JsonValue,
-    path: &mut Vec<PathSegment>,
-    constraints: &mut Vec<Constraint>,
-) {
-    collect_constraints_inner(schema, value, path, constraints);
-}
-
-fn collect_constraints_inner(
-    schema: &JsonObject,
-    value: &JsonValue,
-    path: &mut Vec<PathSegment>,
-    constraints: &mut Vec<Constraint>,
-) {
-    if let Some(one_of) = schema_oneof_branches(schema) {
-        let base = schema_without_oneof(schema);
-        collect_constraints_inner(&base, value, path, constraints);
-        let matching = one_of
-            .iter()
-            .enumerate()
-            .filter(|(_, branch)| schema_violations_inner(branch, value).is_empty())
-            .map(|(idx, _)| idx)
-            .collect::<Vec<_>>();
-        if matching.len() == 1 {
-            collect_constraints_inner(&one_of[matching[0]], value, path, constraints);
-        } else {
-            let index =
-                best_union_branch(&one_of, value).expect("oneOf branches must yield a best match");
-            collect_constraints_inner(&one_of[index], value, path, constraints);
-        }
-        return;
-    }
-
-    if let Some(any_of) = schema_anyof_branches(schema) {
-        let base = schema_without_anyof(schema);
-        collect_constraints_inner(&base, value, path, constraints);
-        let index = best_union_branch(&any_of, value).expect("anyOf branches must yield a match");
-        collect_constraints_inner(&any_of[index], value, path, constraints);
-        return;
-    }
-
-    if let Some(type_union) = schema_type_union_branches(schema) {
-        let index =
-            best_union_branch(&type_union, value).expect("type union branches must yield a match");
-        collect_constraints_inner(&type_union[index], value, path, constraints);
-        return;
-    }
-
-    if let Some(const_value) = schema.get("const") {
-        constraints.push(Constraint {
-            path: nonempty_path(path),
-            kind: ConstraintKind::Const(const_value.clone()),
-        });
-    }
-
-    if let Some(JsonValue::Array(values)) = schema.get("enum") {
-        constraints.push(Constraint {
-            path: nonempty_path(path),
-            kind: ConstraintKind::Enum(values.clone()),
-        });
-    }
-
-    if let Some(JsonValue::String(schema_type)) = schema.get("type") {
-        constraints.push(Constraint {
-            path: nonempty_path(path),
-            kind: ConstraintKind::Type(schema_type.clone()),
-        });
-    }
-
-    if let JsonValue::String(_) = value {
-        if let Some(JsonValue::String(schema_type)) = schema.get("type") {
-            if schema_type != "string" {
-                return;
-            }
-        }
-        if let Some(min_length) = schema.get("minLength").and_then(JsonValue::as_u64) {
-            constraints.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::MinLength(min_length as usize),
-            });
-        }
-        if let Some(max_length) = schema.get("maxLength").and_then(JsonValue::as_u64) {
-            constraints.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::MaxLength(max_length as usize),
-            });
-        }
-        if let Some(JsonValue::String(pattern)) = schema.get("pattern") {
-            if !pattern.is_empty() {
-                constraints.push(Constraint {
-                    path: nonempty_path(path),
-                    kind: ConstraintKind::Pattern(pattern.clone()),
-                });
-            }
-        }
-    }
-
-    if let JsonValue::Number(_) = value {
-        if let Some(minimum) = schema.get("minimum").and_then(JsonValue::as_f64) {
-            constraints.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::Minimum(minimum),
-            });
-        }
-        if let Some(maximum) = schema.get("maximum").and_then(JsonValue::as_f64) {
-            constraints.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::Maximum(maximum),
-            });
-        }
-    }
-
-    if let JsonValue::Array(items) = value {
-        if let Some(min_items) = schema.get("minItems").and_then(JsonValue::as_u64) {
-            constraints.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::MinItems(min_items as usize),
-            });
-        }
-        if let Some(max_items) = schema.get("maxItems").and_then(JsonValue::as_u64) {
-            constraints.push(Constraint {
-                path: nonempty_path(path),
-                kind: ConstraintKind::MaxItems(max_items as usize),
-            });
-        }
-        if let Some(JsonValue::Object(item_schema)) = schema.get("items") {
-            for (index, item) in items.iter().enumerate() {
-                path.push(PathSegment::Index(index));
-                collect_constraints_inner(item_schema, item, path, constraints);
-                path.pop();
-            }
-        }
-    }
-
-    if let JsonValue::Object(map) = value {
-        if let Some(JsonValue::Array(required)) = schema.get("required") {
-            for required_key in required.iter().filter_map(JsonValue::as_str) {
-                if map.contains_key(required_key) {
-                    constraints.push(Constraint {
-                        path: nonempty_path(path),
-                        kind: ConstraintKind::Required(required_key.to_string()),
-                    });
-                }
-            }
-        }
-        if let Some(JsonValue::Object(properties)) = schema.get("properties") {
-            for (name, property_schema) in properties {
-                if let Some(property_value) = map.get(name) {
-                    if let Some(property_schema) = property_schema.as_object() {
-                        path.push(PathSegment::Key(name.clone()));
-                        collect_constraints_inner(
-                            property_schema,
-                            property_value,
-                            path,
-                            constraints,
-                        );
-                        path.pop();
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1382,7 +1493,7 @@ fn collect_violations(
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
 ) {
-    collect_violations_inner(schema, value, path, violations);
+    collect_violations_inner(schema, value, path, violations, schema);
 }
 
 fn collect_violations_inner(
@@ -1390,10 +1501,16 @@ fn collect_violations_inner(
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
+    root: &JsonObject,
 ) {
+    if let Some(resolved) = resolve_schema_for_validation(schema, root) {
+        collect_violations_inner(&resolved, value, path, violations, root);
+        return;
+    }
+
     if let Some(one_of) = schema_oneof_branches(schema) {
         let base = schema_without_oneof(schema);
-        let mut base_violations = schema_violations_inner(&base, value);
+        let mut base_violations = schema_violations_inner(&base, value, root);
         if !base_violations.is_empty() {
             violations.append(&mut base_violations);
             return;
@@ -1401,7 +1518,7 @@ fn collect_violations_inner(
         let mut matches = 0;
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &one_of {
-            let branch_violations = schema_violations_inner(branch, value);
+            let branch_violations = schema_violations_inner(branch, value, root);
             if branch_violations.is_empty() {
                 matches += 1;
                 continue;
@@ -1431,14 +1548,14 @@ fn collect_violations_inner(
 
     if let Some(any_of) = schema_anyof_branches(schema) {
         let base = schema_without_anyof(schema);
-        let mut base_violations = schema_violations_inner(&base, value);
+        let mut base_violations = schema_violations_inner(&base, value, root);
         if !base_violations.is_empty() {
             violations.append(&mut base_violations);
             return;
         }
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &any_of {
-            let branch_violations = schema_violations_inner(branch, value);
+            let branch_violations = schema_violations_inner(branch, value, root);
             if branch_violations.is_empty() {
                 return;
             }
@@ -1458,7 +1575,7 @@ fn collect_violations_inner(
     if let Some(type_union) = schema_type_union_branches(schema) {
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &type_union {
-            let branch_violations = schema_violations_inner(branch, value);
+            let branch_violations = schema_violations_inner(branch, value, root);
             if branch_violations.is_empty() {
                 return;
             }
@@ -1575,7 +1692,7 @@ fn collect_violations_inner(
             if let Some(JsonValue::Object(item_schema)) = schema.get("items") {
                 for (index, item) in items.iter().enumerate() {
                     path.push(PathSegment::Index(index));
-                    collect_violations_inner(item_schema, item, path, violations);
+                    collect_violations_inner(item_schema, item, path, violations, root);
                     path.pop();
                 }
             }
@@ -1601,6 +1718,7 @@ fn collect_violations_inner(
                                 property_value,
                                 path,
                                 violations,
+                                root,
                             );
                             path.pop();
                         }
@@ -1612,10 +1730,14 @@ fn collect_violations_inner(
     }
 }
 
-fn schema_violations_inner(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
+fn schema_violations_inner(
+    schema: &JsonObject,
+    value: &JsonValue,
+    root: &JsonObject,
+) -> Vec<Constraint> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    collect_violations_inner(schema, value, &mut path, &mut violations);
+    collect_violations_inner(schema, value, &mut path, &mut violations, root);
     violations
 }
 
@@ -1681,21 +1803,122 @@ fn schema_without_oneof(schema: &JsonObject) -> JsonObject {
     base
 }
 
-fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> Option<usize> {
-    let mut best_index = None;
-    let mut best_len = None;
-    for (idx, branch) in branches.iter().enumerate() {
-        let violations = schema_violations_inner(branch, value);
-        if violations.is_empty() {
-            return Some(idx);
-        }
-        let len = violations.len();
-        if best_len.is_none_or(|current| len < current) {
-            best_len = Some(len);
-            best_index = Some(idx);
+fn required_key_set(schema: &JsonObject) -> HashSet<String> {
+    schema
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_string)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn merge_object_schema(base: &JsonObject, branch: &JsonObject) -> JsonObject {
+    let mut merged = base.clone();
+    for (key, value) in branch {
+        match key.as_str() {
+            "properties" => {
+                if let (Some(JsonValue::Object(base_props)), JsonValue::Object(branch_props)) =
+                    (merged.get_mut("properties"), value)
+                {
+                    for (prop_key, prop_value) in branch_props {
+                        base_props.insert(prop_key.clone(), prop_value.clone());
+                    }
+                } else {
+                    merged.insert(key.clone(), value.clone());
+                }
+            }
+            "required" => {
+                if let (Some(JsonValue::Array(base_required)), JsonValue::Array(branch_required)) =
+                    (merged.get_mut("required"), value)
+                {
+                    let mut seen = HashSet::new();
+                    let mut combined = Vec::new();
+                    for item in base_required.iter().chain(branch_required.iter()) {
+                        if let Some(value) = item.as_str() {
+                            if seen.insert(value.to_string()) {
+                                combined.push(JsonValue::String(value.to_string()));
+                            }
+                        }
+                    }
+                    *base_required = combined;
+                } else {
+                    merged.insert(key.clone(), value.clone());
+                }
+            }
+            _ => {
+                merged.insert(key.clone(), value.clone());
+            }
         }
     }
-    best_index
+    merged
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ObjectUnionKind {
+    OneOf,
+    AnyOf,
+}
+
+fn schema_object_union_branches(
+    schema: &JsonObject,
+    tool: &Tool,
+) -> Result<Option<(ObjectUnionKind, Vec<JsonObject>, JsonObject)>, InvocationError> {
+    if let Some(JsonValue::Array(one_of)) = schema.get("oneOf") {
+        if one_of.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "oneOf must include at least one schema object".to_string(),
+            });
+        }
+        let mut branches = Vec::with_capacity(one_of.len());
+        for (idx, value) in one_of.iter().enumerate() {
+            let schema_object =
+                value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("oneOf[{idx}] schema must be an object"),
+                    })?;
+            branches.push(schema_object.clone());
+        }
+        return Ok(Some((
+            ObjectUnionKind::OneOf,
+            branches,
+            schema_without_oneof(schema),
+        )));
+    }
+
+    if let Some(JsonValue::Array(any_of)) = schema.get("anyOf") {
+        if any_of.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "anyOf must include at least one schema object".to_string(),
+            });
+        }
+        let mut branches = Vec::with_capacity(any_of.len());
+        for (idx, value) in any_of.iter().enumerate() {
+            let schema_object =
+                value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("anyOf[{idx}] schema must be an object"),
+                    })?;
+            branches.push(schema_object.clone());
+        }
+        return Ok(Some((
+            ObjectUnionKind::AnyOf,
+            branches,
+            schema_without_anyof(schema),
+        )));
+    }
+
+    Ok(None)
 }
 
 pub(crate) fn path_from_pointer(pointer: &str) -> Vec<PathSegment> {
@@ -1735,81 +1958,6 @@ pub(crate) fn decode_pointer_segment(segment: &str) -> String {
     decoded
 }
 
-pub(crate) fn mutate_to_violate_constraint(
-    value: &JsonValue,
-    constraint: &Constraint,
-) -> Option<JsonValue> {
-    let mut mutated = value.clone();
-    match &constraint.kind {
-        ConstraintKind::Const(const_value) => {
-            let replacement = different_value(const_value);
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::Enum(values) => {
-            let replacement = value_not_in_enum(values);
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::Type(schema_type) => {
-            let replacement = mismatched_type_value(schema_type);
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::MinLength(min_length) => {
-            if *min_length == 0 {
-                return None;
-            }
-            let replacement = JsonValue::String("".to_string());
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::MaxLength(max_length) => {
-            let replacement = JsonValue::String("a".repeat(max_length + 1));
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::Pattern(pattern) => {
-            let replacement = non_matching_string(pattern)?;
-            set_value_at_path(
-                &mut mutated,
-                &constraint.path,
-                JsonValue::String(replacement),
-            )?;
-        }
-        ConstraintKind::Minimum(minimum) => {
-            let replacement = JsonValue::from(minimum - 1.0);
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::Maximum(maximum) => {
-            let replacement = JsonValue::from(maximum + 1.0);
-            set_value_at_path(&mut mutated, &constraint.path, replacement)?;
-        }
-        ConstraintKind::MinItems(min_items) => {
-            if *min_items == 0 {
-                return None;
-            }
-            let array = get_value_at_path_mut(&mut mutated, &constraint.path)?.as_array_mut()?;
-            let target_len = min_items.saturating_sub(1);
-            array.truncate(target_len);
-        }
-        ConstraintKind::MaxItems(max_items) => {
-            let array = get_value_at_path_mut(&mut mutated, &constraint.path)?.as_array_mut()?;
-            let next_len = max_items.saturating_add(1);
-            while array.len() < next_len {
-                let value = array
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| JsonValue::String("extra".to_string()));
-                array.push(value);
-            }
-        }
-        ConstraintKind::Required(required_key) => {
-            let object = get_value_at_path_mut(&mut mutated, &constraint.path)?.as_object_mut()?;
-            object.remove(required_key);
-        }
-        ConstraintKind::OneOf => {
-            return None;
-        }
-    }
-    Some(mutated)
-}
-
 fn value_matches_type(value: &JsonValue, schema_type: &str) -> bool {
     match (schema_type, value) {
         ("string", JsonValue::String(_)) => true,
@@ -1821,96 +1969,6 @@ fn value_matches_type(value: &JsonValue, schema_type: &str) -> bool {
         ("null", JsonValue::Null) => true,
         _ => false,
     }
-}
-
-fn different_value(value: &JsonValue) -> JsonValue {
-    match value {
-        JsonValue::String(text) => JsonValue::String(format!("{text}x")),
-        JsonValue::Number(number) => {
-            let value = number.as_f64().unwrap_or(0.0);
-            JsonValue::from(value + 1.0)
-        }
-        JsonValue::Bool(flag) => JsonValue::Bool(!flag),
-        JsonValue::Null => JsonValue::Bool(true),
-        JsonValue::Array(items) => {
-            let mut next = items.clone();
-            next.push(JsonValue::Null);
-            JsonValue::Array(next)
-        }
-        JsonValue::Object(map) => {
-            let mut next = map.clone();
-            next.insert("extra".to_string(), JsonValue::Bool(true));
-            JsonValue::Object(next)
-        }
-    }
-}
-
-fn value_not_in_enum(values: &[JsonValue]) -> JsonValue {
-    let primary = JsonValue::String("not_in_enum".to_string());
-    if !values.contains(&primary) {
-        return primary;
-    }
-    let mut suffix = 0;
-    loop {
-        let candidate = JsonValue::String(format!("not_in_enum_{suffix}"));
-        if !values.contains(&candidate) {
-            return candidate;
-        }
-        suffix += 1;
-    }
-}
-
-fn mismatched_type_value(schema_type: &str) -> JsonValue {
-    match schema_type {
-        "string" => JsonValue::from(42),
-        "number" | "integer" => JsonValue::String("not-a-number".to_string()),
-        "boolean" => JsonValue::String("not-bool".to_string()),
-        "array" => JsonValue::String("not-array".to_string()),
-        "object" => JsonValue::String("not-object".to_string()),
-        "null" => JsonValue::Bool(true),
-        _ => JsonValue::Null,
-    }
-}
-
-fn non_matching_string(pattern: &str) -> Option<String> {
-    let regex = Regex::new(pattern).ok()?;
-    let candidates = ["", "x", "invalid", "!!!", "123"];
-    for candidate in candidates {
-        if !regex.is_match(candidate) {
-            return Some(candidate.to_string());
-        }
-    }
-    None
-}
-
-fn set_value_at_path(
-    value: &mut JsonValue,
-    path: &NonEmpty<PathSegment>,
-    replacement: JsonValue,
-) -> Option<()> {
-    let target = get_value_at_path_mut(value, path)?;
-    *target = replacement;
-    Some(())
-}
-
-fn get_value_at_path_mut<'a>(
-    value: &'a mut JsonValue,
-    path: &NonEmpty<PathSegment>,
-) -> Option<&'a mut JsonValue> {
-    let mut current = value;
-    let segments = std::iter::once(&path.head).chain(path.tail.iter());
-    for segment in segments {
-        match segment {
-            PathSegment::Root => {}
-            PathSegment::Key(key) => {
-                current = current.as_object_mut()?.get_mut(key)?;
-            }
-            PathSegment::Index(index) => {
-                current = current.as_array_mut()?.get_mut(*index)?;
-            }
-        }
-    }
-    Some(current)
 }
 
 #[cfg(test)]

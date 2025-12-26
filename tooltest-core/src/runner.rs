@@ -6,12 +6,16 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 use jsonschema::draft202012;
-use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestError, TestRunner};
+use proptest::strategy::Strategy;
+use proptest::test_runner::{
+    Config as ProptestConfig, RngAlgorithm, TestCaseError, TestError, TestRng, TestRunner,
+};
 use rmcp::model::{CallToolResult, ListToolsResult, Tool};
 use serde_json::{json, Value as JsonValue};
 
 use crate::generator::{
-    invocation_sequence_strategy, state_machine_sequence_strategy, uncallable_reason,
+    clear_reject_context, invocation_sequence_strategy, invocation_strategy_from_corpus,
+    state_machine_sequence_strategy, take_reject_context, uncallable_reason, StateMachineSequence,
     UncallableReason, ValueCorpus,
 };
 use crate::schema::parse_list_tools;
@@ -19,7 +23,7 @@ use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageReport, CoverageRule,
     CoverageWarning, CoverageWarningReason, GeneratorMode, HttpConfig, MinimizedSequence,
     RunConfig, RunFailure, RunOutcome, RunResult, SessionDriver, StdioConfig, ToolInvocation,
-    TraceEntry,
+    ToolPredicate, TraceEntry,
 };
 
 /// Configuration for proptest-driven run behavior.
@@ -90,31 +94,6 @@ pub async fn run_with_session(
         }
     };
 
-    let strategy = match config.generator_mode {
-        crate::GeneratorMode::Legacy => invocation_sequence_strategy(
-            &tools,
-            config.predicate.as_ref(),
-            options.sequence_len.clone(),
-        ),
-        crate::GeneratorMode::StateMachine => state_machine_sequence_strategy(
-            &tools,
-            config.predicate.as_ref(),
-            &config.state_machine,
-            options.sequence_len.clone(),
-        ),
-    };
-    let strategy = match strategy {
-        Ok(strategy) => strategy,
-        Err(error) => {
-            return failure_result(
-                RunFailure::new(error.to_string()),
-                prelude_trace.as_ref().clone(),
-                None,
-                None,
-            )
-        }
-    };
-
     let assertions = config.assertions.clone();
     let last_trace: Rc<RefCell<Vec<TraceEntry>>> = Rc::new(RefCell::new(Vec::new()));
     last_trace.replace(prelude_trace.as_ref().clone());
@@ -125,6 +104,7 @@ pub async fn run_with_session(
         coverage: None,
     }));
     let validators = Rc::new(validators);
+    clear_reject_context();
     let handle = tokio::runtime::Handle::current();
     if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
         return failure_result(
@@ -141,81 +121,151 @@ pub async fn run_with_session(
         ..ProptestConfig::default()
     });
 
-    let run_result = runner.run(&strategy, {
-        let assertions = assertions.clone();
-        let last_trace = last_trace.clone();
-        let last_coverage = last_coverage.clone();
-        let last_failure = last_failure.clone();
-        let validators = validators.clone();
-        move |sequence| {
-            let execution: Result<Vec<TraceEntry>, FailureContext> =
-                tokio::task::block_in_place(|| {
-                    let last_coverage = last_coverage.clone();
-                    handle.block_on(async {
-                        if config.generator_mode == GeneratorMode::StateMachine {
-                            let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
-                            let result = execute_sequence_with_coverage(
-                                session,
-                                &validators,
-                                &assertions,
-                                &sequence,
-                                &mut tracker,
-                            )
-                            .await;
-                            match result {
-                                Ok(trace) => {
-                                    let validation =
-                                        tracker.validate(&config.state_machine.coverage_rules);
-                                    let report = tracker.finalize();
-                                    last_coverage.replace(Some(report.clone()));
-                                    if let Err(failure) = validation {
-                                        let mut trace = trace;
-                                        attach_failure_reason(
-                                            &mut trace,
-                                            "coverage validation failed".to_string(),
-                                        );
-                                        return Err(FailureContext {
-                                            failure: coverage_failure(failure),
-                                            trace,
-                                            coverage: Some(report),
-                                        });
-                                    }
-                                    Ok(trace)
-                                }
-                                Err(mut failure) => {
-                                    failure.coverage = Some(tracker.finalize());
-                                    last_coverage.replace(failure.coverage.clone());
-                                    Err(failure)
-                                }
-                            }
-                        } else {
-                            let result =
-                                execute_sequence(session, &validators, &assertions, &sequence)
-                                    .await;
-                            last_coverage.replace(None);
-                            result
-                        }
-                    })
-                });
-            match execution {
-                Ok(trace) => {
-                    let mut full_trace = prelude_trace.as_ref().clone();
-                    full_trace.extend(trace);
-                    last_trace.replace(full_trace);
-                    Ok(())
+    let run_result = match config.generator_mode {
+        GeneratorMode::Legacy => {
+            let strategy = match invocation_sequence_strategy(
+                &tools,
+                config.predicate.as_ref(),
+                options.sequence_len.clone(),
+            ) {
+                Ok(strategy) => strategy,
+                Err(error) => {
+                    return failure_result(
+                        RunFailure::new(error.to_string()),
+                        prelude_trace.as_ref().clone(),
+                        None,
+                        None,
+                    )
                 }
-                Err(mut failure) => {
-                    let mut full_trace = prelude_trace.as_ref().clone();
-                    full_trace.extend(failure.trace);
-                    failure.trace = full_trace;
-                    last_failure.replace(failure.clone());
-                    Err(TestCaseError::fail(failure.failure.reason.clone()))
-                }
-            }
-        }
-    });
+            };
 
-    finalize_run_result(run_result, &last_trace, &last_failure, &last_coverage)
+            let run_result = runner.run(&strategy, {
+                let assertions = assertions.clone();
+                let last_trace = last_trace.clone();
+                let last_coverage = last_coverage.clone();
+                let last_failure = last_failure.clone();
+                let validators = validators.clone();
+                move |sequence| {
+                    let execution: Result<Vec<TraceEntry>, FailureContext> =
+                        tokio::task::block_in_place(|| {
+                            let last_coverage = last_coverage.clone();
+                            handle.block_on(async {
+                                let result =
+                                    execute_sequence(session, &validators, &assertions, &sequence)
+                                        .await;
+                                last_coverage.replace(None);
+                                result
+                            })
+                        });
+                    match execution {
+                        Ok(trace) => {
+                            let mut full_trace = prelude_trace.as_ref().clone();
+                            full_trace.extend(trace);
+                            last_trace.replace(full_trace);
+                            Ok(())
+                        }
+                        Err(mut failure) => {
+                            let mut full_trace = prelude_trace.as_ref().clone();
+                            full_trace.extend(failure.trace);
+                            failure.trace = full_trace;
+                            last_failure.replace(failure.clone());
+                            Err(TestCaseError::fail(failure.failure.reason.clone()))
+                        }
+                    }
+                }
+            });
+            finalize_run_result(run_result, &last_trace, &last_failure, &last_coverage)
+        }
+        GeneratorMode::StateMachine => {
+            let strategy = match state_machine_sequence_strategy(
+                &tools,
+                config.predicate.as_ref(),
+                &config.state_machine,
+                options.sequence_len.clone(),
+            ) {
+                Ok(strategy) => strategy,
+                Err(error) => {
+                    return failure_result(
+                        RunFailure::new(error.to_string()),
+                        prelude_trace.as_ref().clone(),
+                        None,
+                        None,
+                    )
+                }
+            };
+
+            let run_result = runner.run(&strategy, {
+                let assertions = assertions.clone();
+                let last_trace = last_trace.clone();
+                let last_coverage = last_coverage.clone();
+                let last_failure = last_failure.clone();
+                let validators = validators.clone();
+                move |sequence| {
+                    let execution: Result<Vec<TraceEntry>, FailureContext> =
+                        tokio::task::block_in_place(|| {
+                            let last_coverage = last_coverage.clone();
+                            handle.block_on(async {
+                                let mut tracker =
+                                    CoverageTracker::new(&tools, &config.state_machine);
+                                let result = execute_state_machine_sequence(
+                                    session,
+                                    &validators,
+                                    &assertions,
+                                    &sequence,
+                                    &tools,
+                                    config.predicate.as_ref(),
+                                    &mut tracker,
+                                )
+                                .await;
+                                match result {
+                                    Ok(trace) => {
+                                        let validation =
+                                            tracker.validate(&config.state_machine.coverage_rules);
+                                        let report = tracker.finalize();
+                                        last_coverage.replace(Some(report.clone()));
+                                        if let Err(failure) = validation {
+                                            let mut trace = trace;
+                                            attach_failure_reason(
+                                                &mut trace,
+                                                "coverage validation failed".to_string(),
+                                            );
+                                            return Err(FailureContext {
+                                                failure: coverage_failure(failure),
+                                                trace,
+                                                coverage: Some(report),
+                                            });
+                                        }
+                                        Ok(trace)
+                                    }
+                                    Err(mut failure) => {
+                                        failure.coverage = Some(tracker.finalize());
+                                        last_coverage.replace(failure.coverage.clone());
+                                        Err(failure)
+                                    }
+                                }
+                            })
+                        });
+                    match execution {
+                        Ok(trace) => {
+                            let mut full_trace = prelude_trace.as_ref().clone();
+                            full_trace.extend(trace);
+                            last_trace.replace(full_trace);
+                            Ok(())
+                        }
+                        Err(mut failure) => {
+                            let mut full_trace = prelude_trace.as_ref().clone();
+                            full_trace.extend(failure.trace);
+                            failure.trace = full_trace;
+                            last_failure.replace(failure.clone());
+                            Err(TestCaseError::fail(failure.failure.reason.clone()))
+                        }
+                    }
+                }
+            });
+            finalize_state_machine_result(run_result, &last_trace, &last_failure, &last_coverage)
+        }
+    };
+    run_result
 }
 
 /// Execute a tooltest run against a stdio MCP endpoint.
@@ -538,6 +588,7 @@ fn coverage_failure(failure: CoverageValidationFailure) -> RunFailure {
     }
 }
 
+#[cfg(test)]
 async fn execute_sequence_with_coverage(
     session: &SessionDriver,
     validators: &BTreeMap<String, jsonschema::Validator>,
@@ -548,6 +599,130 @@ async fn execute_sequence_with_coverage(
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
     for invocation in sequence {
+        trace.push(TraceEntry::tool_call(invocation.clone()));
+        let entry = match session.send_tool_call(invocation.clone()).await {
+            Ok(entry) => entry,
+            Err(error) => {
+                attach_failure_reason(&mut trace, format!("session error: {error:?}"));
+                return Err(FailureContext {
+                    failure: RunFailure::new(format!("session error: {error:?}")),
+                    trace,
+                    coverage: None,
+                });
+            }
+        };
+
+        let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
+        let invocation = invocation.clone();
+        let response = response.expect("tool call response").clone();
+        full_trace.push(entry);
+        if !response.is_error.unwrap_or(false) {
+            tracker.record_success(invocation.name.as_ref());
+            tracker.mine_response(&response);
+        }
+
+        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
+            return Err(FailureContext {
+                failure: RunFailure::new(reason),
+                trace,
+                coverage: None,
+            });
+        }
+
+        if let Some(reason) = apply_response_assertions(assertions, &invocation, &response) {
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
+            return Err(FailureContext {
+                failure: RunFailure::new(reason),
+                trace,
+                coverage: None,
+            });
+        }
+    }
+
+    if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
+        attach_failure_reason(&mut trace, reason.clone());
+        return Err(FailureContext {
+            failure: RunFailure::new(reason),
+            trace,
+            coverage: None,
+        });
+    }
+
+    Ok(trace)
+}
+
+fn seed_bytes(seed: u64) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    let mut value = seed;
+    for chunk in bytes.chunks_exact_mut(8) {
+        chunk.copy_from_slice(&value.to_le_bytes());
+        value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    }
+    bytes
+}
+
+fn sample_invocation_for_seed(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    seed: u64,
+) -> Result<Option<ToolInvocation>, String> {
+    clear_reject_context();
+    let Some(strategy) = invocation_strategy_from_corpus(tools, predicate, corpus)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut runner = TestRunner::new_with_rng(
+        ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &seed_bytes(seed)),
+    );
+    let invocation = strategy.new_tree(&mut runner).map_err(|error| {
+        let mut reason = format!("failed to generate invocation: {error:?}");
+        if let Some(context) = take_reject_context() {
+            reason.push_str(&format!("; last rejection: {context}"));
+        }
+        reason
+    })?;
+    Ok(Some(invocation.current()))
+}
+
+async fn execute_state_machine_sequence(
+    session: &SessionDriver,
+    validators: &BTreeMap<String, jsonschema::Validator>,
+    assertions: &AssertionSet,
+    sequence: &StateMachineSequence,
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    tracker: &mut CoverageTracker<'_>,
+) -> Result<Vec<TraceEntry>, FailureContext> {
+    let mut trace = Vec::new();
+    let mut full_trace = Vec::new();
+    for transition in &sequence.transitions {
+        let invocation =
+            match sample_invocation_for_seed(tools, predicate, &tracker.corpus, transition.seed) {
+                Ok(Some(invocation)) => invocation,
+                Ok(None) => break,
+                Err(reason) => {
+                    attach_failure_reason(&mut trace, reason.clone());
+                    return Err(FailureContext {
+                        failure: RunFailure::new(reason),
+                        trace,
+                        coverage: None,
+                    });
+                }
+            };
+
+        if let Some(seen_counter) = sequence.seen_counter.as_ref() {
+            seen_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
         trace.push(TraceEntry::tool_call(invocation.clone()));
         let entry = match session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
@@ -817,18 +992,74 @@ fn finalize_run_result(
             minimized: None,
             coverage: last_coverage.borrow().clone(),
         },
-        Err(TestError::Abort(reason)) => failure_result(
-            RunFailure::new(format!("proptest aborted: {reason}")),
-            last_trace.borrow().clone(),
-            None,
-            last_coverage.borrow().clone(),
-        ),
+        Err(TestError::Abort(reason)) => {
+            let mut message = format!("proptest aborted: {reason}");
+            if let Some(context) = take_reject_context() {
+                message.push_str(&format!("; last rejection: {context}"));
+            }
+            failure_result(
+                RunFailure::new(message),
+                last_trace.borrow().clone(),
+                None,
+                last_coverage.borrow().clone(),
+            )
+        }
         Err(TestError::Fail(_reason, sequence)) => {
             let failure = last_failure.borrow().clone();
             let trace = failure.trace;
             let minimized = Some(MinimizedSequence {
                 invocations: sequence,
             });
+            failure_result(failure.failure, trace, minimized, failure.coverage)
+        }
+    }
+}
+
+fn trace_invocations(trace: &[TraceEntry]) -> Vec<ToolInvocation> {
+    trace
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .as_tool_call()
+                .map(|(invocation, _)| invocation.clone())
+        })
+        .collect()
+}
+
+fn finalize_state_machine_result(
+    run_result: Result<(), TestError<StateMachineSequence>>,
+    last_trace: &Rc<RefCell<Vec<TraceEntry>>>,
+    last_failure: &Rc<RefCell<FailureContext>>,
+    last_coverage: &Rc<RefCell<Option<CoverageReport>>>,
+) -> RunResult {
+    match run_result {
+        Ok(()) => RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            coverage: last_coverage.borrow().clone(),
+        },
+        Err(TestError::Abort(reason)) => {
+            let mut message = format!("proptest aborted: {reason}");
+            if let Some(context) = take_reject_context() {
+                message.push_str(&format!("; last rejection: {context}"));
+            }
+            failure_result(
+                RunFailure::new(message),
+                last_trace.borrow().clone(),
+                None,
+                last_coverage.borrow().clone(),
+            )
+        }
+        Err(TestError::Fail(_reason, _sequence)) => {
+            let failure = last_failure.borrow().clone();
+            let trace = failure.trace;
+            let invocations = trace_invocations(&trace);
+            let minimized = if invocations.is_empty() {
+                None
+            } else {
+                Some(MinimizedSequence { invocations })
+            };
             failure_result(failure.failure, trace, minimized, failure.coverage)
         }
     }

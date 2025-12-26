@@ -1,7 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::generator::{state_machine_sequence_strategy, ValueCorpus};
+use crate::generator::{
+    invocation_strategy_from_corpus, state_machine_sequence_strategy, ValueCorpus,
+};
 use crate::StateMachineConfig;
 use proptest::prelude::*;
 use rmcp::model::Tool;
@@ -99,12 +101,13 @@ fn state_machine_generator_uses_integer_corpus_values() {
         }),
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(7)]);
-    let strategy =
-        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
-
-    let sequence = sample(strategy);
-    assert_eq!(sequence.len(), 1);
-    let args = sequence[0].arguments.as_ref().expect("args");
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_numbers(config.seed_numbers.clone());
+    let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus)
+        .expect("strategy")
+        .expect("callable");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.as_ref().expect("args");
     assert_eq!(args.get("count"), Some(&json!(7)));
 }
 
@@ -125,5 +128,5 @@ fn state_machine_generator_returns_empty_when_no_callable_tools() {
         state_machine_sequence_strategy(&[tool], None, &config, 1..=3).expect("strategy");
 
     let sequence = sample(strategy);
-    assert!(sequence.is_empty());
+    assert!(sequence.transitions.is_empty());
 }

@@ -3,7 +3,7 @@
 - [ ] 1.2 Define generator mode selection in the public API without breaking existing callers
 - [ ] 1.3 Implement corpus type for de-duplicated, insertion-ordered integers, numbers, and strings with stable indices
 - [ ] 1.4 Implement response mining of `structured_content` to extend the corpus after each tool call
-- [ ] 1.5 Add proptest-state-machine model that generates tool calls using only corpus-sourced numbers/strings and ends runs when no callable tools remain
+- [ ] 1.5 Add proptest-state-machine Sequential model that regenerates callable tools after each response using the updated corpus, and ends runs when no callable tools remain
 - [ ] 1.6 Integrate the state-machine generator into the unified entry point, preserving the existing generator
 - [ ] 1.7 Add coverage tracking for tool call counts (successful responses only), warning reporting with structured reason codes, and allowlist/blocklist exemptions
 - [ ] 1.8 Add coverage validation rule helpers (e.g., minimum calls per tool, no uncalled tools, percentage called) that operate on successful call counts and treat uncallable tools as excluded from percentage denominators

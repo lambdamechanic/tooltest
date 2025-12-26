@@ -11,7 +11,12 @@ fn run_tooltest(args: &[&str]) -> Output {
 }
 
 fn test_server() -> Option<&'static str> {
-    option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")
+    let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
+    if std::path::Path::new(server).exists() {
+        Some(server)
+    } else {
+        None
+    }
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {

@@ -154,7 +154,7 @@ fn number_to_i64(value: &Number) -> Option<i64> {
     if let Some(value) = value.as_u64() {
         return i64::try_from(value).ok();
     }
-    let value = value.as_f64()?;
+    let value = value.as_f64().expect("f64 value");
     if value.fract() != 0.0 {
         return None;
     }
@@ -309,30 +309,36 @@ fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
             }
         }
 
-        let mut required_error = None;
-        if let Some(JsonValue::Array(required)) = schema.get("required") {
-            if let Some(JsonValue::Object(properties)) = schema.get("properties") {
-                let required_keys = required
-                    .iter()
-                    .filter_map(JsonValue::as_str)
-                    .collect::<Vec<_>>();
-                if !required_keys
-                    .iter()
-                    .all(|key| properties.contains_key(*key))
-                {
-                    required_error = Some(InvocationError::UnsupportedSchema {
-                        tool: tool.name.to_string(),
-                        reason: "inputSchema required must reference known properties".to_string(),
-                    });
+        let required_error = match schema.get("required") {
+            Some(JsonValue::Array(required)) => match schema.get("properties") {
+                Some(JsonValue::Object(properties)) => {
+                    let required_keys = required
+                        .iter()
+                        .filter_map(JsonValue::as_str)
+                        .collect::<Vec<_>>();
+                    if required_keys
+                        .iter()
+                        .all(|key| properties.contains_key(*key))
+                    {
+                        None
+                    } else {
+                        Some(InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: "inputSchema required must reference known properties"
+                                .to_string(),
+                        })
+                    }
                 }
-            } else if !required.is_empty() {
-                required_error = Some(InvocationError::UnsupportedSchema {
-                    tool: tool.name.to_string(),
-                    reason: "inputSchema required must be empty when no properties exist"
-                        .to_string(),
-                });
-            }
-        }
+                _ => {
+                    if required.is_empty() {
+                        None
+                    } else {
+                        Some(missing_properties_required_error(tool))
+                    }
+                }
+            },
+            _ => None,
+        };
         if let Some(error) = required_error {
             return Err(error);
         }
@@ -351,12 +357,8 @@ fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
                         reason: format!("property '{name}' schema must be an object"),
                     })?;
             if let Err(error) = schema_value_strategy(schema_object, tool) {
-                let detail = match error {
-                    InvocationError::UnsupportedSchema { reason, .. } => reason,
-                    InvocationError::NoEligibleTools => "no eligible tools to generate".to_string(),
-                };
-                let schema_json = serde_json::to_string(&JsonValue::Object(schema_object.clone()))
-                    .unwrap_or_else(|_| "<unserializable schema>".to_string());
+                let detail = schema_error_detail(error);
+                let schema_json = JsonValue::Object(schema_object.clone()).to_string();
                 return Err(InvocationError::UnsupportedSchema {
                     tool: tool.name.to_string(),
                     reason: format!(
@@ -369,6 +371,20 @@ fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
     Ok(())
 }
 
+fn schema_error_detail(error: InvocationError) -> String {
+    match error {
+        InvocationError::UnsupportedSchema { reason, .. } => reason,
+        InvocationError::NoEligibleTools => "no eligible tools to generate".to_string(),
+    }
+}
+
+fn missing_properties_required_error(tool: &Tool) -> InvocationError {
+    InvocationError::UnsupportedSchema {
+        tool: tool.name.to_string(),
+        reason: "inputSchema required must be empty when no properties exist".to_string(),
+    }
+}
+
 fn invocation_from_corpus(
     tool: &Tool,
     predicate: Option<&ToolPredicate>,
@@ -379,12 +395,11 @@ fn invocation_from_corpus(
         Some(JsonValue::Object(map)) => map,
         Some(_) => return None,
         None => {
-            let mut missing_required = false;
-            if let Some(JsonValue::Array(required)) = schema.get("required") {
-                if !required.is_empty() {
-                    missing_required = true;
-                }
-            }
+            let missing_required = schema
+                .get("required")
+                .and_then(JsonValue::as_array)
+                .map(|required| !required.is_empty())
+                .unwrap_or(false);
             if missing_required {
                 return None;
             }
@@ -444,15 +459,14 @@ fn invocation_from_corpus(
                 for (name, value) in entries {
                     map.insert(name, value);
                 }
-                let mut rejected = false;
-                if let Some(predicate) = &predicate {
+                let allowed = if let Some(predicate) = &predicate {
                     let input = JsonValue::Object(map.clone());
                     let predicate_name = tool_name.to_string();
-                    if !predicate(&predicate_name, &input) {
-                        rejected = true;
-                    }
-                }
-                if rejected {
+                    predicate(&predicate_name, &input)
+                } else {
+                    true
+                };
+                if !allowed {
                     return None;
                 }
                 Some(ToolInvocation {
@@ -1686,6 +1700,43 @@ mod tests {
     }
 
     #[test]
+    fn validate_state_machine_tools_accepts_required_properties() {
+        let tool = tool_with_schema(
+            "ok",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"]
+            }),
+        );
+        assert!(validate_state_machine_tools(&[tool]).is_ok());
+    }
+
+    #[test]
+    fn validate_state_machine_tools_accepts_empty_required() {
+        let tool = tool_with_schema("ok", json!({ "type": "object", "required": [] }));
+        assert!(validate_state_machine_tools(&[tool]).is_ok());
+    }
+
+    #[test]
+    fn validate_state_machine_tools_rejects_missing_required_property() {
+        let tool = tool_with_schema(
+            "bad",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["missing"]
+            }),
+        );
+        let error = validate_state_machine_tools(&[tool]).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("inputSchema required must reference known properties")
+        ));
+    }
+
+    #[test]
     fn validate_state_machine_tools_rejects_required_without_properties() {
         let tool = tool_with_schema("bad", json!({ "type": "object", "required": ["missing"] }));
         assert!(validate_state_machine_tools(&[tool]).is_err());
@@ -1793,6 +1844,62 @@ mod tests {
     }
 
     #[test]
+    fn schema_error_detail_handles_no_eligible_tools() {
+        let detail = schema_error_detail(InvocationError::NoEligibleTools);
+        assert_eq!(detail, "no eligible tools to generate");
+    }
+
+    #[test]
+    fn schema_value_strategy_rejects_invalid_pattern() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string", "pattern": "(" } }
+            }),
+        );
+        let schema = json!({ "type": "string", "pattern": "(" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let error = schema_value_strategy(&schema, &tool).expect_err("invalid pattern");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("pattern must be a valid regex")
+        ));
+    }
+
+    #[test]
+    fn normalize_pattern_for_generation_handles_empty_pattern() {
+        let normalized = normalize_pattern_for_generation("").expect("empty");
+        assert_eq!(normalized, "");
+    }
+
+    #[test]
+    fn normalize_pattern_for_generation_rejects_word_boundary() {
+        let error = normalize_pattern_for_generation(r"\b").expect_err("boundary");
+        assert!(error.contains("word boundary"));
+    }
+
+    #[test]
+    fn contains_boundary_escape_handles_trailing_escape() {
+        assert!(!contains_boundary_escape("\\"));
+    }
+
+    #[test]
+    fn contains_boundary_escape_skips_non_boundary_escapes() {
+        assert!(!contains_boundary_escape(r"\d"));
+    }
+
+    #[test]
+    fn is_escaped_handles_edge_cases() {
+        assert!(!is_escaped(b"\\", 0));
+        assert!(is_escaped(br"\\a", 1));
+        assert!(!is_escaped(br"\\\\a", 2));
+    }
+
+    #[test]
     fn property_strategy_from_corpus_reports_missing_required() {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let schema = json!({ "type": "string" })
@@ -1851,6 +1958,13 @@ mod tests {
         let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_omit(&outcome));
+    }
+
+    #[test]
+    fn seed_strings_accepts_vec_input() {
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(vec!["alpha".to_string()]);
+        assert!(corpus.string_set.contains("alpha"));
     }
 
     #[test]

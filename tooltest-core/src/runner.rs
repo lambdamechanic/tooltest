@@ -1174,6 +1174,51 @@ mod tests {
     }
 
     #[test]
+    fn attach_response_updates_last_tool_call() {
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: Some(JsonObject::new()),
+        };
+        let mut trace = vec![TraceEntry::tool_call(invocation)];
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        attach_response(&mut trace, response.clone());
+        let (_, stored) = trace[0].as_tool_call().expect("tool call");
+        assert_eq!(stored, Some(&response));
+    }
+
+    #[test]
+    fn attach_response_ignores_non_tool_call() {
+        let mut trace = vec![TraceEntry::list_tools()];
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        attach_response(&mut trace, response);
+        assert!(matches!(trace[0], TraceEntry::ListTools { .. }));
+    }
+
+    #[test]
+    fn attach_failure_reason_updates_last_tool_call() {
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: Some(JsonObject::new()),
+        };
+        let mut trace = vec![TraceEntry::tool_call(invocation)];
+        attach_failure_reason(&mut trace, "failure".to_string());
+        assert!(matches!(
+            &trace[0],
+            TraceEntry::ToolCall {
+                failure_reason: Some(reason),
+                ..
+            } if reason == "failure"
+        ));
+    }
+
+    #[test]
+    fn attach_failure_reason_ignores_non_tool_call() {
+        let mut trace = vec![TraceEntry::list_tools()];
+        attach_failure_reason(&mut trace, "failure".to_string());
+        assert!(matches!(trace[0], TraceEntry::ListTools { .. }));
+    }
+
+    #[test]
     fn apply_sequence_assertions_handles_empty_rules() {
         let entry = trace_entry_with(
             "echo",

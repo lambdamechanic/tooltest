@@ -579,6 +579,37 @@ async fn run_with_session_reports_invalid_output_schema() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_uncompilable_output_schema() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object" }),
+        Some(json!({
+            "type": "object",
+            "properties": { "status": { "type": "string", "pattern": "(" } }
+        })),
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(matches!(
+        result.trace.as_slice(),
+        [TraceEntry::ListTools { .. }]
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_no_eligible_tools() {
     let response = CallToolResult::success(vec![Content::text("ok")]);
     let transport = RunnerTransport::new_with_tools(Vec::new(), response);

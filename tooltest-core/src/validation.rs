@@ -929,6 +929,25 @@ mod tests {
     }
 
     #[test]
+    fn output_schema_validator_defers_without_response() {
+        let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
+        let trace = TraceEntry::tool_call(crate::ToolInvocation {
+            name: "noop".into(),
+            arguments: Some(json!({}).as_object().cloned().unwrap()),
+        });
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_defers_on_non_tool_call_trace() {
+        let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
+        let trace = TraceEntry::list_tools();
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
     fn output_schema_validator_rejects_missing_structured_content() {
         let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
         let trace = TraceEntry::tool_call_with_response(
@@ -941,6 +960,25 @@ mod tests {
 
         let decision = output_schema_validator(&tool, &trace);
         assert!(is_reject(&decision));
+    }
+
+    #[test]
+    fn default_validator_defers_without_response() {
+        let tool = test_tool("noop");
+        let trace = TraceEntry::tool_call(crate::ToolInvocation {
+            name: "noop".into(),
+            arguments: Some(json!({}).as_object().cloned().unwrap()),
+        });
+        let decision = default_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn default_validator_defers_on_non_tool_call_trace() {
+        let tool = test_tool("noop");
+        let trace = TraceEntry::list_tools();
+        let decision = default_validator(&tool, &trace);
+        assert!(is_defer(&decision));
     }
 
     #[test]
@@ -1305,6 +1343,7 @@ mod tests {
                 ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1390,6 +1429,7 @@ mod tests {
                 ToolValidationDecision::Defer
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1457,6 +1497,7 @@ mod tests {
                 ToolValidationDecision::Defer
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1541,6 +1582,7 @@ mod tests {
                 ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1603,6 +1645,7 @@ mod tests {
                 ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);

@@ -54,6 +54,7 @@ pub(crate) enum ConstraintKind {
     MinItems(usize),
     MaxItems(usize),
     Required(String),
+    OneOf,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -847,7 +848,7 @@ fn schema_value_strategy(
         let union = proptest::strategy::Union::new(strategies).boxed();
         let schema = schema.clone();
         return Ok(union
-            .prop_filter("anyOf union must satisfy schema", move |value| {
+            .prop_filter("union must satisfy schema", move |value| {
                 schema_violations(&schema, value).is_empty()
             })
             .boxed());
@@ -1053,6 +1054,27 @@ fn schema_union_branches_for_generation(
     schema: &JsonObject,
     tool: &Tool,
 ) -> Result<Option<Vec<JsonObject>>, InvocationError> {
+    if let Some(JsonValue::Array(one_of)) = schema.get("oneOf") {
+        if one_of.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "oneOf must include at least one schema object".to_string(),
+            });
+        }
+        let mut branches = Vec::with_capacity(one_of.len());
+        for (idx, value) in one_of.iter().enumerate() {
+            let schema_object =
+                value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("oneOf[{idx}] schema must be an object"),
+                    })?;
+            branches.push(schema_object.clone());
+        }
+        return Ok(Some(branches));
+    }
+
     if let Some(JsonValue::Array(any_of)) = schema.get("anyOf") {
         if any_of.is_empty() {
             return Err(InvocationError::UnsupportedSchema {
@@ -1197,19 +1219,37 @@ fn collect_constraints_inner(
     path: &mut Vec<PathSegment>,
     constraints: &mut Vec<Constraint>,
 ) {
-    if let Some(any_of) = schema_anyof_branches(schema) {
-        let base = schema_without_anyof(schema);
+    if let Some(one_of) = schema_oneof_branches(schema) {
+        let base = schema_without_oneof(schema);
         collect_constraints_inner(&base, value, path, constraints);
-        if let Some(index) = best_union_branch(&any_of, value) {
-            collect_constraints_inner(&any_of[index], value, path, constraints);
+        let matching = one_of
+            .iter()
+            .enumerate()
+            .filter(|(_, branch)| schema_violations_inner(branch, value).is_empty())
+            .map(|(idx, _)| idx)
+            .collect::<Vec<_>>();
+        if matching.len() == 1 {
+            collect_constraints_inner(&one_of[matching[0]], value, path, constraints);
+        } else {
+            let index =
+                best_union_branch(&one_of, value).expect("oneOf branches must yield a best match");
+            collect_constraints_inner(&one_of[index], value, path, constraints);
         }
         return;
     }
 
+    if let Some(any_of) = schema_anyof_branches(schema) {
+        let base = schema_without_anyof(schema);
+        collect_constraints_inner(&base, value, path, constraints);
+        let index = best_union_branch(&any_of, value).expect("anyOf branches must yield a match");
+        collect_constraints_inner(&any_of[index], value, path, constraints);
+        return;
+    }
+
     if let Some(type_union) = schema_type_union_branches(schema) {
-        if let Some(index) = best_union_branch(&type_union, value) {
-            collect_constraints_inner(&type_union[index], value, path, constraints);
-        }
+        let index =
+            best_union_branch(&type_union, value).expect("type union branches must yield a match");
+        collect_constraints_inner(&type_union[index], value, path, constraints);
         return;
     }
 
@@ -1351,6 +1391,44 @@ fn collect_violations_inner(
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
 ) {
+    if let Some(one_of) = schema_oneof_branches(schema) {
+        let base = schema_without_oneof(schema);
+        let mut base_violations = schema_violations_inner(&base, value);
+        if !base_violations.is_empty() {
+            violations.append(&mut base_violations);
+            return;
+        }
+        let mut matches = 0;
+        let mut best: Option<Vec<Constraint>> = None;
+        for branch in &one_of {
+            let branch_violations = schema_violations_inner(branch, value);
+            if branch_violations.is_empty() {
+                matches += 1;
+                continue;
+            }
+            let is_better = best
+                .as_ref()
+                .map(|current| branch_violations.len() < current.len())
+                .unwrap_or(true);
+            if is_better {
+                best = Some(branch_violations);
+            }
+        }
+        if matches == 1 {
+            return;
+        }
+        if matches > 1 {
+            violations.push(Constraint {
+                path: nonempty_path(path),
+                kind: ConstraintKind::OneOf,
+            });
+            return;
+        }
+        let mut best = best.expect("oneOf branches must yield a best violation set");
+        violations.append(&mut best);
+        return;
+    }
+
     if let Some(any_of) = schema_anyof_branches(schema) {
         let base = schema_without_anyof(schema);
         let mut base_violations = schema_violations_inner(&base, value);
@@ -1372,9 +1450,8 @@ fn collect_violations_inner(
                 best = Some(branch_violations);
             }
         }
-        if let Some(mut best) = best {
-            violations.append(&mut best);
-        }
+        let mut best = best.expect("anyOf branches must yield a best violation set");
+        violations.append(&mut best);
         return;
     }
 
@@ -1393,9 +1470,8 @@ fn collect_violations_inner(
                 best = Some(branch_violations);
             }
         }
-        if let Some(mut best) = best {
-            violations.append(&mut best);
-        }
+        let mut best = best.expect("type union branches must yield a best violation set");
+        violations.append(&mut best);
         return;
     }
 
@@ -1558,6 +1634,21 @@ fn schema_anyof_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
     Some(branches)
 }
 
+fn schema_oneof_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
+    let JsonValue::Array(one_of) = schema.get("oneOf")? else {
+        return None;
+    };
+    if one_of.is_empty() {
+        return None;
+    }
+    let mut branches = Vec::with_capacity(one_of.len());
+    for value in one_of {
+        let schema_object = value.as_object()?;
+        branches.push(schema_object.clone());
+    }
+    Some(branches)
+}
+
 fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
     let JsonValue::Array(types) = schema.get("type")? else {
         return None;
@@ -1581,6 +1672,12 @@ fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
 fn schema_without_anyof(schema: &JsonObject) -> JsonObject {
     let mut base = schema.clone();
     base.remove("anyOf");
+    base
+}
+
+fn schema_without_oneof(schema: &JsonObject) -> JsonObject {
+    let mut base = schema.clone();
+    base.remove("oneOf");
     base
 }
 
@@ -1705,6 +1802,9 @@ pub(crate) fn mutate_to_violate_constraint(
         ConstraintKind::Required(required_key) => {
             let object = get_value_at_path_mut(&mut mutated, &constraint.path)?.as_object_mut()?;
             object.remove(required_key);
+        }
+        ConstraintKind::OneOf => {
+            return None;
         }
     }
     Some(mutated)

@@ -43,8 +43,7 @@ fn stdio_command_reports_success() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
-    assert_eq!(payload["outcome"]["status"], "success");
+    assert!(stdout.contains("Outcome: success"));
 }
 
 #[test]
@@ -53,6 +52,7 @@ fn stdio_command_reports_success_with_state_machine_mode() {
         return;
     };
     let output = run_tooltest(&[
+        "--json",
         "--generator-mode",
         "state-machine",
         "--state-machine-config",
@@ -163,6 +163,24 @@ fn sequence_len_inverted_exits() {
 }
 
 #[test]
+fn state_machine_config_invalid_json_exits() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        "{bad json}",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid state-machine-config"));
+}
+
+#[test]
 fn stdio_command_passes_args() {
     let Some(server) = test_server() else {
         return;
@@ -217,13 +235,14 @@ fn http_command_reports_failure() {
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
-    assert_eq!(payload["outcome"]["status"], "failure");
+    assert!(stdout.contains("Outcome: failure"));
+    assert!(stdout.contains("Reason:"));
 }
 
 #[test]
 fn http_command_accepts_auth_token() {
     let output = run_tooltest(&[
+        "--json",
         "http",
         "--url",
         "http://127.0.0.1:0/mcp",

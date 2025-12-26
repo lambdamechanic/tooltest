@@ -410,6 +410,9 @@ mod tests {
 
     #[test]
     fn run_succeeds_with_empty_input() {
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        env::remove_var("EXPECT_ARG");
+        env::remove_var("EXPECT_CWD");
         let mut lines = Vec::<io::Result<String>>::new().into_iter();
         let mut output = Vec::new();
         run(&mut lines, &mut output);

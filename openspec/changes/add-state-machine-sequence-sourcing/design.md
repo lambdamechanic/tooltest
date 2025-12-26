@@ -17,10 +17,14 @@ Tooltest currently generates tool invocations using proptest strategies derived 
   - Rationale: Preserves set semantics while allowing deterministic index selection when the state-machine needs a stable reference to a prior value, and supports integer-only constraints.
 - Decision: Mine only `structured_content` from successful tool responses, including both object keys and values, to expand the corpus after each tool call.
   - Rationale: Matches request scope, treats keys as domain-relevant strings, and avoids ambiguity in output/error shapes.
+- Decision: Traverse `structured_content` deterministically using array index order and lexicographically sorted object keys.
+  - Rationale: Guarantees stable corpus indexing across runs.
 - Decision: Keep the existing generator intact and add a generator mode selector at the run entry point.
   - Rationale: Provides backwards compatibility while enabling opt-in state-machine generation.
 - Decision: Provide optional coverage validation hooks only for the state-machine generator mode, with coverage counts based on successful tool responses and exclude tools outside allowlists/inside blocklists.
   - Rationale: Coverage is tied to the state-driven corpus behavior and should not alter existing generator behavior.
+- Decision: Define tool callability based on required inputs being satisfiable by corpus values for numbers/strings and existing schema generators for other types.
+  - Rationale: Clarifies uncallable tool warnings while preserving existing schema-driven generation for non-corpus types.
 
 ## Risks / Trade-offs
 - Response mining may expand the corpus quickly, increasing state space. We can mitigate by bounding sequence length and optionally capping corpus growth in a follow-up change if needed.

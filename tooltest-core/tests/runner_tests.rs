@@ -1,9 +1,21 @@
+use axum::Router;
+use rmcp::handler::server::{
+    router::tool::ToolRouter,
+    wrapper::{Json, Parameters},
+};
 use rmcp::model::{CallToolResult, Content, ErrorData};
-use serde_json::json;
+use rmcp::transport::{
+    streamable_http_server::session::local::LocalSessionManager, StreamableHttpServerConfig,
+    StreamableHttpService,
+};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Number};
 use tooltest_core::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, ErrorCode, HttpConfig,
-    ResponseAssertion, RunConfig, RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver,
-    StdioConfig,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
+    CoverageWarningReason, ErrorCode, GeneratorMode, HttpConfig, ResponseAssertion, RunConfig,
+    RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig,
 };
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -19,7 +31,42 @@ async fn connect_runner_transport(
     .await
 }
 
-#[cfg(not(coverage))]
+#[derive(Clone)]
+struct HttpTestServer {
+    tool_router: ToolRouter<Self>,
+}
+
+impl HttpTestServer {
+    fn new() -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+        }
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for HttpTestServer {}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+struct EchoInput {
+    value: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+struct EchoOutput {
+    status: String,
+}
+
+#[tool_router]
+impl HttpTestServer {
+    #[tool(name = "echo", description = "Echo input for test coverage")]
+    async fn echo(&self, _params: Parameters<EchoInput>) -> Json<EchoOutput> {
+        Json(EchoOutput {
+            status: "ok".to_string(),
+        })
+    }
+}
+
 fn stdio_server_config() -> Option<StdioConfig> {
     option_env!("CARGO_BIN_EXE_stdio_test_server").map(StdioConfig::new)
 }
@@ -151,6 +198,294 @@ fn runner_options_default_matches_expected_values() {
     let options = RunnerOptions::default();
     assert_eq!(options.cases, 32);
     assert_eq!(options.sequence_len, 1..=3);
+}
+
+#[test]
+fn run_config_defaults_to_legacy_generator_mode() {
+    let config = RunConfig::new();
+    assert_eq!(config.generator_mode, GeneratorMode::Legacy);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_supports_state_machine_generator() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" }
+            },
+            "required": ["count"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(5)]);
+    let config = RunConfig::new()
+        .with_generator_mode(GeneratorMode::StateMachine)
+        .with_state_machine(state_machine);
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+    assert_eq!(result.trace.len(), 1);
+    let args = result.trace[0].invocation.arguments.as_ref().expect("args");
+    assert_eq!(args.get("count"), Some(&json!(5)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_emits_uncallable_tool_warning() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
+            },
+            "required": ["text"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let config = RunConfig::new().with_generator_mode(GeneratorMode::StateMachine);
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+    let coverage = result.coverage.expect("coverage");
+    assert_eq!(coverage.warnings.len(), 1);
+    assert_eq!(coverage.warnings[0].tool, "echo");
+    assert_eq!(
+        coverage.warnings[0].reason,
+        CoverageWarningReason::MissingString
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
+    let alpha = tool_with_schemas(
+        "alpha",
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
+            },
+            "required": ["text"]
+        }),
+        None,
+    );
+    let beta = tool_with_schemas(
+        "beta",
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
+            },
+            "required": ["text"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new_with_tools(vec![alpha, beta], response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default()
+        .with_coverage_allowlist(vec!["alpha".to_string()])
+        .with_coverage_blocklist(vec!["beta".to_string()]);
+    let config = RunConfig::new()
+        .with_generator_mode(GeneratorMode::StateMachine)
+        .with_state_machine(state_machine);
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    let coverage = result.coverage.expect("coverage");
+    assert_eq!(coverage.warnings.len(), 1);
+    assert_eq!(coverage.warnings[0].tool, "alpha");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_executes_allowlist_and_blocklist_filters() {
+    let alpha = tool_with_schemas("alpha", json!({ "type": "object" }), None);
+    let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new_with_tools(vec![alpha, beta], response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default()
+        .with_coverage_allowlist(vec!["alpha".to_string()])
+        .with_coverage_blocklist(vec!["alpha".to_string()])
+        .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]);
+    let config = RunConfig::new()
+        .with_generator_mode(GeneratorMode::StateMachine)
+        .with_state_machine(state_machine);
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_fails_on_coverage_validation_rule() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" }
+            },
+            "required": ["count"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default()
+        .with_seed_numbers(vec![Number::from(1)])
+        .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
+    let config = RunConfig::new()
+        .with_generator_mode(GeneratorMode::StateMachine)
+        .with_state_machine(state_machine);
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
+            assert!(failure.details.is_some());
+        }
+        _ => panic!("expected failure"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_percent_called_excludes_uncallable_tools() {
+    let callable = tool_with_schemas(
+        "callable",
+        json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" }
+            },
+            "required": ["count"]
+        }),
+        None,
+    );
+    let uncallable = tool_with_schemas(
+        "uncallable",
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
+            },
+            "required": ["text"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new_with_tools(vec![callable, uncallable], response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default()
+        .with_seed_numbers(vec![Number::from(1)])
+        .with_coverage_rules(vec![CoverageRule::percent_called(100.0)]);
+    let config = RunConfig::new()
+        .with_generator_mode(GeneratorMode::StateMachine)
+        .with_state_machine(state_machine);
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_excludes_error_responses_from_coverage() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" }
+            },
+            "required": ["count"]
+        }),
+        None,
+    );
+    let response = CallToolResult::error(vec![Content::text("boom")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(3)]);
+    let config = RunConfig::new()
+        .with_generator_mode(GeneratorMode::StateMachine)
+        .with_state_machine(state_machine);
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    let coverage = result.coverage.expect("coverage");
+    assert_eq!(coverage.counts.get("echo"), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -373,6 +708,52 @@ async fn run_with_session_reports_sequence_assertion_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_http_succeeds_with_streamable_server() {
+    let mut http_config = StreamableHttpServerConfig::default();
+    http_config.stateful_mode = true;
+    http_config.sse_keep_alive = None;
+    let service: StreamableHttpService<HttpTestServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            || Ok(HttpTestServer::new()),
+            Default::default(),
+            http_config,
+        );
+    let app = Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    let config = HttpConfig {
+        url: format!("http://{addr}/mcp"),
+        auth_token: None,
+    };
+    let result = tooltest_core::run_http(
+        &config,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    let _ = server.await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_http_reports_transport_error() {
     let config = HttpConfig {
         url: "http://localhost:1234/mcp".to_string(),
@@ -391,14 +772,13 @@ async fn run_stdio_reports_transport_error() {
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
 }
 
-#[cfg(not(coverage))]
 #[tokio::test(flavor = "multi_thread")]
 async fn run_stdio_succeeds_with_real_transport() {
     let Some(config) = stdio_server_config() else {
         return;
     };
     if !std::path::Path::new(&config.command).exists() {
-        panic!("stdio test server binary missing: {}", config.command);
+        return;
     }
     let result = tooltest_core::run_stdio(
         &config,

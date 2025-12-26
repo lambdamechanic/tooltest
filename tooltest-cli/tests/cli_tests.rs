@@ -1,5 +1,5 @@
 use std::fs;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn run_tooltest(args: &[&str]) -> Output {
@@ -38,6 +38,39 @@ fn stdio_command_reports_success() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
     assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
+fn test_server_exits_on_expectation_failure() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .env("EXPECT_ARG", "missing-arg")
+        .output()
+        .expect("run test server");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tooltest_cli_test_server"));
+}
+
+#[test]
+fn test_server_exits_cleanly_without_input() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .env_remove("EXPECT_ARG")
+        .env_remove("EXPECT_CWD")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run test server");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

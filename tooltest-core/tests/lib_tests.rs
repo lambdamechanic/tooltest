@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tooltest_core::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, ResponseAssertion, RunConfig,
-    SchemaConfig, SchemaVersion, StdioConfig, ToolPredicate,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule, ResponseAssertion,
+    RunConfig, SchemaConfig, SchemaVersion, StateMachineConfig, StdioConfig, ToolPredicate,
 };
 
 #[test]
@@ -69,4 +69,16 @@ fn run_config_default_matches_new() {
         config.assertions.rules.len(),
         default_config.assertions.rules.len()
     );
+}
+
+#[test]
+fn state_machine_config_sets_seed_strings() {
+    let config = StateMachineConfig::default().with_seed_strings(vec!["alpha".to_string()]);
+    assert_eq!(config.seed_strings, vec!["alpha".to_string()]);
+}
+
+#[test]
+fn coverage_rule_no_uncalled_tools_builder() {
+    let rule = CoverageRule::no_uncalled_tools();
+    assert!(matches!(rule, CoverageRule::NoUncalledTools));
 }

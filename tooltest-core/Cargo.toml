@@ -19,6 +19,7 @@ rmcp = { workspace = true, features = ["client", "transport-child-process", "tra
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 proptest = "1"
 proptest_async = { version = "0.2", default-features = false, features = ["tokio"] }
+proptest-state-machine = "0.6"
 jsonschema = "0.26"
 regex = "1"
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
@@ -27,6 +28,7 @@ tooltest-test-support = { path = "../tooltest-test-support", optional = true }
 
 [dev-dependencies]
 axum = "0.7"
+schemars = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tooltest-test-support = { path = "../tooltest-test-support" }
 

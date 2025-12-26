@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{Number, Value as JsonValue};
 
 mod generator;
 mod runner;
@@ -42,6 +42,64 @@ pub enum SchemaVersion {
     V2025_11_25,
     /// Any other explicitly configured schema version string.
     Other(String),
+}
+
+/// Generator mode selection for MCP sequence runs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratorMode {
+    /// Use the legacy proptest-based generator.
+    #[default]
+    Legacy,
+    /// Use the state-machine generator.
+    StateMachine,
+}
+
+/// Configuration for state-machine generator behavior.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct StateMachineConfig {
+    /// Seed numbers added to the corpus before generation.
+    pub seed_numbers: Vec<Number>,
+    /// Seed strings added to the corpus before generation.
+    pub seed_strings: Vec<String>,
+    /// Optional allowlist for coverage warnings and validation.
+    pub coverage_allowlist: Option<Vec<String>>,
+    /// Optional blocklist for coverage warnings and validation.
+    pub coverage_blocklist: Option<Vec<String>>,
+    /// Coverage validation rules applied after state-machine runs.
+    pub coverage_rules: Vec<CoverageRule>,
+}
+
+impl StateMachineConfig {
+    /// Sets the seed numbers for the state-machine corpus.
+    pub fn with_seed_numbers(mut self, seed_numbers: Vec<Number>) -> Self {
+        self.seed_numbers = seed_numbers;
+        self
+    }
+
+    /// Sets the seed strings for the state-machine corpus.
+    pub fn with_seed_strings(mut self, seed_strings: Vec<String>) -> Self {
+        self.seed_strings = seed_strings;
+        self
+    }
+
+    /// Sets the coverage allowlist for state-machine runs.
+    pub fn with_coverage_allowlist(mut self, coverage_allowlist: Vec<String>) -> Self {
+        self.coverage_allowlist = Some(coverage_allowlist);
+        self
+    }
+
+    /// Sets the coverage blocklist for state-machine runs.
+    pub fn with_coverage_blocklist(mut self, coverage_blocklist: Vec<String>) -> Self {
+        self.coverage_blocklist = Some(coverage_blocklist);
+        self
+    }
+
+    /// Sets the coverage validation rules for state-machine runs.
+    pub fn with_coverage_rules(mut self, coverage_rules: Vec<CoverageRule>) -> Self {
+        self.coverage_rules = coverage_rules;
+        self
+    }
 }
 
 /// Configuration for MCP schema parsing and validation.
@@ -179,6 +237,10 @@ pub struct RunConfig {
     pub predicate: Option<ToolPredicate>,
     /// Assertion rules to evaluate during the run.
     pub assertions: AssertionSet,
+    /// Generator mode selection for sequence generation.
+    pub generator_mode: GeneratorMode,
+    /// State-machine generator configuration.
+    pub state_machine: StateMachineConfig,
 }
 
 impl RunConfig {
@@ -188,6 +250,8 @@ impl RunConfig {
             schema: SchemaConfig::default(),
             predicate: None,
             assertions: AssertionSet::default(),
+            generator_mode: GeneratorMode::default(),
+            state_machine: StateMachineConfig::default(),
         }
     }
 
@@ -208,6 +272,18 @@ impl RunConfig {
         self.assertions = assertions;
         self
     }
+
+    /// Sets the generator mode for the run.
+    pub fn with_generator_mode(mut self, generator_mode: GeneratorMode) -> Self {
+        self.generator_mode = generator_mode;
+        self
+    }
+
+    /// Sets the state-machine generator configuration.
+    pub fn with_state_machine(mut self, state_machine: StateMachineConfig) -> Self {
+        self.state_machine = state_machine;
+        self
+    }
 }
 
 impl Default for RunConfig {
@@ -222,6 +298,8 @@ impl fmt::Debug for RunConfig {
             .field("schema", &self.schema)
             .field("predicate", &self.predicate.is_some())
             .field("assertions", &self.assertions)
+            .field("generator_mode", &self.generator_mode)
+            .field("state_machine", &self.state_machine)
             .finish()
     }
 }
@@ -260,6 +338,78 @@ pub enum RunOutcome {
 pub struct RunFailure {
     /// Short description of the failure.
     pub reason: String,
+    /// Optional structured failure code.
+    pub code: Option<String>,
+    /// Optional structured failure details.
+    pub details: Option<JsonValue>,
+}
+
+impl RunFailure {
+    /// Creates a run failure with only a reason string.
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            code: None,
+            details: None,
+        }
+    }
+}
+
+/// Warning describing a coverage issue in a state-machine run.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverageWarning {
+    /// Tool name that could not be called.
+    pub tool: String,
+    /// Reason the tool could not be called.
+    pub reason: CoverageWarningReason,
+}
+
+/// Structured reason codes for coverage warnings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageWarningReason {
+    MissingString,
+    MissingInteger,
+    MissingNumber,
+    MissingRequiredValue,
+}
+
+/// Coverage report for state-machine runs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverageReport {
+    /// Successful tool call counts.
+    pub counts: BTreeMap<String, u64>,
+    /// Coverage warnings for uncallable tools.
+    pub warnings: Vec<CoverageWarning>,
+}
+
+/// Coverage validation rules for state-machine runs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "rule", rename_all = "snake_case")]
+pub enum CoverageRule {
+    /// Require a minimum number of successful calls per tool.
+    MinCallsPerTool { min: u64 },
+    /// Require that all callable tools are called at least once.
+    NoUncalledTools,
+    /// Require a minimum percentage of callable tools to be called.
+    PercentCalled { min_percent: f64 },
+}
+
+impl CoverageRule {
+    /// Helper to enforce minimum calls per tool.
+    pub fn min_calls_per_tool(min: u64) -> Self {
+        Self::MinCallsPerTool { min }
+    }
+
+    /// Helper to enforce no uncalled tools.
+    pub fn no_uncalled_tools() -> Self {
+        Self::NoUncalledTools
+    }
+
+    /// Helper to enforce minimum percentage of tools called.
+    pub fn percent_called(min_percent: f64) -> Self {
+        Self::PercentCalled { min_percent }
+    }
 }
 
 /// Results of a tooltest run.
@@ -271,4 +421,6 @@ pub struct RunResult {
     pub trace: Vec<TraceEntry>,
     /// Minimized sequence for failures, when available.
     pub minimized: Option<MinimizedSequence>,
+    /// Coverage report for state-machine runs, when enabled.
+    pub coverage: Option<CoverageReport>,
 }

@@ -33,6 +33,10 @@ The system SHALL maintain a shared corpus of numbers and strings that is seeded 
 - **WHEN** a numeric value mined from `structured_content` is not integral
 - **THEN** it is not added to the integer corpus
 
+#### Scenario: Error responses do not extend the corpus
+- **WHEN** a tool response is an error
+- **THEN** its `structured_content` is not mined into the corpus
+
 ### Requirement: Corpus-Only Number/String Generation
 The system SHALL generate all numbers and strings used in tool inputs exclusively from the shared corpus, selecting integer values only from an integer corpus when an input schema requires `integer`.
 
@@ -55,12 +59,39 @@ The system SHALL store corpus values with set semantics and deterministic, inser
 - **WHEN** the state-machine selects a corpus value by index
 - **THEN** the index maps to a consistent value across the run
 
+#### Scenario: Seeded values define initial ordering
+- **WHEN** caller-provided seed values are supplied in a specific order
+- **THEN** the corpus preserves that order before appending mined values
+
+#### Scenario: Deterministic traversal for mining
+- **WHEN** mining `structured_content` to extend the corpus
+- **THEN** traversal uses array index order and lexicographically sorted object keys to produce deterministic insertion ordering
+
+### Requirement: Callable Tool Eligibility
+The system SHALL treat a tool as callable only when all required inputs can be generated, using corpus-derived values for numbers and strings and existing schema-driven generation for other types.
+
+#### Scenario: Missing required corpus values makes tool uncallable
+- **WHEN** a required number, integer, or string input cannot be satisfied from the corpus
+- **THEN** the tool is excluded from selection as uncallable
+
+#### Scenario: Optional corpus-backed fields may be omitted
+- **WHEN** an optional number or string field lacks corpus values
+- **THEN** the generator may omit the field to keep the tool callable
+
+#### Scenario: Non-number/string required fields use schema generators
+- **WHEN** a required field is not a number or string
+- **THEN** the generator uses existing schema-derived strategies to populate it
+
 ### Requirement: Unified Test Entry Point
 The system SHALL provide a single entry point for tests that allows callers to choose between the existing generator and the state-machine generator.
 
 #### Scenario: Caller selects generator mode
 - **WHEN** a caller specifies the generator mode
 - **THEN** the run uses the selected generator for sequence generation
+
+#### Scenario: Default generator mode is legacy
+- **WHEN** a caller does not specify a generator mode
+- **THEN** the run uses the existing generator by default
 
 ### Requirement: Tool Coverage Reporting
 The system SHALL track tool call counts during state-machine runs based on successful tool responses and report coverage warnings for tools that could not be called, excluding tools outside configured allowlists or inside configured blocklists.
@@ -81,6 +112,14 @@ The system SHALL track tool call counts during state-machine runs based on succe
 - **WHEN** a tool is excluded by a provided allowlist or blocklist
 - **THEN** coverage warnings do not include that tool
 
+#### Scenario: Warnings are emitted after the run
+- **WHEN** a state-machine run completes
+- **THEN** uncallable tool warnings are emitted based on callability with the final corpus state
+
+#### Scenario: Coverage allowlist and blocklist do not affect selection
+- **WHEN** allowlist or blocklist settings are provided for coverage
+- **THEN** tool selection continues to use the existing predicate filtering only
+
 ### Requirement: Coverage Validation Hooks
 The system SHALL allow callers of the state-machine generator mode to supply coverage validation rules that inspect tool call counts.
 
@@ -95,3 +134,15 @@ The system SHALL allow callers of the state-machine generator mode to supply cov
 #### Scenario: Coverage warnings are non-fatal
 - **WHEN** coverage warnings are emitted without validation failures
 - **THEN** the run outcome remains successful
+
+#### Scenario: Coverage validation failures fail the run
+- **WHEN** a coverage validation rule fails
+- **THEN** the run outcome is a failure with a structured coverage validation reason
+
+#### Scenario: Coverage validation warnings are structured
+- **WHEN** coverage validation rules emit warnings without failures
+- **THEN** the run output includes structured coverage warning details
+
+#### Scenario: Coverage validation failure reason includes code and details
+- **WHEN** a coverage validation failure is reported
+- **THEN** the failure reason includes a stable code identifier and a structured detail payload describing the violated rule

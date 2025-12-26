@@ -1,15 +1,18 @@
 //! Proptest-based tool invocation generation driven by MCP schemas.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
+use proptest_state_machine::ReferenceStateMachine;
 use regex::Regex;
 use rmcp::model::{JsonObject, Tool};
-use serde_json::Value as JsonValue;
+use serde_json::{Number, Value as JsonValue};
 
-use crate::{ToolInvocation, ToolPredicate};
+use crate::{StateMachineConfig, ToolInvocation, ToolPredicate};
 
 /// Errors emitted while generating tool invocations from schema data.
 #[derive(Debug)]
@@ -59,6 +62,186 @@ pub(crate) enum ConstraintKind {
 pub(crate) struct Constraint {
     pub(crate) path: NonEmpty<PathSegment>,
     pub(crate) kind: ConstraintKind,
+}
+
+#[derive(Clone, Debug)]
+struct StateMachineState {
+    corpus: ValueCorpus,
+    done: bool,
+}
+
+#[derive(Clone, Debug)]
+enum StateMachineTransition {
+    Invoke(ToolInvocation),
+    Stop,
+}
+
+#[derive(Clone)]
+struct StateMachineEnv {
+    tools: Vec<Tool>,
+    predicate: Option<ToolPredicate>,
+    seed_numbers: Vec<Number>,
+    seed_strings: Vec<String>,
+}
+
+thread_local! {
+    static STATE_MACHINE_ENV: RefCell<Option<StateMachineEnv>> = const { RefCell::new(None) };
+}
+
+struct StateMachineReference;
+
+impl ReferenceStateMachine for StateMachineReference {
+    type State = StateMachineState;
+    type Transition = StateMachineTransition;
+
+    fn init_state() -> BoxedStrategy<Self::State> {
+        let (seed_numbers, seed_strings) = STATE_MACHINE_ENV.with(|env| {
+            env.borrow()
+                .as_ref()
+                .map(|env| (env.seed_numbers.clone(), env.seed_strings.clone()))
+                .unwrap_or_default()
+        });
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_numbers(seed_numbers);
+        corpus.seed_strings(seed_strings);
+        Just(StateMachineState {
+            corpus,
+            done: false,
+        })
+        .boxed()
+    }
+
+    fn transitions(state: &Self::State) -> BoxedStrategy<Self::Transition> {
+        if state.done {
+            return Just(StateMachineTransition::Stop).boxed();
+        }
+        let mut strategies = Vec::new();
+        let env = STATE_MACHINE_ENV.with(|env| env.borrow().clone());
+        if let Some(env) = env {
+            for tool in &env.tools {
+                if let Some(strategy) =
+                    invocation_from_corpus(tool, env.predicate.as_ref(), &state.corpus)
+                {
+                    strategies.push(strategy.prop_map(StateMachineTransition::Invoke).boxed());
+                }
+            }
+        }
+
+        if strategies.is_empty() {
+            Just(StateMachineTransition::Stop).boxed()
+        } else {
+            proptest::strategy::Union::new(strategies).boxed()
+        }
+    }
+
+    fn apply(mut state: Self::State, transition: &Self::Transition) -> Self::State {
+        if matches!(transition, StateMachineTransition::Stop) {
+            state.done = true;
+        }
+        state
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ValueCorpus {
+    integers: Vec<i64>,
+    numbers: Vec<Number>,
+    strings: Vec<String>,
+    integer_set: HashSet<i64>,
+    number_set: HashSet<Number>,
+    string_set: HashSet<String>,
+}
+
+impl ValueCorpus {
+    pub(crate) fn seed_numbers<I>(&mut self, values: I)
+    where
+        I: IntoIterator<Item = Number>,
+    {
+        for value in values {
+            self.insert_number(value);
+        }
+    }
+
+    pub(crate) fn seed_strings<I>(&mut self, values: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for value in values {
+            self.insert_string(value);
+        }
+    }
+
+    pub(crate) fn mine_structured_content(&mut self, value: &JsonValue) {
+        self.walk_value(value);
+    }
+
+    pub(crate) fn integers(&self) -> &[i64] {
+        &self.integers
+    }
+
+    pub(crate) fn numbers(&self) -> &[Number] {
+        &self.numbers
+    }
+
+    pub(crate) fn strings(&self) -> &[String] {
+        &self.strings
+    }
+
+    fn insert_number(&mut self, value: Number) {
+        if self.number_set.insert(value.clone()) {
+            self.numbers.push(value.clone());
+        }
+        if let Some(integer) = number_to_i64(&value) {
+            if self.integer_set.insert(integer) {
+                self.integers.push(integer);
+            }
+        }
+    }
+
+    fn insert_string(&mut self, value: String) {
+        if self.string_set.insert(value.clone()) {
+            self.strings.push(value);
+        }
+    }
+
+    fn walk_value(&mut self, value: &JsonValue) {
+        match value {
+            JsonValue::Null | JsonValue::Bool(_) => {}
+            JsonValue::Number(number) => self.insert_number(number.clone()),
+            JsonValue::String(value) => self.insert_string(value.clone()),
+            JsonValue::Array(values) => {
+                for value in values {
+                    self.walk_value(value);
+                }
+            }
+            JsonValue::Object(map) => {
+                let mut keys: Vec<_> = map.keys().collect();
+                keys.sort();
+                for key in keys {
+                    self.insert_string(key.to_string());
+                    let value = map.get(key).expect("key from map");
+                    self.walk_value(value);
+                }
+            }
+        }
+    }
+}
+
+fn number_to_i64(value: &Number) -> Option<i64> {
+    if let Some(value) = value.as_i64() {
+        return Some(value);
+    }
+    if let Some(value) = value.as_u64() {
+        return i64::try_from(value).ok();
+    }
+    let value = value.as_f64().expect("number as f64");
+    if value.fract() != 0.0 {
+        return None;
+    }
+    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return None;
+    }
+    Some(value as i64)
 }
 
 /// Builds a proptest strategy that yields tool invocations from MCP tool schemas.
@@ -113,6 +296,38 @@ pub(crate) fn invocation_sequence_strategy(
     Ok(proptest::collection::vec(invocation, len_range).boxed())
 }
 
+pub(crate) fn state_machine_sequence_strategy(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    config: &StateMachineConfig,
+    len_range: std::ops::RangeInclusive<usize>,
+) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
+    validate_state_machine_tools(tools)?;
+    let env = StateMachineEnv {
+        tools: tools.to_vec(),
+        predicate: predicate.cloned(),
+        seed_numbers: config.seed_numbers.clone(),
+        seed_strings: config.seed_strings.clone(),
+    };
+    STATE_MACHINE_ENV.with(|slot| {
+        slot.replace(Some(env));
+    });
+
+    let strategy = StateMachineReference::sequential_strategy(len_range).prop_map(
+        |(_state, transitions, _)| {
+            let mut invocations = Vec::new();
+            for transition in transitions {
+                match transition {
+                    StateMachineTransition::Invoke(invocation) => invocations.push(invocation),
+                    StateMachineTransition::Stop => break,
+                }
+            }
+            invocations
+        },
+    );
+    Ok(strategy.boxed())
+}
+
 /// Builds a strategy that yields tool invocations with inputs that violate exactly one schema rule.
 pub(crate) fn invalid_invocation_strategy(
     tools: &[Tool],
@@ -153,6 +368,365 @@ pub(crate) fn invalid_invocation_strategy(
         return Err(InvocationError::NoEligibleTools);
     }
     Ok(union)
+}
+
+fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
+    for tool in tools {
+        let schema = tool.input_schema.as_ref();
+        match schema.get("type") {
+            Some(JsonValue::String(schema_type)) if schema_type == "object" => {}
+            Some(JsonValue::String(other)) => {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: format!("inputSchema type must be object, got {other}"),
+                })
+            }
+            Some(_) => {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "inputSchema type must be a string".to_string(),
+                })
+            }
+            None => {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "inputSchema missing type".to_string(),
+                })
+            }
+        }
+
+        let mut required_error = None;
+        if let Some(JsonValue::Array(required)) = schema.get("required") {
+            if let Some(JsonValue::Object(properties)) = schema.get("properties") {
+                let required_keys = required
+                    .iter()
+                    .filter_map(JsonValue::as_str)
+                    .collect::<Vec<_>>();
+                if !required_keys
+                    .iter()
+                    .all(|key| properties.contains_key(*key))
+                {
+                    required_error = Some(InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: "inputSchema required must reference known properties".to_string(),
+                    });
+                }
+            } else if !required.is_empty() {
+                required_error = Some(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "inputSchema required must be empty when no properties exist"
+                        .to_string(),
+                });
+            }
+        }
+        if let Some(error) = required_error {
+            return Err(error);
+        }
+
+        for (name, schema_value) in schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .into_iter()
+            .flat_map(|properties| properties.iter())
+        {
+            let schema_object =
+                schema_value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("property '{name}' schema must be an object"),
+                    })?;
+            if schema_value_strategy(schema_object, tool).is_err() {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: format!("property '{name}' schema must be supported"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn invocation_from_corpus(
+    tool: &Tool,
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+) -> Option<BoxedStrategy<ToolInvocation>> {
+    let schema = tool.input_schema.as_ref();
+    let properties = match schema.get("properties") {
+        Some(JsonValue::Object(map)) => map,
+        Some(_) => return None,
+        None => {
+            let mut missing_required = false;
+            if let Some(JsonValue::Array(required)) = schema.get("required") {
+                if !required.is_empty() {
+                    missing_required = true;
+                }
+            }
+            if missing_required {
+                return None;
+            }
+            let invocation = ToolInvocation {
+                name: tool.name.clone(),
+                arguments: Some(JsonObject::new()),
+            };
+            return Some(Just(invocation).boxed());
+        }
+    };
+
+    let required_keys = schema
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut property_strategies = Vec::with_capacity(properties.len());
+    for (name, schema_value) in properties {
+        let schema_object = schema_value.as_object()?;
+        let required = required_keys.contains(name.as_str());
+        match property_strategy_from_corpus(schema_object, required, corpus, tool) {
+            PropertyOutcome::Include(strategy) => {
+                property_strategies.push((name.clone(), strategy));
+            }
+            PropertyOutcome::Omit => {}
+            PropertyOutcome::MissingRequired => return None,
+        }
+    }
+
+    let mut strategy: BoxedStrategy<Vec<(String, JsonValue)>> = Just(Vec::new()).boxed();
+    for (name, value_strategy) in property_strategies {
+        strategy = strategy
+            .prop_flat_map(move |entries| {
+                let name = name.clone();
+                let value_strategy = value_strategy.clone();
+                value_strategy.prop_map(move |value| {
+                    let mut next = entries.clone();
+                    next.push((name.clone(), value));
+                    next
+                })
+            })
+            .boxed();
+    }
+
+    let tool_name = tool.name.clone();
+    let predicate = predicate.cloned();
+    Some(
+        strategy
+            .prop_filter_map("predicate rejected tool input", move |entries| {
+                let mut map = JsonObject::new();
+                for (name, value) in entries {
+                    map.insert(name, value);
+                }
+                let mut rejected = false;
+                if let Some(predicate) = &predicate {
+                    let input = JsonValue::Object(map.clone());
+                    let predicate_name = tool_name.to_string();
+                    if !predicate(&predicate_name, &input) {
+                        rejected = true;
+                    }
+                }
+                if rejected {
+                    return None;
+                }
+                Some(ToolInvocation {
+                    name: tool_name.clone(),
+                    arguments: Some(map),
+                })
+            })
+            .boxed(),
+    )
+}
+
+enum PropertyOutcome {
+    Include(BoxedStrategy<JsonValue>),
+    Omit,
+    MissingRequired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchemaType {
+    String,
+    Integer,
+    Number,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UncallableReason {
+    String,
+    Integer,
+    Number,
+    RequiredValue,
+}
+
+fn property_strategy_from_corpus(
+    schema: &JsonObject,
+    required: bool,
+    corpus: &ValueCorpus,
+    tool: &Tool,
+) -> PropertyOutcome {
+    match schema_type_hint(schema) {
+        Some(SchemaType::String) => {
+            let values = corpus
+                .strings()
+                .iter()
+                .map(|value| JsonValue::String(value.clone()))
+                .filter(|value| schema_violations(schema, value).is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return if required {
+                    PropertyOutcome::MissingRequired
+                } else {
+                    PropertyOutcome::Omit
+                };
+            }
+            PropertyOutcome::Include(proptest::sample::select(values).boxed())
+        }
+        Some(SchemaType::Integer) => {
+            let values = corpus
+                .integers()
+                .iter()
+                .map(|value| JsonValue::Number(Number::from(*value)))
+                .filter(|value| schema_violations(schema, value).is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return if required {
+                    PropertyOutcome::MissingRequired
+                } else {
+                    PropertyOutcome::Omit
+                };
+            }
+            PropertyOutcome::Include(proptest::sample::select(values).boxed())
+        }
+        Some(SchemaType::Number) => {
+            let values = corpus
+                .numbers()
+                .iter()
+                .map(|value| JsonValue::Number(value.clone()))
+                .filter(|value| schema_violations(schema, value).is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return if required {
+                    PropertyOutcome::MissingRequired
+                } else {
+                    PropertyOutcome::Omit
+                };
+            }
+            PropertyOutcome::Include(proptest::sample::select(values).boxed())
+        }
+        _ => match schema_value_strategy(schema, tool) {
+            Ok(strategy) => PropertyOutcome::Include(strategy),
+            Err(_) => PropertyOutcome::MissingRequired,
+        },
+    }
+}
+
+fn schema_type_hint(schema: &JsonObject) -> Option<SchemaType> {
+    if let Some(schema_type) = schema.get("type").and_then(JsonValue::as_str) {
+        return match schema_type {
+            "string" => Some(SchemaType::String),
+            "integer" => Some(SchemaType::Integer),
+            "number" => Some(SchemaType::Number),
+            _ => None,
+        };
+    }
+    if let Some(JsonValue::String(_)) = schema.get("const") {
+        return Some(SchemaType::String);
+    }
+    if let Some(JsonValue::Number(_)) = schema.get("const") {
+        return Some(SchemaType::Number);
+    }
+    if let Some(JsonValue::Array(values)) = schema.get("enum") {
+        if values
+            .iter()
+            .all(|value| matches!(value, JsonValue::String(_)))
+        {
+            return Some(SchemaType::String);
+        }
+        if values
+            .iter()
+            .all(|value| matches!(value, JsonValue::Number(_)))
+        {
+            return Some(SchemaType::Number);
+        }
+    }
+    None
+}
+
+pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<UncallableReason> {
+    let schema = tool.input_schema.as_ref();
+    let properties = match schema.get("properties") {
+        Some(JsonValue::Object(map)) => map,
+        Some(_) => return Some(UncallableReason::RequiredValue),
+        None => {
+            return match schema.get("required") {
+                Some(JsonValue::Array(required)) if !required.is_empty() => {
+                    Some(UncallableReason::RequiredValue)
+                }
+                _ => None,
+            };
+        }
+    };
+
+    let mut required_keys = schema
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    required_keys.sort();
+
+    for name in required_keys {
+        let Some(schema_value) = properties.get(&name) else {
+            return Some(UncallableReason::RequiredValue);
+        };
+        let Some(schema_object) = schema_value.as_object() else {
+            return Some(UncallableReason::RequiredValue);
+        };
+        let reason = match schema_type_hint(schema_object) {
+            Some(SchemaType::String) => {
+                let has_match = corpus
+                    .strings()
+                    .iter()
+                    .map(|value| JsonValue::String(value.clone()))
+                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                (!has_match).then_some(UncallableReason::String)
+            }
+            Some(SchemaType::Integer) => {
+                let has_match = corpus
+                    .integers()
+                    .iter()
+                    .map(|value| JsonValue::Number(Number::from(*value)))
+                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                (!has_match).then_some(UncallableReason::Integer)
+            }
+            Some(SchemaType::Number) => {
+                let has_match = corpus
+                    .numbers()
+                    .iter()
+                    .map(|value| JsonValue::Number(value.clone()))
+                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                (!has_match).then_some(UncallableReason::Number)
+            }
+            None => schema_value_strategy(schema_object, tool)
+                .err()
+                .map(|_| UncallableReason::RequiredValue),
+        };
+        if let Some(reason) = reason {
+            return Some(reason);
+        }
+    }
+
+    None
 }
 
 fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
@@ -994,4 +1568,649 @@ fn get_value_at_path_mut<'a>(
         }
     }
     Some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest_state_machine::ReferenceStateMachine;
+    use rmcp::model::Tool;
+    use serde_json::json;
+    use std::fmt;
+    use std::sync::Arc;
+
+    fn tool_with_schema(name: &str, schema: JsonValue) -> Tool {
+        Tool {
+            name: name.to_string().into(),
+            title: None,
+            description: None,
+            input_schema: Arc::new(schema.as_object().cloned().expect("schema object")),
+            output_schema: None,
+            annotations: None,
+            icons: None,
+            meta: None,
+        }
+    }
+
+    fn sample<T: fmt::Debug>(strategy: BoxedStrategy<T>) -> T {
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        strategy
+            .new_tree(&mut runner)
+            .expect("value tree")
+            .current()
+    }
+
+    fn transition_is_stop(transition: &StateMachineTransition) -> bool {
+        matches!(transition, StateMachineTransition::Stop)
+    }
+
+    fn outcome_is_missing_required(outcome: &PropertyOutcome) -> bool {
+        matches!(outcome, PropertyOutcome::MissingRequired)
+    }
+
+    fn outcome_is_omit(outcome: &PropertyOutcome) -> bool {
+        matches!(outcome, PropertyOutcome::Omit)
+    }
+
+    fn outcome_is_include(outcome: &PropertyOutcome) -> bool {
+        matches!(outcome, PropertyOutcome::Include(_))
+    }
+
+    fn assert_unsupported(schema: JsonValue, expected: &str) {
+        let tool = tool_with_schema("bad", schema);
+        let error = validate_state_machine_tools(&[tool]).expect_err("unsupported schema");
+        let message = error.to_string();
+        assert!(message.contains(expected));
+    }
+
+    #[test]
+    fn transitions_stop_when_done() {
+        STATE_MACHINE_ENV.with(|slot| slot.replace(None));
+        let state = StateMachineState {
+            corpus: ValueCorpus::default(),
+            done: true,
+        };
+        let transition =
+            sample(<StateMachineReference as ReferenceStateMachine>::transitions(&state));
+        assert!(transition_is_stop(&transition));
+    }
+
+    #[test]
+    fn transitions_stop_without_env() {
+        STATE_MACHINE_ENV.with(|slot| slot.replace(None));
+        let state = StateMachineState {
+            corpus: ValueCorpus::default(),
+            done: false,
+        };
+        let transition =
+            sample(<StateMachineReference as ReferenceStateMachine>::transitions(&state));
+        assert!(transition_is_stop(&transition));
+    }
+
+    #[test]
+    fn transition_is_stop_false_for_invoke() {
+        let transition = StateMachineTransition::Invoke(ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: None,
+        });
+        assert!(!transition_is_stop(&transition));
+    }
+
+    #[test]
+    fn corpus_walk_value_handles_null_and_bool() {
+        let mut corpus = ValueCorpus::default();
+        corpus.mine_structured_content(&json!({
+            "flag": true,
+            "empty": null,
+            "values": [false, null]
+        }));
+        assert!(corpus.strings().contains(&"flag".to_string()));
+    }
+
+    #[test]
+    fn number_to_i64_handles_u64_and_float_edges() {
+        assert_eq!(number_to_i64(&Number::from(5)), Some(5));
+        let too_large_u64 = Number::from(i64::MAX as u64 + 1);
+        assert_eq!(number_to_i64(&too_large_u64), None);
+        let fractional = Number::from_f64(2.5).expect("fractional");
+        assert_eq!(number_to_i64(&fractional), None);
+        let too_large = Number::from_f64((i64::MAX as f64) * 2.0).expect("large");
+        assert_eq!(number_to_i64(&too_large), None);
+        let integral = Number::from_f64(3.0).expect("integral");
+        assert_eq!(number_to_i64(&integral), Some(3));
+    }
+
+    #[test]
+    fn validate_state_machine_tools_rejects_invalid_schemas() {
+        assert_unsupported(
+            json!({ "type": "string" }),
+            "inputSchema type must be object",
+        );
+        assert_unsupported(json!({ "type": 5 }), "inputSchema type must be a string");
+        assert_unsupported(json!({}), "inputSchema missing type");
+        assert_unsupported(
+            json!({
+                "type": "object",
+                "properties": { "known": { "type": "string" } },
+                "required": ["missing"]
+            }),
+            "inputSchema required must reference known properties",
+        );
+        assert_unsupported(
+            json!({ "type": "object", "required": ["missing"] }),
+            "inputSchema required must be empty when no properties exist",
+        );
+        assert_unsupported(
+            json!({
+                "type": "object",
+                "properties": { "value": "nope" }
+            }),
+            "property 'value' schema must be an object",
+        );
+        assert_unsupported(
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string", "minLength": 2, "maxLength": 1 } }
+            }),
+            "property 'value' schema must be supported",
+        );
+    }
+
+    #[test]
+    fn validate_state_machine_tools_handles_empty_properties() {
+        let tool = tool_with_schema("empty", json!({ "type": "object", "properties": {} }));
+        assert!(validate_state_machine_tools(&[tool]).is_ok());
+    }
+
+    #[test]
+    fn validate_state_machine_tools_accepts_supported_properties() {
+        let tool = tool_with_schema(
+            "ok",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } }
+            }),
+        );
+        assert!(validate_state_machine_tools(&[tool]).is_ok());
+    }
+
+    #[test]
+    fn validate_state_machine_tools_rejects_required_without_properties() {
+        let tool = tool_with_schema("bad", json!({ "type": "object", "required": ["missing"] }));
+        assert!(validate_state_machine_tools(&[tool]).is_err());
+    }
+
+    #[test]
+    fn state_machine_sequence_strategy_rejects_invalid_tools() {
+        let tool = tool_with_schema(
+            "bad",
+            json!({
+                "type": "object",
+                "properties": { "value": "nope" }
+            }),
+        );
+        let config = StateMachineConfig::default();
+        let result = state_machine_sequence_strategy(&[tool], None, &config, 1..=1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invocation_from_corpus_handles_missing_properties() {
+        let tool = tool_with_schema("alpha", json!({ "type": "object", "properties": "nope" }));
+        let corpus = ValueCorpus::default();
+        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+
+        let tool = tool_with_schema("beta", json!({ "type": "object", "required": ["missing"] }));
+        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+
+        let tool = tool_with_schema("gamma", json!({ "type": "object" }));
+        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let invocation = sample(strategy);
+        assert_eq!(invocation.name.as_ref(), "gamma");
+        assert_eq!(invocation.arguments, Some(JsonObject::new()));
+    }
+
+    #[test]
+    fn invocation_from_corpus_rejects_required_without_properties() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "required": ["text"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+    }
+
+    #[test]
+    fn invocation_from_corpus_rejects_non_object_property_schema() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "count": 5 }
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+    }
+
+    #[test]
+    fn invocation_from_corpus_omits_optional_missing_values() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } }
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let invocation = sample(strategy);
+        assert_eq!(invocation.arguments, Some(JsonObject::new()));
+    }
+
+    #[test]
+    fn invocation_from_corpus_rejects_missing_required_values() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+    }
+
+    #[test]
+    fn invocation_from_corpus_rejects_predicate() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        );
+        let predicate: ToolPredicate = Arc::new(|_name, _input| false);
+        let corpus = ValueCorpus::default();
+        let strategy = invocation_from_corpus(&tool, Some(&predicate), &corpus).expect("strategy");
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        assert!(strategy.new_tree(&mut runner).is_err());
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_reports_missing_required() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "string" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let missing = property_strategy_from_corpus(&schema, true, &corpus, &tool);
+        assert!(outcome_is_missing_required(&missing));
+        assert!(!outcome_is_omit(&missing));
+
+        let omitted = property_strategy_from_corpus(&schema, false, &corpus, &tool);
+        assert!(!outcome_is_missing_required(&omitted));
+        assert!(outcome_is_omit(&omitted));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_handles_integer_and_number() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let integer_schema = json!({ "type": "integer" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let number_schema = json!({ "type": "number" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let integer_required = property_strategy_from_corpus(&integer_schema, true, &corpus, &tool);
+        assert!(outcome_is_missing_required(&integer_required));
+        assert!(!outcome_is_omit(&integer_required));
+
+        let integer_optional =
+            property_strategy_from_corpus(&integer_schema, false, &corpus, &tool);
+        assert!(!outcome_is_missing_required(&integer_optional));
+        assert!(outcome_is_omit(&integer_optional));
+
+        let number_required = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        assert!(outcome_is_missing_required(&number_required));
+        assert!(!outcome_is_omit(&number_required));
+
+        let number_optional = property_strategy_from_corpus(&number_schema, false, &corpus, &tool);
+        assert!(!outcome_is_missing_required(&number_optional));
+        assert!(outcome_is_omit(&number_optional));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_includes_string_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["alpha".to_string()]);
+        let string_schema = json!({ "type": "string" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool);
+        assert!(outcome_is_include(&outcome));
+        assert!(!outcome_is_omit(&outcome));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_includes_number_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_numbers([Number::from(3)]);
+        let number_schema = json!({ "type": "number" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        assert!(outcome_is_include(&outcome));
+        assert!(!outcome_is_missing_required(&outcome));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_handles_invalid_schema() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
+        let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool);
+        assert!(outcome_is_missing_required(&outcome));
+        assert!(!outcome_is_include(&outcome));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_handles_schema_value_strategy_results() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let const_schema = json!({ "const": true })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool);
+        assert!(outcome_is_include(&outcome));
+        assert!(!outcome_is_missing_required(&outcome));
+
+        let bad_schema = json!({ "minLength": 2 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let outcome = property_strategy_from_corpus(&bad_schema, true, &corpus, &tool);
+        assert!(outcome_is_missing_required(&outcome));
+        assert!(!outcome_is_include(&outcome));
+    }
+
+    #[test]
+    fn schema_type_hint_detects_const_and_enum() {
+        let schema = json!({ "const": "hello" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert_eq!(schema_type_hint(&schema), Some(SchemaType::String));
+
+        let schema = json!({ "const": 5 }).as_object().cloned().expect("schema");
+        assert_eq!(schema_type_hint(&schema), Some(SchemaType::Number));
+
+        let schema = json!({ "enum": ["a", "b"] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert_eq!(schema_type_hint(&schema), Some(SchemaType::String));
+
+        let schema = json!({ "enum": [1, 2] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert_eq!(schema_type_hint(&schema), Some(SchemaType::Number));
+    }
+
+    #[test]
+    fn schema_type_hint_returns_none_for_unknown_type_or_mixed_enum() {
+        let schema = json!({ "type": "object" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_type_hint(&schema).is_none());
+
+        let schema = json!({ "enum": ["a", 1] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_type_hint(&schema).is_none());
+    }
+
+    #[test]
+    fn uncallable_reason_reports_missing_variants() {
+        let string_tool = tool_with_schema(
+            "stringy",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+        );
+        let number_tool = tool_with_schema(
+            "numbery",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "number" } },
+                "required": ["value"]
+            }),
+        );
+        let integer_tool = tool_with_schema(
+            "inty",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "integer" } },
+                "required": ["value"]
+            }),
+        );
+        let required_tool = tool_with_schema(
+            "req",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["missing"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&string_tool, &corpus),
+            Some(UncallableReason::String)
+        );
+        assert_eq!(
+            uncallable_reason(&integer_tool, &corpus),
+            Some(UncallableReason::Integer)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus),
+            Some(UncallableReason::Number)
+        );
+        assert_eq!(
+            uncallable_reason(&required_tool, &corpus),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_accepts_corpus_matches() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "count": { "type": "integer" },
+                    "ratio": { "type": "number" }
+                },
+                "required": ["count", "name", "ratio"]
+            }),
+        );
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["alpha".to_string()]);
+        corpus.seed_numbers([Number::from(7)]);
+        assert_eq!(uncallable_reason(&tool, &corpus), None);
+    }
+
+    #[test]
+    fn uncallable_reason_handles_non_object_properties() {
+        let tool = tool_with_schema("bad", json!({ "type": "object", "properties": "nope" }));
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_handles_empty_required_without_properties() {
+        let tool = tool_with_schema("empty", json!({ "type": "object", "required": [] }));
+        let corpus = ValueCorpus::default();
+        assert_eq!(uncallable_reason(&tool, &corpus), None);
+    }
+
+    #[test]
+    fn uncallable_reason_handles_required_without_properties() {
+        let tool = tool_with_schema(
+            "missing",
+            json!({ "type": "object", "required": ["value"] }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_reports_missing_string_and_number() {
+        let string_tool = tool_with_schema(
+            "stringy",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+        );
+        let number_tool = tool_with_schema(
+            "numbery",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "number" } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&string_tool, &corpus),
+            Some(UncallableReason::String)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus),
+            Some(UncallableReason::Number)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_handles_non_object_schema_value() {
+        let tool = tool_with_schema(
+            "bad",
+            json!({
+                "type": "object",
+                "properties": { "value": "nope" },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_handles_invalid_schema_value() {
+        let tool = tool_with_schema(
+            "bad",
+            json!({
+                "type": "object",
+                "properties": { "value": { "minLength": 2 } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn input_object_strategy_reports_invalid_schemas() {
+        let tool = tool_with_schema("alpha", json!({ "type": "string" }));
+        assert!(input_object_strategy(&tool).is_err());
+        let tool = tool_with_schema("beta", json!({ "type": 5 }));
+        assert!(input_object_strategy(&tool).is_err());
+        let tool = tool_with_schema("gamma", json!({}));
+        assert!(input_object_strategy(&tool).is_err());
+        let tool = tool_with_schema("delta", json!({ "type": "object", "properties": "nope" }));
+        assert!(input_object_strategy(&tool).is_err());
+        let tool = tool_with_schema(
+            "epsilon",
+            json!({ "type": "object", "required": ["missing"] }),
+        );
+        assert!(input_object_strategy(&tool).is_err());
+        let tool = tool_with_schema(
+            "zeta",
+            json!({
+                "type": "object",
+                "properties": { "value": "nope" }
+            }),
+        );
+        assert!(input_object_strategy(&tool).is_err());
+    }
+
+    #[test]
+    fn schema_value_strategy_reports_errors() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
+        assert!(schema_value_strategy(&schema, &tool).is_err());
+
+        let schema = json!({ "maxLength": 1 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_value_strategy(&schema, &tool).is_err());
+
+        let schema = json!({ "type": "string", "minLength": 2, "maxLength": 1 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_value_strategy(&schema, &tool).is_err());
+
+        let schema = json!({ "type": "number", "minimum": 2.0, "maximum": 1.0 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_value_strategy(&schema, &tool).is_err());
+
+        let schema = json!({ "type": "integer", "minimum": 2.0, "maximum": 1.0 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_value_strategy(&schema, &tool).is_err());
+
+        let schema = json!({ "type": "array", "minItems": 2, "maxItems": 1, "items": {} })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_value_strategy(&schema, &tool).is_err());
+    }
 }

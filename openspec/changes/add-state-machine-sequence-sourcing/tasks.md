@@ -9,10 +9,12 @@
 - [ ] 1.8 Add coverage validation rule helpers (e.g., minimum calls per tool, no uncalled tools, percentage called) that operate on successful call counts and treat uncallable tools as excluded from percentage denominators
 - [ ] 1.9 Add tests for corpus seeding, de-duplication, response mining (including keys), integer-only selection, and empty-corpus uncallable warnings with reason codes
 - [ ] 1.10 Add tests for generator mode selection, corpus-only value generation, allowlist/blocklist coverage exemptions, coverage validation helpers, and error-response coverage exclusion
-- [ ] 1.11 Run `openspec validate add-state-machine-sequence-sourcing --strict`
+- [ ] 1.11 Run standard test suites (unit + property tests where reasonable) and confirm coverage targets for this change
+- [ ] 1.12 Run `openspec validate add-state-machine-sequence-sourcing --strict`
 
 ## Dependencies
 - 1.5 depends on 1.3 and 1.4 (state-machine generator requires corpus and mining).
 - 1.6 depends on 1.2 and 1.5 (entry point integration requires mode selection and generator).
+- 1.7 depends on 1.5 and 1.6 (coverage reporting needs the generator and integrated entry point).
 - 1.8 depends on 1.7 (coverage validation operates on coverage tracking output).
-- 1.10 depends on 1.6 and 1.8 (tests require integrated generator and validation helpers).
+- 1.10 depends on 1.7 and 1.8 (tests require coverage tracking and validation helpers).

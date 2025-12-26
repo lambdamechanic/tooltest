@@ -307,13 +307,73 @@ impl fmt::Debug for RunConfig {
 /// A generated tool invocation.
 pub type ToolInvocation = CallToolRequestParam;
 
-/// A trace entry capturing one tool call and its response.
+/// A trace entry capturing MCP interactions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TraceEntry {
-    /// The invocation that was sent.
-    pub invocation: ToolInvocation,
-    /// The MCP response payload.
-    pub response: CallToolResult,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TraceEntry {
+    /// A list-tools request was issued.
+    ListTools {
+        /// Optional failure detail when list-tools fails.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_reason: Option<String>,
+    },
+    /// A tool call, optionally annotated with a response on failure.
+    ToolCall {
+        /// The invocation that was sent.
+        invocation: ToolInvocation,
+        /// Optional response payload (omitted in compact traces).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response: Option<CallToolResult>,
+        /// Optional failure detail when a call fails.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_reason: Option<String>,
+    },
+}
+
+impl TraceEntry {
+    /// Creates a trace entry for a list-tools call.
+    pub fn list_tools() -> Self {
+        Self::ListTools {
+            failure_reason: None,
+        }
+    }
+
+    /// Creates a trace entry for a failed list-tools call.
+    pub fn list_tools_with_failure(reason: String) -> Self {
+        Self::ListTools {
+            failure_reason: Some(reason),
+        }
+    }
+
+    /// Creates a trace entry for a tool call without a response.
+    pub fn tool_call(invocation: ToolInvocation) -> Self {
+        Self::ToolCall {
+            invocation,
+            response: None,
+            failure_reason: None,
+        }
+    }
+
+    /// Creates a trace entry for a tool call with a response.
+    pub fn tool_call_with_response(invocation: ToolInvocation, response: CallToolResult) -> Self {
+        Self::ToolCall {
+            invocation,
+            response: Some(response),
+            failure_reason: None,
+        }
+    }
+
+    /// Returns the invocation and response when the entry is a tool call.
+    pub fn as_tool_call(&self) -> Option<(&ToolInvocation, Option<&CallToolResult>)> {
+        match self {
+            TraceEntry::ToolCall {
+                invocation,
+                response,
+                ..
+            } => Some((invocation, response.as_ref())),
+            TraceEntry::ListTools { .. } => None,
+        }
+    }
 }
 
 /// A minimized failing sequence from property-based testing.
@@ -417,7 +477,7 @@ impl CoverageRule {
 pub struct RunResult {
     /// Overall run outcome.
     pub outcome: RunOutcome,
-    /// Full trace of tool invocations and responses.
+    /// Trace of MCP calls (responses are only included on failures).
     pub trace: Vec<TraceEntry>,
     /// Minimized sequence for failures, when available.
     pub minimized: Option<MinimizedSequence>,

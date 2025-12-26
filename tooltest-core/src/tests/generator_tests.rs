@@ -297,9 +297,9 @@ fn invocation_strategy_errors_on_invalid_string_length_bounds() {
 }
 
 #[test]
-fn invocation_strategy_errors_on_unsupported_pattern() {
+fn invocation_strategy_allows_anchored_pattern() {
     let tool = tool_with_schema_value(
-        "invalid",
+        "anchored",
         json!({
             "type": "object",
             "properties": {
@@ -307,11 +307,36 @@ fn invocation_strategy_errors_on_unsupported_pattern() {
             }
         }),
     );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let regex = regex::Regex::new("^a+$").expect("regex");
+    let samples = sample_many(strategy, 32);
+    let all_match = samples.iter().all(|invocation| {
+        invocation
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("value"))
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| regex.is_match(value))
+    });
+    assert!(all_match, "expected all values to satisfy anchored pattern");
+}
+
+#[test]
+fn invocation_strategy_errors_on_boundary_pattern() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "\\bfoo\\b" }
+            }
+        }),
+    );
     let error = invocation_strategy(&[tool], None).expect_err("error");
     match error {
         InvocationError::UnsupportedSchema { tool, reason } => {
             assert_eq!(tool, "invalid");
-            assert!(reason.starts_with("pattern must be a valid regex:"));
+            assert!(reason.contains("word boundary"));
         }
         _ => panic!("expected UnsupportedSchema"),
     }

@@ -16,6 +16,7 @@ use tooltest_core::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, GeneratorMode, HttpConfig, ResponseAssertion, RunConfig,
     RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig,
+    TraceEntry,
 };
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -103,7 +104,18 @@ async fn run_with_session_returns_minimized_failure() {
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     assert!(result.minimized.is_some());
-    assert_eq!(result.trace.len(), 1);
+    assert_eq!(result.trace.len(), 2);
+    assert!(matches!(
+        result.trace.as_slice(),
+        [
+            TraceEntry::ListTools { .. },
+            TraceEntry::ToolCall {
+                response: Some(_),
+                failure_reason: Some(_),
+                ..
+            }
+        ]
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -165,7 +177,7 @@ async fn run_with_session_accepts_json_dsl_assertions() {
     let result = tooltest_core::run_with_session(&driver, &config, options).await;
 
     assert!(matches!(result.outcome, RunOutcome::Success));
-    assert_eq!(result.trace.len(), 1);
+    assert!(result.trace.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -238,9 +250,9 @@ async fn run_with_session_supports_state_machine_generator() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Success));
-    assert_eq!(result.trace.len(), 1);
-    let args = result.trace[0].invocation.arguments.as_ref().expect("args");
-    assert_eq!(args.get("count"), Some(&json!(5)));
+    assert!(result.trace.is_empty());
+    let coverage = result.coverage.expect("coverage");
+    assert_eq!(coverage.counts.get("echo").copied(), Some(1));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -510,7 +522,13 @@ async fn run_with_session_reports_list_tools_error() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-    assert!(result.trace.is_empty());
+    assert!(matches!(
+        result.trace.as_slice(),
+        [TraceEntry::ListTools {
+            failure_reason: Some(_),
+            ..
+        }]
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -621,7 +639,17 @@ async fn run_with_session_reports_call_tool_error() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-    assert!(result.trace.is_empty());
+    assert!(matches!(
+        result.trace.as_slice(),
+        [
+            TraceEntry::ListTools { .. },
+            TraceEntry::ToolCall {
+                response: None,
+                failure_reason: Some(_),
+                ..
+            }
+        ]
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

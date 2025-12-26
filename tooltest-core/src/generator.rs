@@ -1,13 +1,11 @@
 //! Proptest-based tool invocation generation driven by MCP schemas.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
-use proptest_state_machine::ReferenceStateMachine;
 use regex::Regex;
 use rmcp::model::{JsonObject, Tool};
 use serde_json::{Number, Value as JsonValue};
@@ -62,84 +60,6 @@ pub(crate) enum ConstraintKind {
 pub(crate) struct Constraint {
     pub(crate) path: NonEmpty<PathSegment>,
     pub(crate) kind: ConstraintKind,
-}
-
-#[derive(Clone, Debug)]
-struct StateMachineState {
-    corpus: ValueCorpus,
-    done: bool,
-}
-
-#[derive(Clone, Debug)]
-enum StateMachineTransition {
-    Invoke(ToolInvocation),
-    Stop,
-}
-
-#[derive(Clone)]
-struct StateMachineEnv {
-    tools: Vec<Tool>,
-    predicate: Option<ToolPredicate>,
-    seed_numbers: Vec<Number>,
-    seed_strings: Vec<String>,
-}
-
-thread_local! {
-    static STATE_MACHINE_ENV: RefCell<Option<StateMachineEnv>> = const { RefCell::new(None) };
-}
-
-struct StateMachineReference;
-
-impl ReferenceStateMachine for StateMachineReference {
-    type State = StateMachineState;
-    type Transition = StateMachineTransition;
-
-    fn init_state() -> BoxedStrategy<Self::State> {
-        let (seed_numbers, seed_strings) = STATE_MACHINE_ENV.with(|env| {
-            env.borrow()
-                .as_ref()
-                .map(|env| (env.seed_numbers.clone(), env.seed_strings.clone()))
-                .unwrap_or_default()
-        });
-        let mut corpus = ValueCorpus::default();
-        corpus.seed_numbers(seed_numbers);
-        corpus.seed_strings(seed_strings);
-        Just(StateMachineState {
-            corpus,
-            done: false,
-        })
-        .boxed()
-    }
-
-    fn transitions(state: &Self::State) -> BoxedStrategy<Self::Transition> {
-        if state.done {
-            return Just(StateMachineTransition::Stop).boxed();
-        }
-        let mut strategies = Vec::new();
-        let env = STATE_MACHINE_ENV.with(|env| env.borrow().clone());
-        if let Some(env) = env {
-            for tool in &env.tools {
-                if let Some(strategy) =
-                    invocation_from_corpus(tool, env.predicate.as_ref(), &state.corpus)
-                {
-                    strategies.push(strategy.prop_map(StateMachineTransition::Invoke).boxed());
-                }
-            }
-        }
-
-        if strategies.is_empty() {
-            Just(StateMachineTransition::Stop).boxed()
-        } else {
-            proptest::strategy::Union::new(strategies).boxed()
-        }
-    }
-
-    fn apply(mut state: Self::State, transition: &Self::Transition) -> Self::State {
-        if matches!(transition, StateMachineTransition::Stop) {
-            state.done = true;
-        }
-        state
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -234,7 +154,7 @@ fn number_to_i64(value: &Number) -> Option<i64> {
     if let Some(value) = value.as_u64() {
         return i64::try_from(value).ok();
     }
-    let value = value.as_f64().expect("number as f64");
+    let value = value.as_f64()?;
     if value.fract() != 0.0 {
         return None;
     }
@@ -303,29 +223,23 @@ pub(crate) fn state_machine_sequence_strategy(
     len_range: std::ops::RangeInclusive<usize>,
 ) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
     validate_state_machine_tools(tools)?;
-    let env = StateMachineEnv {
-        tools: tools.to_vec(),
-        predicate: predicate.cloned(),
-        seed_numbers: config.seed_numbers.clone(),
-        seed_strings: config.seed_strings.clone(),
-    };
-    STATE_MACHINE_ENV.with(|slot| {
-        slot.replace(Some(env));
-    });
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_numbers(config.seed_numbers.clone());
+    corpus.seed_strings(config.seed_strings.clone());
 
-    let strategy = StateMachineReference::sequential_strategy(len_range).prop_map(
-        |(_state, transitions, _)| {
-            let mut invocations = Vec::new();
-            for transition in transitions {
-                match transition {
-                    StateMachineTransition::Invoke(invocation) => invocations.push(invocation),
-                    StateMachineTransition::Stop => break,
-                }
-            }
-            invocations
-        },
-    );
-    Ok(strategy.boxed())
+    let mut strategies = Vec::new();
+    for tool in tools {
+        if let Some(strategy) = invocation_from_corpus(tool, predicate, &corpus) {
+            strategies.push(strategy);
+        }
+    }
+
+    if strategies.is_empty() {
+        return Ok(Just(Vec::new()).boxed());
+    }
+
+    let invocation = proptest::strategy::Union::new(strategies).boxed();
+    Ok(proptest::collection::vec(invocation, len_range).boxed())
 }
 
 /// Builds a strategy that yields tool invocations with inputs that violate exactly one schema rule.
@@ -436,10 +350,18 @@ fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
                         tool: tool.name.to_string(),
                         reason: format!("property '{name}' schema must be an object"),
                     })?;
-            if schema_value_strategy(schema_object, tool).is_err() {
+            if let Err(error) = schema_value_strategy(schema_object, tool) {
+                let detail = match error {
+                    InvocationError::UnsupportedSchema { reason, .. } => reason,
+                    InvocationError::NoEligibleTools => "no eligible tools to generate".to_string(),
+                };
+                let schema_json = serde_json::to_string(&JsonValue::Object(schema_object.clone()))
+                    .unwrap_or_else(|_| "<unserializable schema>".to_string());
                 return Err(InvocationError::UnsupportedSchema {
                     tool: tool.name.to_string(),
-                    reason: format!("property '{name}' schema must be supported"),
+                    reason: format!(
+                        "property '{name}' schema unsupported: {detail}; schema={schema_json}"
+                    ),
                 });
             }
         }
@@ -919,7 +841,13 @@ fn schema_value_strategy(
 
             if let Some(pattern) = schema.get("pattern").and_then(JsonValue::as_str) {
                 let pattern = pattern.to_string();
-                let strategy = proptest::string::string_regex(&pattern).map_err(|err| {
+                let normalized = normalize_pattern_for_generation(&pattern).map_err(|reason| {
+                    InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason,
+                    }
+                })?;
+                let strategy = proptest::string::string_regex(&normalized).map_err(|err| {
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
                         reason: format!("pattern must be a valid regex: {err}"),
@@ -1079,6 +1007,67 @@ fn schema_value_strategy(
             reason: format!("unsupported schema type '{other}'"),
         }),
     }
+}
+
+fn normalize_pattern_for_generation(pattern: &str) -> Result<String, String> {
+    if pattern.is_empty() {
+        return Ok(String::new());
+    }
+    if contains_boundary_escape(pattern) {
+        return Err(
+            "pattern uses word boundary escapes which are unsupported for string generation"
+                .to_string(),
+        );
+    }
+    let bytes = pattern.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+    if bytes.first() == Some(&b'^') {
+        start = 1;
+    }
+    if end > start && bytes[end - 1] == b'$' && !is_escaped(bytes, end - 1) {
+        end -= 1;
+    }
+    Ok(pattern[start..end].to_string())
+}
+
+fn contains_boundary_escape(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\\' {
+            if let Some(next) = bytes.get(idx + 1) {
+                match *next {
+                    b'b' | b'B' | b'A' | b'Z' | b'z' | b'G' => return true,
+                    _ => {
+                        idx += 2;
+                        continue;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn is_escaped(bytes: &[u8], idx: usize) -> bool {
+    if idx == 0 {
+        return false;
+    }
+    let mut count = 0;
+    let mut pos = idx;
+    while pos > 0 {
+        pos -= 1;
+        if bytes[pos] == b'\\' {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count % 2 == 1
 }
 
 pub(crate) fn applicable_constraints(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
@@ -1573,7 +1562,6 @@ fn get_value_at_path_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest_state_machine::ReferenceStateMachine;
     use rmcp::model::Tool;
     use serde_json::json;
     use std::fmt;
@@ -1600,10 +1588,6 @@ mod tests {
             .current()
     }
 
-    fn transition_is_stop(transition: &StateMachineTransition) -> bool {
-        matches!(transition, StateMachineTransition::Stop)
-    }
-
     fn outcome_is_missing_required(outcome: &PropertyOutcome) -> bool {
         matches!(outcome, PropertyOutcome::MissingRequired)
     }
@@ -1621,39 +1605,6 @@ mod tests {
         let error = validate_state_machine_tools(&[tool]).expect_err("unsupported schema");
         let message = error.to_string();
         assert!(message.contains(expected));
-    }
-
-    #[test]
-    fn transitions_stop_when_done() {
-        STATE_MACHINE_ENV.with(|slot| slot.replace(None));
-        let state = StateMachineState {
-            corpus: ValueCorpus::default(),
-            done: true,
-        };
-        let transition =
-            sample(<StateMachineReference as ReferenceStateMachine>::transitions(&state));
-        assert!(transition_is_stop(&transition));
-    }
-
-    #[test]
-    fn transitions_stop_without_env() {
-        STATE_MACHINE_ENV.with(|slot| slot.replace(None));
-        let state = StateMachineState {
-            corpus: ValueCorpus::default(),
-            done: false,
-        };
-        let transition =
-            sample(<StateMachineReference as ReferenceStateMachine>::transitions(&state));
-        assert!(transition_is_stop(&transition));
-    }
-
-    #[test]
-    fn transition_is_stop_false_for_invoke() {
-        let transition = StateMachineTransition::Invoke(ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        });
-        assert!(!transition_is_stop(&transition));
     }
 
     #[test]
@@ -1712,7 +1663,7 @@ mod tests {
                 "type": "object",
                 "properties": { "value": { "type": "string", "minLength": 2, "maxLength": 1 } }
             }),
-            "property 'value' schema must be supported",
+            "property 'value' schema unsupported: maxLength must be >= minLength",
         );
     }
 

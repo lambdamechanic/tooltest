@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use jsonschema::draft202012;
 use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestError, TestRunner};
-use rmcp::model::{ListToolsResult, Tool};
+use rmcp::model::{CallToolResult, ListToolsResult, Tool};
 use serde_json::{json, Value as JsonValue};
 
 use crate::generator::{
@@ -52,12 +52,14 @@ pub async fn run_with_session(
     config: &RunConfig,
     options: RunnerOptions,
 ) -> RunResult {
+    let prelude_trace = Rc::new(vec![TraceEntry::list_tools()]);
     let tools = match session.list_tools().await {
         Ok(tools) => tools,
         Err(error) => {
+            let reason = format!("failed to list tools: {error:?}");
             return failure_result(
-                RunFailure::new(format!("failed to list tools: {error:?}")),
-                Vec::new(),
+                RunFailure::new(reason.clone()),
+                vec![TraceEntry::list_tools_with_failure(reason)],
                 None,
                 None,
             );
@@ -66,12 +68,26 @@ pub async fn run_with_session(
 
     let tools = match validate_tools(tools, &config.schema) {
         Ok(tools) => tools,
-        Err(reason) => return failure_result(RunFailure::new(reason), Vec::new(), None, None),
+        Err(reason) => {
+            return failure_result(
+                RunFailure::new(reason),
+                prelude_trace.as_ref().clone(),
+                None,
+                None,
+            )
+        }
     };
 
     let validators = match build_output_validators(&tools) {
         Ok(validators) => validators,
-        Err(reason) => return failure_result(RunFailure::new(reason), Vec::new(), None, None),
+        Err(reason) => {
+            return failure_result(
+                RunFailure::new(reason),
+                prelude_trace.as_ref().clone(),
+                None,
+                None,
+            )
+        }
     };
 
     let strategy = match config.generator_mode {
@@ -90,12 +106,18 @@ pub async fn run_with_session(
     let strategy = match strategy {
         Ok(strategy) => strategy,
         Err(error) => {
-            return failure_result(RunFailure::new(error.to_string()), Vec::new(), None, None)
+            return failure_result(
+                RunFailure::new(error.to_string()),
+                prelude_trace.as_ref().clone(),
+                None,
+                None,
+            )
         }
     };
 
     let assertions = config.assertions.clone();
     let last_trace: Rc<RefCell<Vec<TraceEntry>>> = Rc::new(RefCell::new(Vec::new()));
+    last_trace.replace(prelude_trace.as_ref().clone());
     let last_coverage: Rc<RefCell<Option<CoverageReport>>> = Rc::new(RefCell::new(None));
     let last_failure = Rc::new(RefCell::new(FailureContext {
         failure: RunFailure::new(String::new()),
@@ -147,6 +169,11 @@ pub async fn run_with_session(
                                     let report = tracker.finalize();
                                     last_coverage.replace(Some(report.clone()));
                                     if let Err(failure) = validation {
+                                        let mut trace = trace;
+                                        attach_failure_reason(
+                                            &mut trace,
+                                            "coverage validation failed".to_string(),
+                                        );
                                         return Err(FailureContext {
                                             failure: coverage_failure(failure),
                                             trace,
@@ -172,10 +199,15 @@ pub async fn run_with_session(
                 });
             match execution {
                 Ok(trace) => {
-                    last_trace.replace(trace);
+                    let mut full_trace = prelude_trace.as_ref().clone();
+                    full_trace.extend(trace);
+                    last_trace.replace(full_trace);
                     Ok(())
                 }
-                Err(failure) => {
+                Err(mut failure) => {
+                    let mut full_trace = prelude_trace.as_ref().clone();
+                    full_trace.extend(failure.trace);
+                    failure.trace = full_trace;
                     last_failure.replace(failure.clone());
                     Err(TestCaseError::fail(failure.failure.reason.clone()))
                 }
@@ -234,10 +266,13 @@ async fn execute_sequence(
     sequence: &[ToolInvocation],
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
+    let mut full_trace = Vec::new();
     for invocation in sequence {
+        trace.push(TraceEntry::tool_call(invocation.clone()));
         let entry = match session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
             Err(error) => {
+                attach_failure_reason(&mut trace, format!("session error: {error:?}"));
                 return Err(FailureContext {
                     failure: RunFailure::new(format!("session error: {error:?}")),
                     trace,
@@ -245,9 +280,14 @@ async fn execute_sequence(
                 });
             }
         };
+        let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
+        let invocation = invocation.clone();
+        let response = response.expect("tool call response").clone();
+        full_trace.push(entry);
 
-        if let Some(reason) = apply_default_assertions(&entry, validators) {
-            trace.push(entry);
+        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace,
@@ -255,19 +295,19 @@ async fn execute_sequence(
             });
         }
 
-        if let Some(reason) = apply_response_assertions(assertions, &entry) {
-            trace.push(entry);
+        if let Some(reason) = apply_response_assertions(assertions, &invocation, &response) {
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace,
                 coverage: None,
             });
         }
-
-        trace.push(entry);
     }
 
-    if let Some(reason) = apply_sequence_assertions(assertions, &trace) {
+    if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
+        attach_failure_reason(&mut trace, reason.clone());
         return Err(FailureContext {
             failure: RunFailure::new(reason),
             trace,
@@ -309,8 +349,8 @@ impl<'a> CoverageTracker<'a> {
         *self.counts.entry(tool.to_string()).or_insert(0) += 1;
     }
 
-    fn mine_response(&mut self, entry: &TraceEntry) {
-        if let Some(structured) = entry.response.structured_content.as_ref() {
+    fn mine_response(&mut self, response: &CallToolResult) {
+        if let Some(structured) = response.structured_content.as_ref() {
             self.corpus.mine_structured_content(structured);
         }
     }
@@ -411,6 +451,15 @@ impl<'a> CoverageTracker<'a> {
                     }
                 }
                 CoverageRule::PercentCalled { min_percent } => {
+                    if !min_percent.is_finite() || *min_percent < 0.0 || *min_percent > 100.0 {
+                        return Err(CoverageValidationFailure {
+                            details: json!({
+                                "rule": "percent_called",
+                                "error": "min_percent_out_of_range",
+                                "min_percent": min_percent,
+                            }),
+                        });
+                    }
                     let denom = callable_tools.len() as f64;
                     if denom == 0.0 {
                         continue;
@@ -486,10 +535,13 @@ async fn execute_sequence_with_coverage(
     tracker: &mut CoverageTracker<'_>,
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
+    let mut full_trace = Vec::new();
     for invocation in sequence {
+        trace.push(TraceEntry::tool_call(invocation.clone()));
         let entry = match session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
             Err(error) => {
+                attach_failure_reason(&mut trace, format!("session error: {error:?}"));
                 return Err(FailureContext {
                     failure: RunFailure::new(format!("session error: {error:?}")),
                     trace,
@@ -498,13 +550,18 @@ async fn execute_sequence_with_coverage(
             }
         };
 
-        if !entry.response.is_error.unwrap_or(false) {
-            tracker.record_success(entry.invocation.name.as_ref());
-            tracker.mine_response(&entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
+        let invocation = invocation.clone();
+        let response = response.expect("tool call response").clone();
+        full_trace.push(entry);
+        if !response.is_error.unwrap_or(false) {
+            tracker.record_success(invocation.name.as_ref());
+            tracker.mine_response(&response);
         }
 
-        if let Some(reason) = apply_default_assertions(&entry, validators) {
-            trace.push(entry);
+        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace,
@@ -512,19 +569,19 @@ async fn execute_sequence_with_coverage(
             });
         }
 
-        if let Some(reason) = apply_response_assertions(assertions, &entry) {
-            trace.push(entry);
+        if let Some(reason) = apply_response_assertions(assertions, &invocation, &response) {
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace,
                 coverage: None,
             });
         }
-
-        trace.push(entry);
     }
 
-    if let Some(reason) = apply_sequence_assertions(assertions, &trace) {
+    if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
+        attach_failure_reason(&mut trace, reason.clone());
         return Err(FailureContext {
             failure: RunFailure::new(reason),
             trace,
@@ -536,19 +593,20 @@ async fn execute_sequence_with_coverage(
 }
 
 fn apply_default_assertions(
-    entry: &TraceEntry,
+    invocation: &ToolInvocation,
+    response: &CallToolResult,
     validators: &BTreeMap<String, jsonschema::Validator>,
 ) -> Option<String> {
-    if entry.response.is_error.unwrap_or(false) {
+    if response.is_error.unwrap_or(false) {
         return Some(format!(
             "tool '{}' returned an error response",
-            entry.invocation.name.as_ref()
+            invocation.name.as_ref()
         ));
     }
 
-    let tool_name = entry.invocation.name.as_ref();
+    let tool_name = invocation.name.as_ref();
     let validator = validators.get(tool_name)?;
-    let Some(structured) = entry.response.structured_content.as_ref() else {
+    let Some(structured) = response.structured_content.as_ref() else {
         return Some(format!(
             "tool '{tool_name}' returned no structured_content for output schema"
         ));
@@ -561,20 +619,22 @@ fn apply_default_assertions(
     None
 }
 
-fn apply_response_assertions(assertions: &AssertionSet, entry: &TraceEntry) -> Option<String> {
+fn apply_response_assertions(
+    assertions: &AssertionSet,
+    invocation: &ToolInvocation,
+    response: &CallToolResult,
+) -> Option<String> {
     if assertions.rules.is_empty() {
         return None;
     }
 
-    let input_payload = entry
-        .invocation
+    let input_payload = invocation
         .arguments
         .clone()
         .map(JsonValue::Object)
         .unwrap_or(JsonValue::Null);
-    let output_payload = serde_json::to_value(&entry.response).unwrap_or(JsonValue::Null);
-    let structured_payload = entry
-        .response
+    let output_payload = serde_json::to_value(response).unwrap_or(JsonValue::Null);
+    let structured_payload = response
         .structured_content
         .clone()
         .unwrap_or(JsonValue::Null);
@@ -590,14 +650,14 @@ fn apply_response_assertions(assertions: &AssertionSet, entry: &TraceEntry) -> O
             continue;
         };
         if let Some(tool) = &response_assertion.tool {
-            if tool != entry.invocation.name.as_ref() {
+            if tool != invocation.name.as_ref() {
                 continue;
             }
         }
         if let Some(reason) = evaluate_checks(
             &response_assertion.checks,
             &payloads,
-            Some(entry.invocation.name.as_ref()),
+            Some(invocation.name.as_ref()),
             false,
         ) {
             return Some(reason);
@@ -605,6 +665,18 @@ fn apply_response_assertions(assertions: &AssertionSet, entry: &TraceEntry) -> O
     }
 
     None
+}
+
+fn attach_response(trace: &mut [TraceEntry], response: CallToolResult) {
+    if let Some(TraceEntry::ToolCall { response: slot, .. }) = trace.last_mut() {
+        *slot = Some(response);
+    }
+}
+
+fn attach_failure_reason(trace: &mut [TraceEntry], reason: String) {
+    if let Some(TraceEntry::ToolCall { failure_reason, .. }) = trace.last_mut() {
+        *failure_reason = Some(reason);
+    }
 }
 
 fn apply_sequence_assertions(assertions: &AssertionSet, trace: &[TraceEntry]) -> Option<String> {
@@ -730,7 +802,7 @@ fn finalize_run_result(
     match run_result {
         Ok(()) => RunResult {
             outcome: RunOutcome::Success,
-            trace: last_trace.borrow().clone(),
+            trace: Vec::new(),
             minimized: None,
             coverage: last_coverage.borrow().clone(),
         },
@@ -794,13 +866,13 @@ mod tests {
         args: Option<JsonValue>,
         response: CallToolResult,
     ) -> TraceEntry {
-        TraceEntry {
-            invocation: ToolInvocation {
+        TraceEntry::tool_call_with_response(
+            ToolInvocation {
                 name: name.to_string().into(),
                 arguments: args.and_then(|value| value.as_object().cloned()),
             },
             response,
-        }
+        )
     }
 
     async fn connect_runner_transport(
@@ -895,7 +967,8 @@ mod tests {
             CallToolResult::error(vec![Content::text("boom")]),
         );
         let validators = BTreeMap::new();
-        let result = apply_default_assertions(&entry, &validators);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result = apply_default_assertions(invocation, response.expect("response"), &validators);
         assert!(result.is_some());
     }
 
@@ -914,7 +987,8 @@ mod tests {
         );
         let mut validators = BTreeMap::new();
         validators.insert("echo".to_string(), validator);
-        let result = apply_default_assertions(&entry, &validators);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result = apply_default_assertions(invocation, response.expect("response"), &validators);
         assert!(result.is_some());
     }
 
@@ -933,7 +1007,8 @@ mod tests {
         );
         let mut validators = BTreeMap::new();
         validators.insert("echo".to_string(), validator);
-        let result = apply_default_assertions(&entry, &validators);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result = apply_default_assertions(invocation, response.expect("response"), &validators);
         assert!(result.is_some());
     }
 
@@ -952,7 +1027,8 @@ mod tests {
         );
         let mut validators = BTreeMap::new();
         validators.insert("echo".to_string(), validator);
-        let result = apply_default_assertions(&entry, &validators);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result = apply_default_assertions(invocation, response.expect("response"), &validators);
         assert!(result.is_none());
     }
 
@@ -964,7 +1040,8 @@ mod tests {
             CallToolResult::structured(json!({ "status": "ok" })),
         );
         let validators = BTreeMap::new();
-        let result = apply_default_assertions(&entry, &validators);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result = apply_default_assertions(invocation, response.expect("response"), &validators);
         assert!(result.is_none());
     }
 
@@ -976,7 +1053,9 @@ mod tests {
             CallToolResult::success(vec![Content::text("ok")]),
         );
         let assertions = AssertionSet::default();
-        let result = apply_response_assertions(&assertions, &entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result =
+            apply_response_assertions(&assertions, invocation, response.expect("response"));
         assert!(result.is_none());
     }
 
@@ -997,7 +1076,9 @@ mod tests {
                 }],
             })],
         };
-        let result = apply_response_assertions(&assertions, &entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result =
+            apply_response_assertions(&assertions, invocation, response.expect("response"));
         assert!(result.is_some());
     }
 
@@ -1018,7 +1099,9 @@ mod tests {
                 }],
             })],
         };
-        let result = apply_response_assertions(&assertions, &entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result =
+            apply_response_assertions(&assertions, invocation, response.expect("response"));
         assert!(result.is_some());
     }
 
@@ -1039,7 +1122,9 @@ mod tests {
                 }],
             })],
         };
-        let result = apply_response_assertions(&assertions, &entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result =
+            apply_response_assertions(&assertions, invocation, response.expect("response"));
         assert!(result.is_none());
     }
 
@@ -1060,7 +1145,9 @@ mod tests {
                 }],
             })],
         };
-        let result = apply_response_assertions(&assertions, &entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result =
+            apply_response_assertions(&assertions, invocation, response.expect("response"));
         assert!(result.is_none());
     }
 
@@ -1080,7 +1167,9 @@ mod tests {
                 }],
             })],
         };
-        let result = apply_response_assertions(&assertions, &entry);
+        let (invocation, response) = entry.as_tool_call().expect("tool call");
+        let result =
+            apply_response_assertions(&assertions, invocation, response.expect("response"));
         assert!(result.is_none());
     }
 
@@ -1561,7 +1650,7 @@ mod tests {
     fn validate_tools_rejects_invalid_schema() {
         let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
         let error = validate_tools(vec![tool], &SchemaConfig::default()).expect_err("error");
-        assert!(error.contains("invalid schema"));
+        assert!(error.contains("invalid tools/list"));
     }
 
     #[test]
@@ -1582,7 +1671,8 @@ mod tests {
             CallToolResult::structured(json!({ "value": 2, "label": "ok" })),
         );
 
-        tracker.mine_response(&entry);
+        let (_, response) = entry.as_tool_call().expect("tool call entry");
+        tracker.mine_response(response.expect("response"));
 
         assert!(tracker.corpus.numbers().contains(&Number::from(2)));
         assert!(tracker.corpus.strings().contains(&"label".to_string()));
@@ -1599,7 +1689,8 @@ mod tests {
             CallToolResult::success(vec![Content::text("ok")]),
         );
 
-        tracker.mine_response(&entry);
+        let (_, response) = entry.as_tool_call().expect("tool call entry");
+        tracker.mine_response(response.expect("response"));
 
         assert!(tracker.corpus.numbers().is_empty());
         assert!(tracker.corpus.strings().is_empty());
@@ -1790,6 +1881,19 @@ mod tests {
             .validate(&[CoverageRule::percent_called(100.0)])
             .expect_err("expected failure");
         assert_eq!(error.details["rule"], "percent_called");
+    }
+
+    #[test]
+    fn coverage_tracker_rejects_invalid_percent_called() {
+        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+        let config = StateMachineConfig::default();
+        let tools = vec![tool];
+        let tracker = CoverageTracker::new(&tools, &config);
+        let error = tracker
+            .validate(&[CoverageRule::percent_called(101.0)])
+            .expect_err("expected failure");
+        assert_eq!(error.details["rule"], "percent_called");
+        assert_eq!(error.details["error"], "min_percent_out_of_range");
     }
 
     #[test]
@@ -2056,7 +2160,8 @@ mod tests {
             Some(json!({ "value": "ok" })),
             CallToolResult::success(vec![Content::text("ok")]),
         );
-        let args = entry.invocation.arguments.expect("arguments");
+        let (invocation, _) = entry.as_tool_call().expect("tool call");
+        let args = invocation.arguments.clone().expect("arguments");
         assert_eq!(args.get("value"), Some(&json!("ok")));
     }
 
@@ -2067,6 +2172,7 @@ mod tests {
             Some(json!(true)),
             CallToolResult::success(vec![Content::text("ok")]),
         );
-        assert!(entry.invocation.arguments.is_none());
+        let (invocation, _) = entry.as_tool_call().expect("tool call");
+        assert!(invocation.arguments.is_none());
     }
 }

@@ -41,6 +41,32 @@ fn stdio_command_reports_success() {
 }
 
 #[test]
+fn stdio_command_reports_success_with_state_machine_mode() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--state-machine-config",
+        r#"{"seed_numbers":[1],"seed_strings":["hello"]}"#,
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
+    assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
 fn test_server_exits_on_expectation_failure() {
     let Some(server) = test_server() else {
         return;

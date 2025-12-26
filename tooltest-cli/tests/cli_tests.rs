@@ -44,6 +44,18 @@ fn stdio_command_reports_success() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Outcome: success"));
+
+    let json_output = run_tooltest(&["--json", "stdio", "--command", server, "--env", "FOO=bar"]);
+
+    assert!(
+        json_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    let payload: serde_json::Value = serde_json::from_str(json_stdout.trim()).expect("json output");
+    assert_eq!(payload["outcome"]["status"], "success");
 }
 
 #[test]

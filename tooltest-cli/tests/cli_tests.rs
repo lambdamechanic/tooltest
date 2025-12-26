@@ -299,6 +299,7 @@ async fn run_http_failure_returns_exit_code_1() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::StateMachine,
+        json: false,
         state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -317,6 +318,7 @@ async fn run_invalid_sequence_len_returns_exit_code_2() {
         min_sequence_len: 0,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: None,
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -335,6 +337,7 @@ async fn run_invalid_state_machine_config_returns_exit_code_2() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: Some("not-json".to_string()),
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -353,6 +356,7 @@ async fn run_missing_state_machine_config_file_returns_exit_code_2() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
         command: TooltestCommand::Http {
             url: "http://127.0.0.1:0/mcp".to_string(),
@@ -374,6 +378,7 @@ async fn run_stdio_success_returns_exit_code_0() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        json: false,
         state_machine_config: None,
         command: TooltestCommand::Stdio {
             command: server.to_string(),

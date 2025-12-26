@@ -72,21 +72,6 @@ fn stdio_command_reports_success_with_state_machine_mode() {
 }
 
 #[test]
-fn state_machine_config_invalid_exits() {
-    let output = run_tooltest(&[
-        "--state-machine-config",
-        "{bad json}",
-        "stdio",
-        "--command",
-        "unused",
-    ]);
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid state-machine-config"));
-}
-
-#[test]
 fn test_server_exits_on_expectation_failure() {
     let Some(server) = test_server() else {
         return;

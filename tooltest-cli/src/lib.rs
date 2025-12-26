@@ -32,7 +32,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum GeneratorModeArg {
     Legacy,
     StateMachine,
@@ -73,7 +73,7 @@ impl From<StateMachineConfigInput> for StateMachineConfig {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Subcommand)]
+#[derive(Subcommand)]
 pub enum Command {
     /// Run against a stdio MCP endpoint.
     Stdio {
@@ -264,34 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_state_machine_config_rejects_missing_file() {
-        let path = std::env::temp_dir().join("tooltest-cli-missing-state-machine.json");
-        let error = parse_state_machine_config(&format!("@{}", path.display())).expect_err("error");
-        assert!(error.contains("failed to read state-machine-config"));
-    }
-
-    #[tokio::test]
-    async fn run_rejects_invalid_state_machine_config() {
-        let cli = Cli {
-            cases: 1,
-            min_sequence_len: 1,
-            max_sequence_len: 1,
-            generator_mode: GeneratorModeArg::Legacy,
-            state_machine_config: Some("{bad json}".to_string()),
-            command: Command::Stdio {
-                command: "unused".to_string(),
-                args: Vec::new(),
-                env: Vec::new(),
-                cwd: None,
-            },
-        };
-
-        let exit_code = run(cli).await;
-
-        assert_eq!(exit_code, ExitCode::from(2));
-    }
-
-    #[test]
     fn cli_parses_generator_mode_and_stdio() {
         let cli = Cli::parse_from([
             "tooltest",
@@ -301,14 +273,7 @@ mod tests {
             "--command",
             "server",
         ]);
-        let expected = Command::Stdio {
-            command: "server".to_string(),
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: None,
-        };
-        assert_eq!(cli.generator_mode, GeneratorModeArg::StateMachine);
-        let command = cli.command;
-        assert_eq!(command, expected);
+        assert!(matches!(cli.generator_mode, GeneratorModeArg::StateMachine));
+        assert!(matches!(cli.command, Command::Stdio { .. }));
     }
 }

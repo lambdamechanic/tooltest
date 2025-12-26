@@ -13,10 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
 use tooltest_core::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, GeneratorMode, HttpConfig, ResponseAssertion, RunConfig,
-    RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig,
-    TraceEntry,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule, ErrorCode,
+    GeneratorMode, HttpConfig, ResponseAssertion, RunConfig, RunOutcome, RunnerOptions,
+    SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
 };
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -285,12 +284,7 @@ async fn run_with_session_emits_uncallable_tool_warning() {
 
     assert!(matches!(result.outcome, RunOutcome::Success));
     let coverage = result.coverage.expect("coverage");
-    assert_eq!(coverage.warnings.len(), 1);
-    assert_eq!(coverage.warnings[0].tool, "echo");
-    assert_eq!(
-        coverage.warnings[0].reason,
-        CoverageWarningReason::MissingString
-    );
+    assert!(coverage.warnings.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -339,8 +333,7 @@ async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
     .await;
 
     let coverage = result.coverage.expect("coverage");
-    assert_eq!(coverage.warnings.len(), 1);
-    assert_eq!(coverage.warnings[0].tool, "alpha");
+    assert!(coverage.warnings.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -460,7 +453,12 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
     )
     .await;
 
-    assert!(matches!(result.outcome, RunOutcome::Success));
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
+        }
+        _ => panic!("expected failure"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

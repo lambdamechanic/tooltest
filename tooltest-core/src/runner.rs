@@ -6,13 +6,15 @@ use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 use jsonschema::{draft201909, draft202012, draft4, draft6, draft7, Validator};
-use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestError, TestRunner};
+use proptest::test_runner::{
+    Config as ProptestConfig, RngAlgorithm, TestCaseError, TestError, TestRng, TestRunner,
+};
 use rmcp::model::{CallToolResult, ListToolsResult, Tool};
 use serde_json::{json, Number, Value as JsonValue};
 
 use crate::generator::{
-    invocation_from_seed, state_machine_sequence_strategy, uncallable_reason, StateMachineSeed,
-    UncallableReason, ValueCorpus,
+    clear_reject_context, invocation_strategy_from_corpus, state_machine_sequence_strategy,
+    take_reject_context, uncallable_reason, StateMachineSequence, UncallableReason, ValueCorpus,
 };
 use crate::schema::parse_list_tools;
 use crate::{
@@ -176,7 +178,7 @@ pub async fn run_with_session(
         let predicate = config.predicate.clone();
         let min_len = *options.sequence_len.start();
         let aggregate_tracker = aggregate_tracker.clone();
-        move |seeds| {
+        move |sequence| {
             let execution: Result<StateMachineExecution, FailureContext> =
                 tokio::task::block_in_place(|| {
                     let last_coverage = last_coverage.clone();
@@ -188,7 +190,7 @@ pub async fn run_with_session(
                             &input_validators,
                             &output_validators,
                             &assertions,
-                            &seeds,
+                            &sequence,
                             &tools,
                             predicate.as_ref(),
                             &mut tracker,
@@ -670,6 +672,46 @@ fn coverage_failure(failure: CoverageValidationFailure) -> RunFailure {
     }
 }
 
+fn seed_bytes(mut value: u64) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    for chunk in bytes.chunks_exact_mut(8) {
+        chunk.copy_from_slice(&value.to_le_bytes());
+        value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    }
+    bytes
+}
+
+fn sample_invocation_for_seed(
+    tools: &[Tool],
+    predicate: Option<&crate::ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+    seed: u64,
+) -> Result<Option<ToolInvocation>, String> {
+    clear_reject_context();
+    let Some(strategy) =
+        invocation_strategy_from_corpus(tools, predicate, corpus, lenient_sourcing)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut runner = TestRunner::new_with_rng(
+        ProptestConfig {
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &seed_bytes(seed)),
+    );
+    let invocation = strategy.new_tree(&mut runner).map_err(|error| {
+        let mut reason = format!("failed to generate invocation: {error:?}");
+        if let Some(context) = take_reject_context() {
+            reason.push_str(&format!("; last rejection: {context}"));
+        }
+        reason
+    })?;
+    Ok(Some(invocation.current()))
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 async fn execute_sequence_with_coverage(
     session: &SessionDriver,
@@ -758,7 +800,7 @@ async fn execute_state_machine_sequence_with_coverage(
     input_validators: &BTreeMap<String, jsonschema::Validator>,
     output_validators: &BTreeMap<String, jsonschema::Validator>,
     assertions: &AssertionSet,
-    seeds: &[StateMachineSeed],
+    sequence: &StateMachineSequence,
     tools: &[Tool],
     predicate: Option<&crate::ToolPredicate>,
     tracker: &mut CoverageTracker<'_>,
@@ -769,12 +811,31 @@ async fn execute_state_machine_sequence_with_coverage(
     let mut full_trace = Vec::new();
     let mut invocations = Vec::new();
 
-    for seed in seeds {
-        let Some(invocation) =
-            invocation_from_seed(tools, predicate, tracker.corpus(), lenient_sourcing, *seed)
-        else {
-            break;
+    for transition in &sequence.transitions {
+        let invocation = match sample_invocation_for_seed(
+            tools,
+            predicate,
+            tracker.corpus(),
+            lenient_sourcing,
+            transition.seed,
+        ) {
+            Ok(Some(invocation)) => invocation,
+            Ok(None) => break,
+            Err(reason) => {
+                attach_failure_reason(&mut trace, reason.clone());
+                return Err(FailureContext {
+                    failure: RunFailure::new(reason),
+                    trace,
+                    invocations,
+                    coverage: None,
+                    corpus: None,
+                });
+            }
         };
+
+        if let Some(seen_counter) = sequence.seen_counter.as_ref() {
+            seen_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
 
         invocations.push(invocation.clone());
         validate_invocation_inputs(&invocation, input_validators);
@@ -1199,7 +1260,7 @@ async fn run_with_transport(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generator::{invocation_from_seed, StateMachineSeed};
+    use crate::generator::{StateMachineSequence, StateMachineTransition};
     use crate::{
         AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
         CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, SchemaConfig,
@@ -2062,13 +2123,16 @@ mod tests {
         let tools = vec![seed_tool.clone()];
         let input_validators = build_input_validators(&tools).expect("validators");
         let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
-        let seeds = vec![StateMachineSeed(1)];
+        let sequence = StateMachineSequence {
+            transitions: vec![StateMachineTransition { seed: 1 }],
+            seen_counter: None,
+        };
         let result = execute_state_machine_sequence_with_coverage(
             &session,
             &input_validators,
             &BTreeMap::new(),
             &AssertionSet::default(),
-            &seeds,
+            &sequence,
             &tools,
             None,
             &mut tracker,
@@ -2083,13 +2147,14 @@ mod tests {
             .strings()
             .iter()
             .any(|value| value == "text"));
-        let invocation = invocation_from_seed(
+        let invocation = sample_invocation_for_seed(
             &[use_tool],
             None,
             tracker.corpus(),
             false,
-            StateMachineSeed(2),
+            2,
         )
+        .expect("sample")
         .expect("callable");
         let args = invocation.arguments.as_ref().expect("args");
         let value = args.get("text").expect("text value");
@@ -2114,13 +2179,16 @@ mod tests {
         let tools = vec![tool.clone()];
         let input_validators = build_input_validators(&tools).expect("validators");
         let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
-        let seeds = vec![StateMachineSeed(3)];
+        let sequence = StateMachineSequence {
+            transitions: vec![StateMachineTransition { seed: 3 }],
+            seen_counter: None,
+        };
         let result = execute_state_machine_sequence_with_coverage(
             &session,
             &input_validators,
             &BTreeMap::new(),
             &AssertionSet::default(),
-            &seeds,
+            &sequence,
             &tools,
             None,
             &mut tracker,

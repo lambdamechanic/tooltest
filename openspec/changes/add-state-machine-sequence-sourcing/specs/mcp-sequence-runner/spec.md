@@ -19,12 +19,16 @@ The system SHALL generate tool invocation sequences using the state-machine gene
 - **THEN** the system uses the state-machine generator without exposing a legacy mode toggle
 
 ## ADDED Requirements
-### Requirement: State-Machine Sequence Generation
-The system SHALL support a proptest-state-machine generator that produces sequences of MCP tool calls against a configured MCP session.
+### Requirement: State-Machine Output Mining
+The system SHALL mine structured tool outputs during state-machine runs and update the state corpus used for subsequent invocation generation.
 
-#### Scenario: State-machine generator is enabled
-- **WHEN** a run is configured to use the state-machine generator
-- **THEN** tool invocations are produced by a proptest-state-machine model
+#### Scenario: Tool output updates corpus
+- **WHEN** a tool response returns structured output containing strings or numbers
+- **THEN** subsequent state-machine steps may use those mined values as inputs
+
+#### Scenario: Tool output keys are mined
+- **WHEN** a tool response returns structured output containing object keys
+- **THEN** the keys are mined into the state corpus as strings
 
 #### Scenario: Tool selection per step
 - **WHEN** generating each step in the sequence
@@ -34,50 +38,12 @@ The system SHALL support a proptest-state-machine generator that produces sequen
 - **WHEN** a tool response adds values to the corpus
 - **THEN** subsequent steps consider newly callable tools during selection
 
-#### Scenario: No callable tools ends the run
-- **WHEN** no callable tools remain for the next step
-- **THEN** the state-machine run ends without error
+#### Scenario: Nested outputs are mined
+- **WHEN** a tool response returns structured output with nested arrays or objects
+- **THEN** strings, numbers, and keys are mined recursively from nested values
 
-### Requirement: Response-Sourced Value Corpus
-The system SHALL maintain a shared corpus of numbers and strings that is seeded by caller-provided values and updated after each successful tool call by mining numbers and strings from MCP `structured_content` responses, including all object keys and values at any nesting depth, and storing integers only when the numeric value is integral.
-
-#### Scenario: Seeded values available at start
-- **WHEN** the caller provides initial numbers and strings
-- **THEN** the corpus includes those values before any tool call is generated
-
-#### Scenario: Response values extend the corpus
-- **WHEN** a successful tool response includes numbers or strings in `structured_content`
-- **THEN** those values are added to the corpus for later generations
-
-#### Scenario: Response keys extend the corpus
-- **WHEN** a successful tool response includes object keys in `structured_content`
-- **THEN** those keys are added to the string corpus for later generations
-
-#### Scenario: Integer corpus only stores integral numbers
-- **WHEN** a numeric value mined from `structured_content` is not integral
-- **THEN** it is not added to the integer corpus
-
-#### Scenario: Error responses do not extend the corpus
-- **WHEN** a tool response is an error
-- **THEN** its `structured_content` is not mined into the corpus
-
-### Requirement: Corpus-Only Number/String Generation
-The system SHALL generate all numbers and strings used in tool inputs exclusively from the shared corpus, selecting integer values only from an integer corpus when an input schema requires `integer`.
-
-#### Scenario: Tool input generation uses corpus values
-- **WHEN** a generated tool input requires a number or string
-- **THEN** the value is selected from the corpus instead of being generated randomly
-
-#### Scenario: Integer inputs use integer corpus
-- **WHEN** a generated tool input requires an integer
-- **THEN** the value is selected from the integer corpus
-
-### Requirement: Deterministic Corpus Indexing
-The system SHALL store corpus values with set semantics and deterministic, insertion-ordered indexing to support stable selection by index.
-
-#### Scenario: Duplicate values are de-duplicated
-- **WHEN** a mined number or string already exists in the corpus
-- **THEN** the corpus does not add a duplicate entry
+### Requirement: Deterministic Corpus Ordering
+The system SHALL preserve deterministic insertion ordering for corpus values.
 
 #### Scenario: Stable index selection
 - **WHEN** the state-machine selects a corpus value by index
@@ -90,6 +56,50 @@ The system SHALL store corpus values with set semantics and deterministic, inser
 #### Scenario: Deterministic traversal for mining
 - **WHEN** mining `structured_content` to extend the corpus
 - **THEN** traversal uses array index order and lexicographically sorted object keys to produce deterministic insertion ordering
+
+### Requirement: Uniform State Sourcing
+The system SHALL select values uniformly from the deduped state corpus for the required primitive type when generating state-machine inputs.
+
+#### Scenario: Uniform selection for string inputs
+- **WHEN** multiple strings are available in the state corpus
+- **THEN** state-machine generation selects among them with uniform probability
+
+### Requirement: State-Aware Callability
+The system SHALL recompute callable tools for each state-machine step based on the current state corpus and tool input schemas.
+
+#### Scenario: Tool becomes callable after mining
+- **WHEN** a tool requires a value that is missing before a step
+- **AND** a prior tool response mines that value into the state
+- **THEN** the tool becomes callable in later steps
+
+#### Scenario: Lenient sourcing bypasses missing corpus values
+- **WHEN** lenient sourcing is enabled and a required value is missing from the state corpus
+- **THEN** the generator may fall back to schema-based value generation for that input
+
+### Requirement: Sequential State-Machine Generation
+The system SHALL generate state-machine sequences using explicit state transitions and the current state corpus to select tools and inputs.
+
+#### Scenario: Sequence terminates when no tools are callable
+- **WHEN** no tools are callable under the current state
+- **THEN** the generator yields an empty tail for the remaining steps
+
+#### Scenario: Minimum length cannot be satisfied
+- **WHEN** the configured minimum sequence length cannot be reached due to no callable tools
+- **THEN** the generator fails the run
+
+### Requirement: State Reference Resolution
+The system SHALL resolve state references into concrete invocation arguments before issuing tool calls.
+
+#### Scenario: Resolved invocation matches schema
+- **WHEN** a tool invocation is generated from state references
+- **THEN** the resolved arguments MUST satisfy the tool input schema
+
+### Requirement: Inline Value Generation
+The system SHALL generate boolean, null, and enum inputs directly from schema constraints without requiring mined state values.
+
+#### Scenario: Enum values are generated without mining
+- **WHEN** a tool input uses an enum schema constraint
+- **THEN** state-machine generation selects from the enum values without requiring prior tool outputs
 
 ### Requirement: Callable Tool Eligibility
 The system SHALL treat a tool as callable only when all required inputs can be generated, using corpus-derived values for numbers and strings and existing schema-driven generation for other types.
@@ -109,17 +119,6 @@ The system SHALL treat a tool as callable only when all required inputs can be g
 #### Scenario: Non-number/string required fields use schema generators
 - **WHEN** a required field is not a number or string
 - **THEN** the generator uses existing schema-derived strategies to populate it
-
-### Requirement: Unified Test Entry Point
-The system SHALL provide a single entry point for tests that allows callers to choose between the existing generator and the state-machine generator.
-
-#### Scenario: Caller selects generator mode
-- **WHEN** a caller specifies the generator mode
-- **THEN** the run uses the selected generator for sequence generation
-
-#### Scenario: Default generator mode is legacy
-- **WHEN** a caller does not specify a generator mode
-- **THEN** the run uses the existing generator by default
 
 ### Requirement: Tool Coverage Reporting
 The system SHALL track tool call counts during state-machine runs based on successful tool responses and report coverage warnings for tools that could not be called, excluding tools outside configured allowlists or inside configured blocklists.

@@ -2,18 +2,40 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
-use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRunner};
 use proptest_state_machine::ReferenceStateMachine;
 use regex::Regex;
 use rmcp::model::{JsonObject, Tool};
 use serde_json::{Number, Value as JsonValue};
 
 use crate::{StateMachineConfig, ToolInvocation, ToolPredicate};
+
+thread_local! {
+    static LAST_REJECT_CONTEXT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn clear_reject_context() {
+    LAST_REJECT_CONTEXT.with(|context| {
+        *context.borrow_mut() = None;
+    });
+}
+
+pub(crate) fn take_reject_context() -> Option<String> {
+    LAST_REJECT_CONTEXT.with(|context| context.borrow_mut().take())
+}
+
+fn record_reject_context(context: String) {
+    LAST_REJECT_CONTEXT.with(|stored| {
+        *stored.borrow_mut() = Some(context);
+    });
+}
 
 /// Errors emitted while generating tool invocations from schema data.
 #[derive(Debug)]
@@ -76,8 +98,25 @@ pub(crate) struct ValueCorpus {
     string_set: HashSet<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct StateMachineSeed(pub u64);
+#[derive(Clone, Debug)]
+pub(crate) struct StateMachineTransition {
+    pub(crate) seed: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StateMachineSequence {
+    pub(crate) transitions: Vec<StateMachineTransition>,
+    pub(crate) seen_counter: Option<Arc<AtomicUsize>>,
+}
+
+impl StateMachineSequence {
+    fn empty() -> Self {
+        Self {
+            transitions: Vec::new(),
+            seen_counter: None,
+        }
+    }
+}
 
 impl ValueCorpus {
     pub(crate) fn seed_numbers<I>(&mut self, values: I)
@@ -265,52 +304,85 @@ pub(crate) fn invocation_strategy(
     Ok(union)
 }
 
+/// Builds a strategy that yields sequences of tool invocations.
+pub(crate) fn invocation_sequence_strategy(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    len_range: std::ops::RangeInclusive<usize>,
+) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
+    let invocation = invocation_strategy(tools, predicate)?;
+    Ok(proptest::collection::vec(invocation, len_range).boxed())
+}
+
+pub(crate) fn invocation_strategy_from_corpus(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+) -> Result<Option<BoxedStrategy<ToolInvocation>>, InvocationError> {
+    let mut strategies = Vec::new();
+    for tool in tools {
+        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus, lenient_sourcing) {
+            strategies.push(strategy.boxed());
+        }
+    }
+
+    if strategies.is_empty() {
+        return Ok(None);
+    }
+
+    let union = proptest::strategy::Union::new(strategies).boxed();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    if union.new_tree(&mut runner).is_err() {
+        return Err(InvocationError::NoEligibleTools);
+    }
+    Ok(Some(union))
+}
+
+struct StateMachineSeedModel;
+
+impl ReferenceStateMachine for StateMachineSeedModel {
+    type State = ();
+    type Transition = StateMachineTransition;
+
+    fn init_state() -> BoxedStrategy<Self::State> {
+        Just(()).boxed()
+    }
+
+    fn transitions(_state: &Self::State) -> BoxedStrategy<Self::Transition> {
+        any::<u64>()
+            .prop_map(|seed| StateMachineTransition { seed })
+            .boxed()
+    }
+
+    fn apply(state: Self::State, _transition: &Self::Transition) -> Self::State {
+        state
+    }
+}
+
 pub(crate) fn state_machine_sequence_strategy(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
     config: &StateMachineConfig,
     len_range: std::ops::RangeInclusive<usize>,
-) -> Result<BoxedStrategy<Vec<StateMachineSeed>>, InvocationError> {
+) -> Result<BoxedStrategy<StateMachineSequence>, InvocationError> {
     validate_state_machine_tools(tools)?;
-    let _ = (predicate, config);
-    Ok(SeedStateMachine::sequential_strategy(len_range)
-        .prop_map(|(_, transitions, _)| transitions)
-        .boxed())
-}
-
-pub(crate) fn invocation_from_seed(
-    tools: &[Tool],
-    predicate: Option<&ToolPredicate>,
-    corpus: &ValueCorpus,
-    lenient_sourcing: bool,
-    seed: StateMachineSeed,
-) -> Option<ToolInvocation> {
-    let mut strategies = Vec::new();
-    for tool in tools {
-        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus, lenient_sourcing) {
-            strategies.push(strategy);
-        }
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_numbers(config.seed_numbers.clone());
+    corpus.seed_strings(config.seed_strings.clone());
+    if invocation_strategy_from_corpus(tools, predicate, &corpus, config.lenient_sourcing)?
+        .is_none()
+    {
+        return Ok(Just(StateMachineSequence::empty()).boxed());
     }
 
-    if strategies.is_empty() {
-        return None;
-    }
-
-    let union = proptest::strategy::Union::new(strategies).boxed();
-    let mut seed_bytes = [0u8; 32];
-    seed_bytes[..8].copy_from_slice(&seed.0.to_le_bytes());
-    let mut runner = TestRunner::new_with_rng(
-        ProptestConfig {
-            cases: 1,
-            failure_persistence: None,
-            ..ProptestConfig::default()
-        },
-        proptest::test_runner::TestRng::from_seed(RngAlgorithm::default(), &seed_bytes),
-    );
-    match union.new_tree(&mut runner) {
-        Ok(tree) => Some(tree.current()),
-        Err(_) => None,
-    }
+    let strategy = StateMachineSeedModel::sequential_strategy(len_range)
+        .prop_map(|(_, transitions, seen_counter)| StateMachineSequence {
+            transitions,
+            seen_counter,
+        })
+        .boxed();
+    Ok(strategy)
 }
 
 /// Builds a strategy that yields tool invocations with inputs that violate exactly one schema rule.
@@ -1156,25 +1228,6 @@ pub(crate) fn uncallable_reason(
 }
 
 #[derive(Clone, Debug)]
-struct SeedStateMachine;
-
-impl ReferenceStateMachine for SeedStateMachine {
-    type State = ();
-    type Transition = StateMachineSeed;
-
-    fn init_state() -> BoxedStrategy<Self::State> {
-        Just(()).boxed()
-    }
-
-    fn transitions(_state: &Self::State) -> BoxedStrategy<Self::Transition> {
-        any::<u64>().prop_map(StateMachineSeed).boxed()
-    }
-
-    fn apply(state: Self::State, _transition: &Self::Transition) -> Self::State {
-        state
-    }
-}
-
 fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
     let root = JsonValue::Object(tool.input_schema.as_ref().clone());
     input_object_strategy_for_schema(tool.input_schema.as_ref(), &root, tool)
@@ -3124,7 +3177,7 @@ mod tests {
     }
 
     #[test]
-    fn invocation_from_seed_returns_none_when_predicate_rejects_all() {
+    fn invocation_strategy_from_corpus_rejects_when_predicate_rejects_all() {
         let tool = tool_with_schema(
             "echo",
             json!({
@@ -3134,14 +3187,8 @@ mod tests {
         );
         let predicate: ToolPredicate = Arc::new(|_name, _input| false);
         let corpus = ValueCorpus::default();
-        let invocation = invocation_from_seed(
-            &[tool],
-            Some(&predicate),
-            &corpus,
-            false,
-            StateMachineSeed(1),
-        );
-        assert!(invocation.is_none());
+        let result = invocation_strategy_from_corpus(&[tool], Some(&predicate), &corpus, false);
+        assert!(matches!(result, Err(InvocationError::NoEligibleTools)));
     }
 
     #[test]

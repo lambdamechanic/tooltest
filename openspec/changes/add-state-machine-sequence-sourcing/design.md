@@ -24,9 +24,11 @@ Tooltest currently generates tool invocations using proptest strategies derived 
   - Rationale: Matches the expectation that all discoverable strings/numbers are available for future calls.
 - Decision: Select values uniformly from the deduped corpus using proptest strategy selection.
   - Rationale: Keeps selection unbiased while relying on proptest's standard distribution.
+- Decision: Recompute callable tools after each step using the updated corpus (Sequential state-machine strategy).
+  - Rationale: Tool callability depends on values discovered during prior steps, so selection must reflect the current corpus instead of the initial seed.
 - Decision: Remove the legacy generator and generator mode selection so the run entry point always uses the state-machine generator.
   - Rationale: Eliminates split behavior and improves coherency by enforcing a single generator.
-- Decision: Provide optional coverage validation hooks only for the state-machine generator mode, with coverage counts based on successful tool responses and exclude tools outside allowlists/inside blocklists.
+- Decision: Provide optional coverage validation hooks only for the state-machine generator, with coverage counts based on successful tool responses and exclude tools outside allowlists/inside blocklists.
   - Rationale: Coverage is tied to the state-driven corpus behavior and should not alter existing generator behavior.
 - Decision: Define tool callability based on required inputs being satisfiable by corpus values for numbers/strings and existing schema generators for other types, with lenient fallback when configured.
   - Rationale: Clarifies uncallable tool warnings while preserving existing schema-driven generation for non-corpus types and allowing opt-in fallback.

@@ -1,21 +1,62 @@
 # tooltest
 
-## CLI
+**Conformance testing for MCP servers — fast enough for the CLI, solid enough for CI.**
 
-The `tooltest` binary wraps `tooltest-core` with stdio/HTTP runners.
+`tooltest` runs your MCP server like a real client/agent would (connect → list tools → call tools) and reports **protocol / schema / runtime** issues in a way that’s easy to act on.
+
+Use it to:
+- **sanity-check locally** while you’re developing
+- **gate releases in CI** with repeatable integration tests
+- **turn failures into fixes** by handing the report to a coding agent
+
+---
+
+## Quick start
+
+### Install
 
 ```bash
 cargo install --path tooltest-cli
-tooltest stdio --command ./mcp-server --arg --foo --env FOO=bar --cwd /tmp
-tooltest http --url http://127.0.0.1:8080/mcp --auth-token "Bearer token"
 ```
 
-Output is human-readable on stdout by default; pass `--json` for JSON output (including error messages). Exit codes are:
-- `0` on success
-- `1` on run failure
-- `2` on argument/validation errors
+### Test a stdio MCP server
 
-### CLI examples
+```bash
+tooltest stdio --command ./path/to/your-mcp-server
+# optional: --arg ..., --env KEY=VALUE, --cwd /somewhere
+```
+
+### Test a Streamable HTTP MCP endpoint
+
+```bash
+tooltest http --url http://127.0.0.1:8080/mcp
+# optional: --auth-token "Bearer …"
+```
+
+### Output
+
+Human-readable output on stdout by default; pass `--json` for JSON output (including error messages).
+
+### Exit codes
+
+- `0` = success
+- `1` = run failure
+- `2` = argument/validation error
+
+### Use it in CI / tests
+
+Treat tooltest as an integration test: run it against your server build, and fail the job if it reports problems.
+
+Example (shell):
+
+```bash
+set -euo pipefail
+tooltest stdio --command ./target/release/my-mcp-server
+```
+
+---
+
+## CLI examples
 
 Simple run against a hosted MCP endpoint:
 
@@ -35,6 +76,8 @@ cargo run -p tooltest-cli --bin tooltest -- \
   stdio --command ./target/debug/my-mcp-server
 ```
 
+---
+
 ## Hosted MCP integration tests
 
 By default the hosted MCP integration test runs and exercises the three public MCP servers used for validation. To skip it:
@@ -43,6 +86,8 @@ By default the hosted MCP integration test runs and exercises the three public M
 SKIP_HOSTED_MCP_TESTS=1 cargo test -p tooltest-core --test hosted_mcp_tests
 ```
 
+---
+
 ## Verbose rmcp tracing
 
 The tests install a tracing subscriber that emits to stderr. Use `RUST_LOG` plus `--nocapture` to see the full interaction.
@@ -50,6 +95,8 @@ The tests install a tracing subscriber that emits to stderr. Use `RUST_LOG` plus
 ```bash
 RUST_LOG=rmcp=trace cargo test -p tooltest-core --test hosted_mcp_tests -- --nocapture
 ```
+
+---
 
 ## External Rust test example
 
@@ -78,3 +125,62 @@ async fn calls_hosted_tool() {
     assert_eq!(trace.response.is_error, Some(false));
 }
 ```
+
+---
+
+## Agent-assisted “fix loop” prompt examples
+
+Pick one of these, paste it into Codex/Claude (with repo access), and let it iterate until tooltest is clean.
+
+### Codex prompt
+
+```text
+You are working in this repository.
+Goal: make the repository’s MCP server(s) conform to the MCP spec as exercised by tooltest.
+
+Figure out how to run the MCP server from this repo (stdio or HTTP).
+
+Run tooltest against it (examples below).
+
+When tooltest reports failures, fix the underlying issues in the smallest reasonable patch.
+
+Re-run tooltest and repeat until it exits 0.
+
+Don’t rename tools or change schemas unless required; prefer backward-compatible fixes.
+
+Add/adjust tests if needed.
+
+Commands (choose the right one):
+
+stdio: tooltest stdio --command "<command that starts the repo’s MCP server>"
+
+http: tooltest http --url "<server mcp url>"
+
+Return a short summary of what you changed and why, plus the final passing tooltest output snippet.
+```
+
+### Claude prompt
+
+```text
+You have access to this repo and can run commands.
+Please make the MCP server(s) in this repository pass tooltest with zero failures.
+
+Process:
+
+Identify how to start the MCP server from the repo (stdio or streamable HTTP).
+
+Run tooltest against it.
+
+Fix the issues reported (protocol violations, tool schema mismatches, error handling, etc.).
+
+Re-run tooltest until it exits successfully.
+
+Use minimal, targeted changes. Avoid breaking tool names/schemas unless necessary.
+```
+
+---
+
+## Tips
+
+- If you want deeper coverage, increase the number of generated cases / run modes (when available).
+- If a failure is intermittent, keep the smallest reproduction from the report and turn it into a regression test.

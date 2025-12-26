@@ -1,6 +1,8 @@
 use std::fs;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitCode, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tooltest_cli::{run, Cli, Command as TooltestCommand, GeneratorModeArg};
 
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
@@ -233,4 +235,99 @@ fn http_command_accepts_auth_token() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
     assert_eq!(payload["outcome"]["status"], "failure");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_http_failure_returns_exit_code_1() {
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 1,
+        max_sequence_len: 1,
+        generator_mode: GeneratorModeArg::StateMachine,
+        state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
+        command: TooltestCommand::Http {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        },
+    };
+
+    let code = run(cli).await;
+    assert_eq!(code, ExitCode::from(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_invalid_sequence_len_returns_exit_code_2() {
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 0,
+        max_sequence_len: 1,
+        generator_mode: GeneratorModeArg::Legacy,
+        state_machine_config: None,
+        command: TooltestCommand::Http {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        },
+    };
+
+    let code = run(cli).await;
+    assert_eq!(code, ExitCode::from(2));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_invalid_state_machine_config_returns_exit_code_2() {
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 1,
+        max_sequence_len: 1,
+        generator_mode: GeneratorModeArg::Legacy,
+        state_machine_config: Some("not-json".to_string()),
+        command: TooltestCommand::Http {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        },
+    };
+
+    let code = run(cli).await;
+    assert_eq!(code, ExitCode::from(2));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_missing_state_machine_config_file_returns_exit_code_2() {
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 1,
+        max_sequence_len: 1,
+        generator_mode: GeneratorModeArg::Legacy,
+        state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
+        command: TooltestCommand::Http {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        },
+    };
+
+    let code = run(cli).await;
+    assert_eq!(code, ExitCode::from(2));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_stdio_success_returns_exit_code_0() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 1,
+        max_sequence_len: 1,
+        generator_mode: GeneratorModeArg::Legacy,
+        state_machine_config: None,
+        command: TooltestCommand::Stdio {
+            command: server.to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        },
+    };
+
+    let code = run(cli).await;
+    assert_eq!(code, ExitCode::SUCCESS);
 }

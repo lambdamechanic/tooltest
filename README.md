@@ -15,6 +15,26 @@ Output is JSON on stdout. Exit codes are:
 - `1` on run failure
 - `2` on argument/validation errors
 
+### CLI examples
+
+Simple run against a hosted MCP endpoint:
+
+```bash
+cargo run -p tooltest-cli --bin tooltest -- \
+  --generator-mode state-machine \
+  --cases 100 \
+  http --url https://pymcp.app.lambdamechanic.com/kev/mcp
+```
+
+Simple run against a local stdio MCP server:
+
+```bash
+cargo run -p tooltest-cli --bin tooltest -- \
+  --generator-mode state-machine \
+  --cases 100 \
+  stdio --command ./target/debug/my-mcp-server
+```
+
 ## Hosted MCP integration tests
 
 By default the hosted MCP integration test runs and exercises the three public MCP servers used for validation. To skip it:

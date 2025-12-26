@@ -497,7 +497,7 @@ async fn run_with_session_excludes_error_responses_from_coverage() {
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     let coverage = result.coverage.expect("coverage");
-    assert_eq!(coverage.counts.get("echo"), None);
+    assert_eq!(coverage.counts.get("echo").copied(), Some(0));
 }
 
 #[tokio::test(flavor = "multi_thread")]

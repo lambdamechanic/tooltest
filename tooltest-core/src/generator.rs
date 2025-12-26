@@ -228,17 +228,28 @@ pub(crate) fn state_machine_sequence_strategy(
     corpus.seed_strings(config.seed_strings.clone());
 
     let mut strategies = Vec::new();
+    let mut has_callable = false;
     for tool in tools {
-        if let Some(strategy) = invocation_from_corpus(tool, predicate, &corpus) {
-            strategies.push(strategy);
+        match invocation_from_corpus(tool, predicate, &corpus) {
+            Some(strategy) => {
+                has_callable = true;
+                strategies.push(strategy.prop_map(Some).boxed());
+            }
+            None => {
+                strategies.push(Just(None).boxed());
+            }
         }
     }
 
-    if strategies.is_empty() {
+    if strategies.is_empty() || !has_callable {
         return Ok(Just(Vec::new()).boxed());
     }
 
-    let invocation = proptest::strategy::Union::new(strategies).boxed();
+    let invocation = proptest::strategy::Union::new(strategies)
+        .prop_filter_map("tool inputs not callable with current corpus", |value| {
+            value
+        })
+        .boxed();
     Ok(proptest::collection::vec(invocation, len_range).boxed())
 }
 

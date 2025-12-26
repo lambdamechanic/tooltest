@@ -326,6 +326,8 @@ struct CoverageTracker<'a> {
     blocklist: Option<Vec<String>>,
 }
 
+const LIST_TOOLS_COUNT_LABEL: &str = "list_tools";
+
 #[derive(Clone, Debug)]
 struct CoverageValidationFailure {
     details: JsonValue,
@@ -356,10 +358,19 @@ impl<'a> CoverageTracker<'a> {
     }
 
     fn finalize(self) -> CoverageReport {
-        let warnings = self.build_warnings();
+        let mut tracker = self;
+        tracker.ensure_counts();
+        tracker.counts.insert(LIST_TOOLS_COUNT_LABEL.to_string(), 1);
+        let warnings = tracker.build_warnings();
         CoverageReport {
-            counts: self.counts,
+            counts: tracker.counts,
             warnings,
+        }
+    }
+
+    fn ensure_counts(&mut self) {
+        for tool in self.tools {
+            self.counts.entry(tool.name.to_string()).or_insert(0);
         }
     }
 

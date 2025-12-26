@@ -297,9 +297,9 @@ fn invocation_strategy_errors_on_invalid_string_length_bounds() {
 }
 
 #[test]
-fn invocation_strategy_errors_on_unsupported_pattern() {
+fn invocation_strategy_allows_anchored_pattern() {
     let tool = tool_with_schema_value(
-        "invalid",
+        "anchored",
         json!({
             "type": "object",
             "properties": {
@@ -307,11 +307,36 @@ fn invocation_strategy_errors_on_unsupported_pattern() {
             }
         }),
     );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let regex = regex::Regex::new("^a+$").expect("regex");
+    let samples = sample_many(strategy, 32);
+    let all_match = samples.iter().all(|invocation| {
+        invocation
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("value"))
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| regex.is_match(value))
+    });
+    assert!(all_match, "expected all values to satisfy anchored pattern");
+}
+
+#[test]
+fn invocation_strategy_errors_on_boundary_pattern() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "\\bfoo\\b" }
+            }
+        }),
+    );
     let error = invocation_strategy(&[tool], None).expect_err("error");
     match error {
         InvocationError::UnsupportedSchema { tool, reason } => {
             assert_eq!(tool, "invalid");
-            assert!(reason.starts_with("pattern must be a valid regex:"));
+            assert!(reason.contains("word boundary"));
         }
         _ => panic!("expected UnsupportedSchema"),
     }
@@ -780,7 +805,7 @@ fn invocation_strategy_errors_on_property_missing_type() {
     match error {
         InvocationError::UnsupportedSchema { tool, reason } => {
             assert_eq!(tool, "bad");
-            assert_eq!(reason, "schema type must be a string");
+            assert_eq!(reason, "schema type must be a string or array of strings");
         }
         _ => panic!("expected UnsupportedSchema"),
     }
@@ -841,9 +866,10 @@ fn invocation_strategy_supports_scalar_types_and_structures() {
                 "num": { "type": "number" },
                 "int": { "type": "integer" },
                 "flag": { "type": "boolean" },
+                "empty": { "type": "null" },
                 "list": { "type": "array", "items": { "const": 2 } },
                 "object": { "type": "object", "properties": { "inner": { "const": true } } },
-                "empty": { "type": "object" }
+                "map": { "type": "object" }
             }
         }),
     );
@@ -856,9 +882,60 @@ fn invocation_strategy_supports_scalar_types_and_structures() {
     assert!(matches!(args.get("num"), Some(JsonValue::Number(_))));
     assert!(matches!(args.get("int"), Some(JsonValue::Number(_))));
     assert!(matches!(args.get("flag"), Some(JsonValue::Bool(_))));
+    assert!(matches!(args.get("empty"), Some(JsonValue::Null)));
     assert!(matches!(args.get("list"), Some(JsonValue::Array(_))));
     assert!(matches!(args.get("object"), Some(JsonValue::Object(_))));
-    assert!(matches!(args.get("empty"), Some(JsonValue::Object(_))));
+    assert!(matches!(args.get("map"), Some(JsonValue::Object(_))));
+}
+
+#[test]
+fn invocation_strategy_supports_anyof_union() {
+    let tool = tool_with_schema_value(
+        "union",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [
+                        { "type": "string", "minLength": 2 },
+                        { "type": "number", "minimum": 2.0 }
+                    ]
+                }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.expect("arguments");
+    let value = args.get("value").expect("value");
+    let schema = json!({
+        "anyOf": [
+            { "type": "string", "minLength": 2 },
+            { "type": "number", "minimum": 2.0 }
+        ]
+    });
+    let validator = draft202012::new(&schema).expect("schema compile");
+    assert!(validator.validate(value).is_ok());
+}
+
+#[test]
+fn invocation_strategy_supports_nullable_type_union() {
+    let tool = tool_with_schema_value(
+        "nullable",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": ["string", "null"], "minLength": 1 }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.expect("arguments");
+    let value = args.get("value").expect("value");
+    let schema = json!({ "type": ["string", "null"], "minLength": 1 });
+    let validator = draft202012::new(&schema).expect("schema compile");
+    assert!(validator.validate(value).is_ok());
 }
 
 #[test]
@@ -945,7 +1022,7 @@ fn invocation_strategy_errors_on_nested_property_missing_type() {
     match error {
         InvocationError::UnsupportedSchema { tool, reason } => {
             assert_eq!(tool, "bad");
-            assert_eq!(reason, "schema type must be a string");
+            assert_eq!(reason, "schema type must be a string or array of strings");
         }
         _ => panic!("expected UnsupportedSchema"),
     }
@@ -958,7 +1035,7 @@ fn invocation_strategy_errors_on_unsupported_schema_type() {
         json!({
             "type": "object",
             "properties": {
-                "value": { "type": "null" }
+                "value": { "type": "unknown" }
             }
         }),
     );
@@ -966,20 +1043,20 @@ fn invocation_strategy_errors_on_unsupported_schema_type() {
     match error {
         InvocationError::UnsupportedSchema { tool, reason } => {
             assert_eq!(tool, "bad");
-            assert_eq!(reason, "unsupported schema type 'null'");
+            assert_eq!(reason, "unsupported schema type 'unknown'");
         }
         _ => panic!("expected UnsupportedSchema"),
     }
 }
 
 #[test]
-fn invocation_strategy_errors_on_array_item_unsupported_schema_type() {
+fn invocation_strategy_errors_on_anyof_empty() {
     let tool = tool_with_schema_value(
         "bad",
         json!({
             "type": "object",
             "properties": {
-                "items": { "type": "array", "items": { "type": "null" } }
+                "value": { "anyOf": [] }
             }
         }),
     );
@@ -987,7 +1064,73 @@ fn invocation_strategy_errors_on_array_item_unsupported_schema_type() {
     match error {
         InvocationError::UnsupportedSchema { tool, reason } => {
             assert_eq!(tool, "bad");
-            assert_eq!(reason, "unsupported schema type 'null'");
+            assert_eq!(reason, "anyOf must include at least one schema object");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_anyof_non_object_branch() {
+    let tool = tool_with_schema_value(
+        "bad",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "anyOf": ["nope"] }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "bad");
+            assert_eq!(reason, "anyOf[0] schema must be an object");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_empty_type_union() {
+    let tool = tool_with_schema_value(
+        "bad",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": [] }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "bad");
+            assert_eq!(reason, "schema type array must include at least one string");
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_errors_on_type_union_non_string() {
+    let tool = tool_with_schema_value(
+        "bad",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": ["string", 5] }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "bad");
+            assert_eq!(
+                reason,
+                "schema type array must contain strings; found 5 at 1"
+            );
         }
         _ => panic!("expected UnsupportedSchema"),
     }
@@ -1171,6 +1314,64 @@ fn schema_violations_accepts_required_present() {
 }
 
 #[test]
+fn schema_violations_accepts_anyof_branch() {
+    let schema = json!({
+        "anyOf": [
+            { "type": "string", "minLength": 2 },
+            { "type": "number", "minimum": 5.0 }
+        ]
+    });
+    let string_ok = json!("ok");
+    let number_ok = json!(6.0);
+    assert!(schema_violations(schema.as_object().expect("schema object"), &string_ok).is_empty());
+    assert!(schema_violations(schema.as_object().expect("schema object"), &number_ok).is_empty());
+}
+
+#[test]
+fn schema_violations_reports_anyof_base_constraints() {
+    let schema = json!({
+        "anyOf": [
+            { "type": "string" },
+            { "type": "number" }
+        ],
+        "maxLength": 2
+    });
+    let value = json!("toolong");
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::MaxLength(2))));
+}
+
+#[test]
+fn schema_violations_reports_type_union_miss() {
+    let schema = json!({ "type": ["string", "number"], "minLength": 2 });
+    let value = json!(true);
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations.is_empty());
+}
+
+#[test]
+fn schema_violations_rejects_anyof_miss() {
+    let schema = json!({
+        "anyOf": [
+            { "type": "string", "minLength": 4 },
+            { "type": "number", "minimum": 10.0 }
+        ]
+    });
+    let value = json!("no");
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(!violations.is_empty());
+}
+
+#[test]
+fn schema_violations_accepts_nullable_type_union() {
+    let schema = json!({ "type": ["string", "null"], "minLength": 2 });
+    let value = json!(null);
+    assert!(schema_violations(schema.as_object().expect("schema object"), &value).is_empty());
+}
+
+#[test]
 fn schema_violations_accepts_const_and_enum() {
     let schema = json!({
         "type": "object",
@@ -1217,6 +1418,7 @@ fn schema_violations_covers_type_matching() {
         ("boolean", json!(true)),
         ("array", json!([1])),
         ("object", json!({})),
+        ("null", json!(null)),
         ("unknown", json!(null)),
     ];
 
@@ -1390,6 +1592,93 @@ fn applicable_constraints_skips_non_object_items() {
     let value = json!(["item"]);
     let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
     assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
+}
+
+#[test]
+fn applicable_constraints_uses_anyof_branch_constraints() {
+    let schema = json!({
+        "anyOf": [
+            { "type": "string", "minLength": 2 },
+            { "type": "number", "minimum": 3.0 }
+        ],
+        "maxLength": 5
+    });
+    let value = json!("ok");
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::MaxLength(5))));
+    assert!(!constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Minimum(_))));
+}
+
+#[test]
+fn applicable_constraints_handles_anyof_non_array() {
+    let schema = json!({
+        "anyOf": "nope",
+        "type": "string",
+        "minLength": 1
+    });
+    let value = json!("ok");
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
+    assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(1))));
+}
+
+#[test]
+fn applicable_constraints_handles_empty_anyof() {
+    let schema = json!({
+        "anyOf": [],
+        "type": "string",
+        "minLength": 1
+    });
+    let value = json!("ok");
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
+}
+
+#[test]
+fn applicable_constraints_uses_type_union_branch_constraints() {
+    let schema = json!({
+        "type": ["string", "number"],
+        "minLength": 2
+    });
+    let value = json!("ok");
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(constraints
+        .iter()
+        .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+}
+
+#[test]
+fn applicable_constraints_handles_type_union_miss() {
+    let schema = json!({
+        "type": ["string", "number"],
+        "minLength": 2
+    });
+    let value = json!(true);
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(!constraints.is_empty());
+}
+
+#[test]
+fn applicable_constraints_skips_empty_type_union() {
+    let schema = json!({ "type": [] });
+    let value = json!(null);
+    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    assert!(!constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
 }

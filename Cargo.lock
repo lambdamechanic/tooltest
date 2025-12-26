@@ -1160,6 +1160,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest-state-machine"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7eba9bfb050fa950d84cff5135a6c455610e03defc124cea67059515cd8293df"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "proptest_async"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1870,6 +1879,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "rmcp",
+ "serde",
  "serde_json",
  "tokio",
  "tooltest-core",
@@ -1883,10 +1893,12 @@ dependencies = [
  "jsonschema",
  "nonempty",
  "proptest",
+ "proptest-state-machine",
  "proptest_async",
  "regex",
  "reqwest",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

@@ -203,6 +203,7 @@ pub async fn validate_tool(
     run_tool_cases(session, config, tool).await
 }
 
+#[allow(clippy::result_large_err)]
 fn select_tools(
     tools: Vec<Tool>,
     tool_names: Option<&[String]>,
@@ -358,35 +359,41 @@ fn output_schema_validator(tool: &Tool, trace: &TraceEntry) -> ToolValidationDec
     let Some(schema) = &tool.output_schema else {
         return ToolValidationDecision::Defer;
     };
-    if trace.response.is_error == Some(true) {
+    let Some((_invocation, response)) = trace.as_tool_call() else {
+        return ToolValidationDecision::Defer;
+    };
+    let Some(response) = response else {
+        return ToolValidationDecision::Defer;
+    };
+    if response.is_error == Some(true) {
         return ToolValidationDecision::Defer;
     }
-    let Some(structured) = &trace.response.structured_content else {
-        return ToolValidationDecision::Reject(RunFailure {
-            reason: format!(
-                "tool '{}' returned no structured_content for output schema",
-                tool.name
-            ),
-        });
+    let Some(structured) = &response.structured_content else {
+        return ToolValidationDecision::Reject(RunFailure::new(format!(
+            "tool '{}' returned no structured_content for output schema",
+            tool.name
+        )));
     };
     let violations = schema_violations(schema.as_ref(), structured);
     if violations.is_empty() {
         ToolValidationDecision::Defer
     } else {
-        ToolValidationDecision::Reject(RunFailure {
-            reason: format!(
-                "tool '{}' output schema violations: {violations:?}",
-                tool.name
-            ),
-        })
+        ToolValidationDecision::Reject(RunFailure::new(format!(
+            "tool '{}' output schema violations: {violations:?}",
+            tool.name
+        )))
     }
 }
 
 fn default_validator(_tool: &Tool, trace: &TraceEntry) -> ToolValidationDecision {
-    if trace.response.is_error == Some(true) {
-        return ToolValidationDecision::Reject(RunFailure {
-            reason: "tool returned error".to_string(),
-        });
+    let Some((_invocation, response)) = trace.as_tool_call() else {
+        return ToolValidationDecision::Defer;
+    };
+    let Some(response) = response else {
+        return ToolValidationDecision::Defer;
+    };
+    if response.is_error == Some(true) {
+        return ToolValidationDecision::Reject(RunFailure::new("tool returned error".to_string()));
     }
     ToolValidationDecision::Defer
 }
@@ -716,13 +723,13 @@ mod tests {
         assert_eq!(config.validators.len(), 3);
         assert!(Arc::ptr_eq(&config.validators[0], &validator));
 
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::success(vec![Content::text("ok")]),
-        };
+            CallToolResult::success(vec![Content::text("ok")]),
+        );
         let tool = test_tool("noop");
         let decision = (config.validators[0])(&tool, &trace);
         assert!(is_accept(&decision));
@@ -756,9 +763,7 @@ mod tests {
 
         let error = ToolValidationError::ValidationFailed(ToolValidationFailure {
             tool: "tool".to_string(),
-            failure: RunFailure {
-                reason: "nope".to_string(),
-            },
+            failure: RunFailure::new("nope".to_string()),
             trace: Vec::new(),
         });
         assert!(error.to_string().contains("failed validation"));
@@ -773,9 +778,7 @@ mod tests {
     fn decision_helpers_cover_true_and_false() {
         let accept = ToolValidationDecision::Accept;
         let defer = ToolValidationDecision::Defer;
-        let reject = ToolValidationDecision::Reject(RunFailure {
-            reason: "nope".to_string(),
-        });
+        let reject = ToolValidationDecision::Reject(RunFailure::new("nope".to_string()));
 
         assert!(is_accept(&accept));
         assert!(!is_accept(&defer));
@@ -861,13 +864,13 @@ mod tests {
             cases_per_tool: 1,
             validators: vec![validator],
         };
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::success(vec![Content::text("ok")]),
-        };
+            CallToolResult::success(vec![Content::text("ok")]),
+        );
         let tool = test_tool("noop");
 
         assert!(apply_validators(&config, &tool, &trace).is_ok());
@@ -875,23 +878,20 @@ mod tests {
 
     #[test]
     fn apply_validators_rejects_validator() {
-        let validator: ToolValidationFn = Arc::new(|_, _| {
-            ToolValidationDecision::Reject(RunFailure {
-                reason: "nope".to_string(),
-            })
-        });
+        let validator: ToolValidationFn =
+            Arc::new(|_, _| ToolValidationDecision::Reject(RunFailure::new("nope".to_string())));
         let config = ToolValidationConfig {
             run: RunConfig::new(),
             cases_per_tool: 1,
             validators: vec![validator],
         };
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::success(vec![Content::text("ok")]),
-        };
+            CallToolResult::success(vec![Content::text("ok")]),
+        );
         let tool = test_tool("noop");
 
         let error = apply_validators(&config, &tool, &trace).expect_err("reject");
@@ -901,13 +901,13 @@ mod tests {
     #[test]
     fn output_schema_validator_defers_on_error_response() {
         let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::error(vec![Content::text("error")]),
-        };
+            CallToolResult::error(vec![Content::text("error")]),
+        );
 
         let decision = output_schema_validator(&tool, &trace);
         assert!(is_defer(&decision));
@@ -916,14 +916,33 @@ mod tests {
     #[test]
     fn output_schema_validator_defers_without_schema() {
         let tool = test_tool("noop");
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::structured(json!({})),
-        };
+            CallToolResult::structured(json!({})),
+        );
 
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_defers_without_response() {
+        let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
+        let trace = TraceEntry::tool_call(crate::ToolInvocation {
+            name: "noop".into(),
+            arguments: Some(json!({}).as_object().cloned().unwrap()),
+        });
+        let decision = output_schema_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn output_schema_validator_defers_on_non_tool_call_trace() {
+        let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
+        let trace = TraceEntry::list_tools();
         let decision = output_schema_validator(&tool, &trace);
         assert!(is_defer(&decision));
     }
@@ -931,16 +950,35 @@ mod tests {
     #[test]
     fn output_schema_validator_rejects_missing_structured_content() {
         let tool = tool_with_output_schema("noop", json!({ "type": "object" }));
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::success(vec![Content::text("ok")]),
-        };
+            CallToolResult::success(vec![Content::text("ok")]),
+        );
 
         let decision = output_schema_validator(&tool, &trace);
         assert!(is_reject(&decision));
+    }
+
+    #[test]
+    fn default_validator_defers_without_response() {
+        let tool = test_tool("noop");
+        let trace = TraceEntry::tool_call(crate::ToolInvocation {
+            name: "noop".into(),
+            arguments: Some(json!({}).as_object().cloned().unwrap()),
+        });
+        let decision = default_validator(&tool, &trace);
+        assert!(is_defer(&decision));
+    }
+
+    #[test]
+    fn default_validator_defers_on_non_tool_call_trace() {
+        let tool = test_tool("noop");
+        let trace = TraceEntry::list_tools();
+        let decision = default_validator(&tool, &trace);
+        assert!(is_defer(&decision));
     }
 
     #[test]
@@ -952,13 +990,13 @@ mod tests {
                 "properties": { "value": { "type": "string" } }
             }),
         );
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::structured(json!({ "value": "ok" })),
-        };
+            CallToolResult::structured(json!({ "value": "ok" })),
+        );
 
         let decision = output_schema_validator(&tool, &trace);
         assert!(is_defer(&decision));
@@ -974,13 +1012,13 @@ mod tests {
                 "properties": { "value": { "type": "string" } }
             }),
         );
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::structured(json!({})),
-        };
+            CallToolResult::structured(json!({})),
+        );
 
         let decision = output_schema_validator(&tool, &trace);
         assert!(is_reject(&decision));
@@ -989,13 +1027,13 @@ mod tests {
     #[test]
     fn default_validator_rejects_error_response() {
         let tool = test_tool("noop");
-        let trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "noop".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::error(vec![Content::text("error")]),
-        };
+            CallToolResult::error(vec![Content::text("error")]),
+        );
 
         let decision = default_validator(&tool, &trace);
         assert!(is_reject(&decision));
@@ -1225,11 +1263,8 @@ mod tests {
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_, _| {
-            ToolValidationDecision::Reject(RunFailure {
-                reason: "always".to_string(),
-            })
-        });
+        let validator: ToolValidationFn =
+            Arc::new(|_, _| ToolValidationDecision::Reject(RunFailure::new("always".to_string())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1249,9 +1284,7 @@ mod tests {
             if seen_clone.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 ToolValidationDecision::Defer
             } else {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "first".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("first".to_string()))
             }
         });
         let config = ToolValidationConfig::new()
@@ -1295,8 +1328,10 @@ mod tests {
             .await
             .expect("connect");
         let validator: ToolValidationFn = Arc::new(|_, trace| {
-            let value = trace
-                .invocation
+            let Some((invocation, _response)) = trace.as_tool_call() else {
+                return ToolValidationDecision::Defer;
+            };
+            let value = invocation
                 .arguments
                 .as_ref()
                 .and_then(|args| args.get("value"))
@@ -1305,11 +1340,10 @@ mod tests {
             if value == 0 {
                 ToolValidationDecision::Defer
             } else {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "non-zero".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1354,9 +1388,7 @@ mod tests {
             .await
             .expect("connect");
         let validator: ToolValidationFn = Arc::new(|_, _| {
-            ToolValidationDecision::Reject(RunFailure {
-                reason: "non-zero".to_string(),
-            })
+            ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
         });
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
@@ -1382,21 +1414,22 @@ mod tests {
             .await
             .expect("connect");
         let validator: ToolValidationFn = Arc::new(|_, trace| {
-            let value = trace
-                .invocation
+            let Some((invocation, _response)) = trace.as_tool_call() else {
+                return ToolValidationDecision::Defer;
+            };
+            let value = invocation
                 .arguments
                 .as_ref()
                 .and_then(|args| args.get("value"))
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 1 {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "non-zero".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             } else {
                 ToolValidationDecision::Defer
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1420,11 +1453,8 @@ mod tests {
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_, _| {
-            ToolValidationDecision::Reject(RunFailure {
-                reason: "always".to_string(),
-            })
-        });
+        let validator: ToolValidationFn =
+            Arc::new(|_, _| ToolValidationDecision::Reject(RunFailure::new("always".to_string())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1452,21 +1482,22 @@ mod tests {
             .await
             .expect("connect");
         let validator: ToolValidationFn = Arc::new(|_, trace| {
-            let value = trace
-                .invocation
+            let Some((invocation, _response)) = trace.as_tool_call() else {
+                return ToolValidationDecision::Defer;
+            };
+            let value = invocation
                 .arguments
                 .as_ref()
                 .and_then(|args| args.get("value"))
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);
             if value == 1 {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "non-zero".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             } else {
                 ToolValidationDecision::Defer
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1494,13 +1525,9 @@ mod tests {
             .await
             .expect("connect");
         let outcomes = Arc::new(Mutex::new(vec![
-            Err(RunFailure {
-                reason: "first".to_string(),
-            }),
+            Err(RunFailure::new("first".to_string())),
             Ok(()),
-            Err(RunFailure {
-                reason: "restored".to_string(),
-            }),
+            Err(RunFailure::new("restored".to_string())),
         ]));
         let outcomes_clone = Arc::clone(&outcomes);
         let validator: ToolValidationFn = Arc::new(move |_, _| {
@@ -1540,8 +1567,10 @@ mod tests {
             .await
             .expect("connect");
         let validator: ToolValidationFn = Arc::new(|_, trace| {
-            let value = trace
-                .invocation
+            let Some((invocation, _response)) = trace.as_tool_call() else {
+                return ToolValidationDecision::Defer;
+            };
+            let value = invocation
                 .arguments
                 .as_ref()
                 .and_then(|args| args.get("value"))
@@ -1550,11 +1579,10 @@ mod tests {
             if value == 0 {
                 ToolValidationDecision::Defer
             } else {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "non-zero".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1578,11 +1606,8 @@ mod tests {
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_, _| {
-            ToolValidationDecision::Reject(RunFailure {
-                reason: "always".to_string(),
-            })
-        });
+        let validator: ToolValidationFn =
+            Arc::new(|_, _| ToolValidationDecision::Reject(RunFailure::new("always".to_string())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1605,8 +1630,10 @@ mod tests {
             .await
             .expect("connect");
         let validator: ToolValidationFn = Arc::new(|_, trace| {
-            let value = trace
-                .invocation
+            let Some((invocation, _response)) = trace.as_tool_call() else {
+                return ToolValidationDecision::Defer;
+            };
+            let value = invocation
                 .arguments
                 .as_ref()
                 .and_then(|args| args.get("value"))
@@ -1615,11 +1642,10 @@ mod tests {
             if value == 0 {
                 ToolValidationDecision::Defer
             } else {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "non-zero".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
             }
         });
+        assert!(is_defer(&validator(&tool, &TraceEntry::list_tools())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1663,9 +1689,7 @@ mod tests {
             if seen_clone.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 ToolValidationDecision::Defer
             } else {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "first".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("first".to_string()))
             }
         });
         let config = ToolValidationConfig::new()
@@ -1708,11 +1732,8 @@ mod tests {
         let driver = SessionDriver::connect_with_transport(transport)
             .await
             .expect("connect");
-        let validator: ToolValidationFn = Arc::new(|_, _| {
-            ToolValidationDecision::Reject(RunFailure {
-                reason: "always".to_string(),
-            })
-        });
+        let validator: ToolValidationFn =
+            Arc::new(|_, _| ToolValidationDecision::Reject(RunFailure::new("always".to_string())));
         let config = ToolValidationConfig::new()
             .with_cases_per_tool(1)
             .with_validator(validator);
@@ -1740,9 +1761,7 @@ mod tests {
             if seen_clone.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 ToolValidationDecision::Defer
             } else {
-                ToolValidationDecision::Reject(RunFailure {
-                    reason: "first".to_string(),
-                })
+                ToolValidationDecision::Reject(RunFailure::new("first".to_string()))
             }
         });
         let config = ToolValidationConfig::new()
@@ -1770,7 +1789,8 @@ mod tests {
             arguments: Some(json!({}).as_object().cloned().unwrap()),
         };
         let trace = driver.send_tool_call(invocation).await.expect("trace");
-        assert_eq!(trace.response.is_error, Some(true));
+        let (_invocation, response) = trace.as_tool_call().expect("tool call");
+        assert_eq!(response.expect("response").is_error, Some(true));
     }
 
     #[tokio::test]
@@ -1828,9 +1848,7 @@ mod tests {
 
         let failed_error = ToolValidationError::ValidationFailed(ToolValidationFailure {
             tool: "tool".to_string(),
-            failure: RunFailure {
-                reason: "nope".to_string(),
-            },
+            failure: RunFailure::new("nope".to_string()),
             trace: Vec::new(),
         });
         assert!(is_tool_validation_failed(&failed_error));
@@ -1853,24 +1871,24 @@ mod tests {
         let selected = select_tools(tools, Some(&["beta".to_string()])).expect("selected tools");
         assert_eq!(selected.len(), 1);
 
-        let ok_trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let ok_trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "ok".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::success(vec![Content::text("ok")]),
-        };
+            CallToolResult::success(vec![Content::text("ok")]),
+        );
         let tool = test_tool("ok");
         let ok_decision = default_validator(&tool, &ok_trace);
         assert!(is_defer(&ok_decision));
 
-        let err_trace = TraceEntry {
-            invocation: crate::ToolInvocation {
+        let err_trace = TraceEntry::tool_call_with_response(
+            crate::ToolInvocation {
                 name: "err".into(),
                 arguments: Some(json!({}).as_object().cloned().unwrap()),
             },
-            response: CallToolResult::error(vec![Content::text("bad")]),
-        };
+            CallToolResult::error(vec![Content::text("bad")]),
+        );
         let err_decision = default_validator(&tool, &err_trace);
         assert!(is_reject(&err_decision));
 
@@ -1912,7 +1930,8 @@ mod tests {
             arguments: Some(json!({}).as_object().cloned().unwrap()),
         };
         let trace = driver.send_tool_call(invocation).await.expect("trace");
-        assert_eq!(trace.response.is_error, Some(false));
+        let (_invocation, response) = trace.as_tool_call().expect("tool call");
+        assert_eq!(response.expect("response").is_error, Some(false));
     }
 
     #[tokio::test]
@@ -1926,7 +1945,8 @@ mod tests {
             arguments: Some(json!({}).as_object().cloned().unwrap()),
         };
         let trace = driver.send_tool_call(invocation).await.expect("trace");
-        assert_eq!(trace.response.is_error, Some(false));
+        let (_invocation, response) = trace.as_tool_call().expect("tool call");
+        assert_eq!(response.expect("response").is_error, Some(false));
     }
 
     fn tool_with_output_schema(name: &str, output_schema: serde_json::Value) -> Tool {

@@ -81,10 +81,7 @@ impl SessionDriver {
         invocation: ToolInvocation,
     ) -> Result<TraceEntry, SessionError> {
         let response = self.service.peer().call_tool(invocation.clone()).await?;
-        Ok(TraceEntry {
-            invocation,
-            response,
-        })
+        Ok(TraceEntry::tool_call_with_response(invocation, response))
     }
 
     /// Lists all tools available from the MCP session.

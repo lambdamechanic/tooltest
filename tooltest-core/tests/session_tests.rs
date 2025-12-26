@@ -193,7 +193,8 @@ async fn connect_sends_initialize_and_initialized() {
         JsonRpcMessage::Notification(JsonRpcNotification { .. })
     ));
     assert!(matches!(requests[2], JsonRpcMessage::Request(_)));
-    assert_eq!(trace.response.is_error, Some(false));
+    let (_, response) = trace.as_tool_call().expect("tool call entry");
+    assert_eq!(response.expect("response").is_error, Some(false));
 }
 
 #[tokio::test]

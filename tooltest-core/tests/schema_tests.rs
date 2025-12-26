@@ -45,7 +45,7 @@ fn parse_list_tools_rejects_missing_type() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn parse_list_tools_rejects_invalid_required() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn parse_list_tools_rejects_non_object_type() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn parse_list_tools_rejects_non_string_type_field() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn parse_list_tools_rejects_invalid_schema_field_types() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
@@ -131,11 +131,11 @@ fn parse_list_tools_rejects_properties_not_object() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
-fn parse_list_tools_accepts_supported_schema_url() {
+fn parse_list_tools_accepts_schema_url() {
     let payload = json!({
         "tools": [
             {
@@ -152,7 +152,7 @@ fn parse_list_tools_accepts_supported_schema_url() {
 }
 
 #[test]
-fn parse_list_tools_rejects_unsupported_schema_url() {
+fn parse_list_tools_accepts_other_schema_url() {
     let payload = json!({
         "tools": [
             {
@@ -165,7 +165,7 @@ fn parse_list_tools_rejects_unsupported_schema_url() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn parse_list_tools_rejects_required_not_array() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
@@ -199,22 +199,9 @@ fn parse_list_tools_rejects_invalid_list_payload() {
 }
 
 #[test]
-fn unsupported_schema_version_fails() {
+fn schema_version_does_not_block_list_tools() {
     let config = SchemaConfig {
         version: SchemaVersion::Other("2025-12-01".to_string()),
-    };
-    let payload = json!({ "tools": [] });
-    let result = parse_list_tools(payload, &config);
-    assert!(matches!(
-        result,
-        Err(SchemaError::UnsupportedSchemaVersion(_))
-    ));
-}
-
-#[test]
-fn supported_other_version_is_accepted() {
-    let config = SchemaConfig {
-        version: SchemaVersion::Other("2025-11-25".to_string()),
     };
     let payload = json!({ "tools": [] });
     let result = parse_list_tools(payload, &config);
@@ -234,7 +221,7 @@ fn parse_call_tool_request_uses_rmcp_type() {
 }
 
 #[test]
-fn parse_call_tool_request_rejects_unsupported_schema_version() {
+fn parse_call_tool_request_ignores_schema_version() {
     let config = SchemaConfig {
         version: SchemaVersion::Other("2025-12-01".to_string()),
     };
@@ -245,10 +232,7 @@ fn parse_call_tool_request_rejects_unsupported_schema_version() {
         }
     });
     let result = parse_call_tool_request(payload, &config);
-    assert!(matches!(
-        result,
-        Err(SchemaError::UnsupportedSchemaVersion(_))
-    ));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -278,7 +262,7 @@ fn parse_call_tool_result_uses_rmcp_type() {
 }
 
 #[test]
-fn parse_call_tool_result_rejects_unsupported_schema_version() {
+fn parse_call_tool_result_ignores_schema_version() {
     let config = SchemaConfig {
         version: SchemaVersion::Other("2025-12-01".to_string()),
     };
@@ -289,10 +273,7 @@ fn parse_call_tool_result_rejects_unsupported_schema_version() {
         "isError": false
     });
     let result = parse_call_tool_result(payload, &config);
-    assert!(matches!(
-        result,
-        Err(SchemaError::UnsupportedSchemaVersion(_))
-    ));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -321,21 +302,15 @@ fn parse_list_tools_rejects_output_schema_with_string_type() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }
 
 #[test]
 fn schema_error_formats_messages() {
     let errors = vec![
-        SchemaError::UnsupportedSchemaVersion("2025-12-01".to_string()),
         SchemaError::InvalidListTools("bad".to_string()),
         SchemaError::InvalidCallToolRequest("bad".to_string()),
         SchemaError::InvalidCallToolResult("bad".to_string()),
-        SchemaError::InvalidToolSchema {
-            tool: "echo".to_string(),
-            field: "inputSchema".to_string(),
-            reason: "bad".to_string(),
-        },
     ];
     for error in errors {
         let message = error.to_string();
@@ -379,5 +354,5 @@ fn parse_list_tools_rejects_invalid_output_schema() {
         ]
     });
     let result = parse_list_tools(payload, &default_config());
-    assert!(matches!(result, Err(SchemaError::InvalidToolSchema { .. })));
+    assert!(matches!(result, Err(SchemaError::InvalidListTools(_))));
 }

@@ -1,5 +1,5 @@
 use std::fs;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn run_tooltest(args: &[&str]) -> Output {
@@ -11,7 +11,12 @@ fn run_tooltest(args: &[&str]) -> Output {
 }
 
 fn test_server() -> Option<&'static str> {
-    option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")
+    let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
+    if std::path::Path::new(server).exists() {
+        Some(server)
+    } else {
+        None
+    }
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -38,6 +43,65 @@ fn stdio_command_reports_success() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
     assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
+fn stdio_command_reports_success_with_state_machine_mode() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--state-machine-config",
+        r#"{"seed_numbers":[1],"seed_strings":["hello"]}"#,
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json output");
+    assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
+fn test_server_exits_on_expectation_failure() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .env("EXPECT_ARG", "missing-arg")
+        .output()
+        .expect("run test server");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tooltest_cli_test_server"));
+}
+
+#[test]
+fn test_server_exits_cleanly_without_input() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .env_remove("EXPECT_ARG")
+        .env_remove("EXPECT_CWD")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run test server");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

@@ -1,7 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::generator::{state_machine_sequence_strategy, ValueCorpus};
+use crate::generator::{
+    invocation_from_seed, state_machine_sequence_strategy, StateMachineSeed, ValueCorpus,
+};
 use crate::StateMachineConfig;
 use proptest::prelude::*;
 use rmcp::model::Tool;
@@ -98,18 +100,16 @@ fn state_machine_generator_uses_integer_corpus_values() {
             "required": ["count"]
         }),
     );
-    let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(7)]);
-    let strategy =
-        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
-
-    let sequence = sample(strategy);
-    assert_eq!(sequence.len(), 1);
-    let args = sequence[0].arguments.as_ref().expect("args");
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_numbers(vec![Number::from(7)]);
+    let invocation =
+        invocation_from_seed(&[tool], None, &corpus, false, StateMachineSeed(1)).expect("callable");
+    let args = invocation.arguments.as_ref().expect("args");
     assert_eq!(args.get("count"), Some(&json!(7)));
 }
 
 #[test]
-fn state_machine_generator_returns_empty_when_no_callable_tools() {
+fn state_machine_generator_emits_seed_sequence() {
     let tool = tool_with_schema(
         "echo",
         json!({
@@ -125,7 +125,8 @@ fn state_machine_generator_returns_empty_when_no_callable_tools() {
         state_machine_sequence_strategy(&[tool], None, &config, 1..=3).expect("strategy");
 
     let sequence = sample(strategy);
-    assert!(sequence.is_empty());
+    assert!(!sequence.is_empty());
+    assert!(sequence.len() <= 3);
 }
 
 #[test]
@@ -140,12 +141,92 @@ fn state_machine_generator_lenient_generates_without_corpus() {
             "required": ["text"]
         }),
     );
-    let config = StateMachineConfig::default().with_lenient_sourcing(true);
-    let strategy =
-        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
-
-    let sequence = sample(strategy);
-    assert_eq!(sequence.len(), 1);
-    let args = sequence[0].arguments.as_ref().expect("args");
+    let corpus = ValueCorpus::default();
+    let invocation =
+        invocation_from_seed(&[tool], None, &corpus, true, StateMachineSeed(2)).expect("callable");
+    let args = invocation.arguments.as_ref().expect("args");
     assert!(matches!(args.get("text"), Some(JsonValue::String(_))));
+}
+
+#[test]
+fn state_machine_generator_skips_anyof_without_corpus() {
+    let tool = tool_with_schema(
+        "get_related_cves",
+        json!({
+            "type": "object",
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "vendor": { "type": "string" }
+                    },
+                    "required": ["vendor"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "product": { "type": "string" }
+                    },
+                    "required": ["product"]
+                }
+            ],
+            "additionalProperties": false
+        }),
+    );
+    let corpus = ValueCorpus::default();
+    let invocation = invocation_from_seed(&[tool], None, &corpus, false, StateMachineSeed(3));
+    assert!(invocation.is_none());
+}
+
+#[test]
+fn state_machine_generator_selects_anyof_branch_from_corpus() {
+    let tool = tool_with_schema(
+        "get_related_cves",
+        json!({
+            "type": "object",
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "vendor": { "type": "string" }
+                    },
+                    "required": ["vendor"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "product": { "type": "string" }
+                    },
+                    "required": ["product"]
+                }
+            ],
+            "additionalProperties": false
+        }),
+    );
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_strings(vec!["acme".to_string()]);
+    let invocation =
+        invocation_from_seed(&[tool], None, &corpus, false, StateMachineSeed(4)).expect("callable");
+    let args = invocation.arguments.as_ref().expect("args");
+    let value = args.get("vendor").or_else(|| args.get("product"));
+    assert_eq!(value, Some(&json!("acme")));
+}
+
+#[test]
+fn state_machine_generator_inline_enum_without_corpus() {
+    let tool = tool_with_schema(
+        "enum",
+        json!({
+            "type": "object",
+            "properties": {
+                "choice": { "enum": ["alpha", "beta"] }
+            },
+            "required": ["choice"]
+        }),
+    );
+    let corpus = ValueCorpus::default();
+    let invocation =
+        invocation_from_seed(&[tool], None, &corpus, false, StateMachineSeed(5)).expect("callable");
+    let args = invocation.arguments.as_ref().expect("args");
+    assert!(matches!(args.get("choice"), Some(JsonValue::String(_))));
 }

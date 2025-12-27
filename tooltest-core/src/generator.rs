@@ -7,6 +7,8 @@ use std::fmt;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
+use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRunner};
+use proptest_state_machine::ReferenceStateMachine;
 use regex::Regex;
 use rmcp::model::{JsonObject, Tool};
 use serde_json::{Number, Value as JsonValue};
@@ -72,6 +74,9 @@ pub(crate) struct ValueCorpus {
     number_set: HashSet<Number>,
     string_set: HashSet<String>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StateMachineSeed(pub u64);
 
 impl ValueCorpus {
     pub(crate) fn seed_numbers<I>(&mut self, values: I)
@@ -222,36 +227,47 @@ pub(crate) fn state_machine_sequence_strategy(
     predicate: Option<&ToolPredicate>,
     config: &StateMachineConfig,
     len_range: std::ops::RangeInclusive<usize>,
-) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
+) -> Result<BoxedStrategy<Vec<StateMachineSeed>>, InvocationError> {
     validate_state_machine_tools(tools)?;
-    let mut corpus = ValueCorpus::default();
-    corpus.seed_numbers(config.seed_numbers.clone());
-    corpus.seed_strings(config.seed_strings.clone());
+    let _ = (predicate, config);
+    Ok(SeedStateMachine::sequential_strategy(len_range)
+        .prop_map(|(_, transitions, _)| transitions)
+        .boxed())
+}
 
+pub(crate) fn invocation_from_seed(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+    seed: StateMachineSeed,
+) -> Option<ToolInvocation> {
     let mut strategies = Vec::new();
-    let mut has_callable = false;
     for tool in tools {
-        match invocation_from_corpus(tool, predicate, &corpus, config.lenient_sourcing) {
-            Some(strategy) => {
-                has_callable = true;
-                strategies.push(strategy.prop_map(Some).boxed());
-            }
-            None => {
-                strategies.push(Just(None).boxed());
-            }
+        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus, lenient_sourcing) {
+            strategies.push(strategy);
         }
     }
 
-    if strategies.is_empty() || !has_callable {
-        return Ok(Just(Vec::new()).boxed());
+    if strategies.is_empty() {
+        return None;
     }
 
-    let invocation = proptest::strategy::Union::new(strategies)
-        .prop_filter_map("tool inputs not callable with current corpus", |value| {
-            value
-        })
-        .boxed();
-    Ok(proptest::collection::vec(invocation, len_range).boxed())
+    let union = proptest::strategy::Union::new(strategies).boxed();
+    let mut seed_bytes = [0u8; 32];
+    seed_bytes[..8].copy_from_slice(&seed.0.to_le_bytes());
+    let mut runner = TestRunner::new_with_rng(
+        ProptestConfig {
+            cases: 1,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        },
+        proptest::test_runner::TestRng::from_seed(RngAlgorithm::default(), &seed_bytes),
+    );
+    match union.new_tree(&mut runner) {
+        Ok(tree) => Some(tree.current()),
+        Err(_) => None,
+    }
 }
 
 /// Builds a strategy that yields tool invocations with inputs that violate exactly one schema rule.
@@ -406,6 +422,38 @@ fn invocation_from_corpus(
 ) -> Option<BoxedStrategy<ToolInvocation>> {
     let schema = tool.input_schema.as_ref();
     let root = JsonValue::Object(schema.clone());
+    invocation_from_corpus_for_schema(tool, schema, &root, predicate, corpus, lenient_sourcing)
+}
+
+fn invocation_from_corpus_for_schema(
+    tool: &Tool,
+    schema: &JsonObject,
+    root: &JsonValue,
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+) -> Option<BoxedStrategy<ToolInvocation>> {
+    let resolved = resolve_schema(schema, root).ok()?.into_owned();
+    if let Ok(Some(branches)) = schema_union_branches_for_generation(&resolved, root, tool) {
+        let mut strategies = Vec::new();
+        for branch in branches {
+            if let Some(strategy) = invocation_from_corpus_for_schema(
+                tool,
+                &branch,
+                root,
+                predicate,
+                corpus,
+                lenient_sourcing,
+            ) {
+                strategies.push(strategy);
+            }
+        }
+        if strategies.is_empty() {
+            return None;
+        }
+        return Some(proptest::strategy::Union::new(strategies).boxed());
+    }
+    let schema = &resolved;
     let properties = match schema.get("properties") {
         Some(JsonValue::Object(map)) => map,
         Some(_) => return None,
@@ -416,6 +464,10 @@ fn invocation_from_corpus(
                 .map(|required| !required.is_empty())
                 .unwrap_or(false);
             if missing_required {
+                return None;
+            }
+            let empty = JsonValue::Object(JsonObject::new());
+            if !schema_violations(schema, root, &empty).is_empty() {
                 return None;
             }
             let invocation = ToolInvocation {
@@ -443,7 +495,7 @@ fn invocation_from_corpus(
         let required = required_keys.contains(name.as_str());
         match property_strategy_from_corpus(
             schema_object,
-            &root,
+            root,
             required,
             corpus,
             tool,
@@ -529,6 +581,18 @@ fn property_strategy_from_corpus(
     tool: &Tool,
     lenient_sourcing: bool,
 ) -> PropertyOutcome {
+    if schema_allows_inline_generation(schema) {
+        match schema_value_strategy(schema, root, tool) {
+            Ok(strategy) => return PropertyOutcome::Include(strategy),
+            Err(_) => {
+                return if required {
+                    PropertyOutcome::MissingRequired
+                } else {
+                    PropertyOutcome::Omit
+                }
+            }
+        }
+    }
     match schema_type_hint(schema) {
         Some(SchemaType::String) => {
             let values = corpus
@@ -606,27 +670,17 @@ fn schema_type_hint(schema: &JsonObject) -> Option<SchemaType> {
             _ => None,
         };
     }
-    if let Some(JsonValue::String(_)) = schema.get("const") {
-        return Some(SchemaType::String);
-    }
-    if let Some(JsonValue::Number(_)) = schema.get("const") {
-        return Some(SchemaType::Number);
-    }
-    if let Some(JsonValue::Array(values)) = schema.get("enum") {
-        if values
-            .iter()
-            .all(|value| matches!(value, JsonValue::String(_)))
-        {
-            return Some(SchemaType::String);
-        }
-        if values
-            .iter()
-            .all(|value| matches!(value, JsonValue::Number(_)))
-        {
-            return Some(SchemaType::Number);
-        }
-    }
     None
+}
+
+fn schema_allows_inline_generation(schema: &JsonObject) -> bool {
+    if schema.contains_key("enum") || schema.contains_key("const") {
+        return true;
+    }
+    matches!(
+        schema.get("type").and_then(JsonValue::as_str),
+        Some("boolean") | Some("null")
+    )
 }
 
 pub(crate) fn uncallable_reason(
@@ -669,6 +723,12 @@ pub(crate) fn uncallable_reason(
         let Some(schema_object) = schema_value.as_object() else {
             return Some(UncallableReason::RequiredValue);
         };
+        if schema_allows_inline_generation(schema_object) {
+            if schema_value_strategy(schema_object, &root, tool).is_err() {
+                return Some(UncallableReason::RequiredValue);
+            }
+            continue;
+        }
         let reason = match schema_type_hint(schema_object) {
             Some(SchemaType::String) => {
                 let has_match = corpus
@@ -734,6 +794,26 @@ pub(crate) fn uncallable_reason(
     }
 
     None
+}
+
+#[derive(Clone, Debug)]
+struct SeedStateMachine;
+
+impl ReferenceStateMachine for SeedStateMachine {
+    type State = ();
+    type Transition = StateMachineSeed;
+
+    fn init_state() -> BoxedStrategy<Self::State> {
+        Just(()).boxed()
+    }
+
+    fn transitions(_state: &Self::State) -> BoxedStrategy<Self::Transition> {
+        any::<u64>().prop_map(StateMachineSeed).boxed()
+    }
+
+    fn apply(state: Self::State, _transition: &Self::Transition) -> Self::State {
+        state
+    }
 }
 
 fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
@@ -2483,6 +2563,52 @@ mod tests {
     }
 
     #[test]
+    fn invocation_from_corpus_rejects_empty_object_violations() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "const": { "required": true }
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
+    }
+
+    #[test]
+    fn invocation_from_corpus_rejects_invalid_ref_schema() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "$ref": "#/$defs/missing"
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
+    }
+
+    #[test]
+    fn invocation_from_seed_returns_none_when_predicate_rejects_all() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        );
+        let predicate: ToolPredicate = Arc::new(|_name, _input| false);
+        let corpus = ValueCorpus::default();
+        let invocation = invocation_from_seed(
+            &[tool],
+            Some(&predicate),
+            &corpus,
+            false,
+            StateMachineSeed(1),
+        );
+        assert!(invocation.is_none());
+    }
+
+    #[test]
     fn schema_error_detail_handles_no_eligible_tools() {
         let detail = schema_error_detail(InvocationError::NoEligibleTools);
         assert_eq!(detail, "no eligible tools to generate");
@@ -2694,7 +2820,7 @@ mod tests {
     }
 
     #[test]
-    fn property_strategy_from_corpus_strict_skips_schema_generation() {
+    fn property_strategy_from_corpus_generates_inline_without_lenient() {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let corpus = ValueCorpus::default();
         let const_schema = json!({ "const": true })
@@ -2709,8 +2835,8 @@ mod tests {
             &tool,
             false,
         );
-        assert!(outcome_is_missing_required(&outcome));
-        assert!(!outcome_is_include(&outcome));
+        assert!(outcome_is_include(&outcome));
+        assert!(!outcome_is_missing_required(&outcome));
     }
 
     #[test]
@@ -2769,32 +2895,37 @@ mod tests {
     }
 
     #[test]
-    fn schema_type_hint_detects_const_and_enum() {
+    fn property_strategy_from_corpus_omits_invalid_optional_inline_schema() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
+        let outcome = property_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            false,
+            &corpus,
+            &tool,
+            false,
+        );
+        assert!(outcome_is_omit(&outcome));
+        assert!(!outcome_is_include(&outcome));
+    }
+
+    #[test]
+    fn schema_type_hint_returns_none_for_unknown_type_or_const_enum() {
+        let schema = json!({ "type": "object" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_type_hint(&schema).is_none());
+
         let schema = json!({ "const": "hello" })
             .as_object()
             .cloned()
             .expect("schema");
-        assert_eq!(schema_type_hint(&schema), Some(SchemaType::String));
-
-        let schema = json!({ "const": 5 }).as_object().cloned().expect("schema");
-        assert_eq!(schema_type_hint(&schema), Some(SchemaType::Number));
+        assert!(schema_type_hint(&schema).is_none());
 
         let schema = json!({ "enum": ["a", "b"] })
-            .as_object()
-            .cloned()
-            .expect("schema");
-        assert_eq!(schema_type_hint(&schema), Some(SchemaType::String));
-
-        let schema = json!({ "enum": [1, 2] })
-            .as_object()
-            .cloned()
-            .expect("schema");
-        assert_eq!(schema_type_hint(&schema), Some(SchemaType::Number));
-    }
-
-    #[test]
-    fn schema_type_hint_returns_none_for_unknown_type_or_mixed_enum() {
-        let schema = json!({ "type": "object" })
             .as_object()
             .cloned()
             .expect("schema");
@@ -2805,6 +2936,33 @@ mod tests {
             .cloned()
             .expect("schema");
         assert!(schema_type_hint(&schema).is_none());
+    }
+
+    #[test]
+    fn schema_allows_inline_generation_for_const_enum_boolean_null() {
+        let schema = json!({ "const": "hello" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_allows_inline_generation(&schema));
+
+        let schema = json!({ "enum": ["a", "b"] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_allows_inline_generation(&schema));
+
+        let schema = json!({ "type": "boolean" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_allows_inline_generation(&schema));
+
+        let schema = json!({ "type": "null" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_allows_inline_generation(&schema));
     }
 
     #[test]
@@ -2877,6 +3035,22 @@ mod tests {
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
         corpus.seed_numbers([Number::from(7)]);
+        assert_eq!(uncallable_reason(&tool, &corpus, false), None);
+    }
+
+    #[test]
+    fn uncallable_reason_allows_inline_enum_without_corpus() {
+        let tool = tool_with_schema(
+            "enum",
+            json!({
+                "type": "object",
+                "properties": {
+                    "choice": { "enum": ["alpha", "beta"] }
+                },
+                "required": ["choice"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
         assert_eq!(uncallable_reason(&tool, &corpus, false), None);
     }
 
@@ -3018,6 +3192,23 @@ mod tests {
             json!({
                 "type": "object",
                 "properties": { "value": { "minLength": 2 } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus, false),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_reports_invalid_inline_required_schema() {
+        let tool = tool_with_schema(
+            "bad",
+            json!({
+                "type": "object",
+                "properties": { "value": { "enum": [] } },
                 "required": ["value"]
             }),
         );

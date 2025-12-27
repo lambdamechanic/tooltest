@@ -23,6 +23,13 @@ fn run_tooltest_json(args: &[&str]) -> serde_json::Value {
     serde_json::from_str(stdout.trim()).expect("json output")
 }
 
+fn run_tooltest_json_allow_failure(args: &[&str]) -> (Output, serde_json::Value) {
+    let output = run_tooltest(args);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload = serde_json::from_str(stdout.trim()).expect("json output");
+    (output, payload)
+}
+
 fn test_server() -> Option<&'static str> {
     let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
     if std::path::Path::new(server).exists() {
@@ -115,13 +122,9 @@ fn stdio_command_reports_coverage_warning_for_missing_string() {
         "TOOLTEST_REQUIRE_VALUE=1",
     ]);
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
     assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
     assert!(stdout.contains("missing_string"), "stdout: {stdout}");
 }
@@ -147,13 +150,9 @@ fn stdio_command_reports_coverage_warning_for_missing_integer() {
         "TOOLTEST_VALUE_TYPE=integer",
     ]);
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
     assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
     assert!(stdout.contains("missing_integer"), "stdout: {stdout}");
 }
@@ -179,13 +178,9 @@ fn stdio_command_reports_coverage_warning_for_missing_number() {
         "TOOLTEST_VALUE_TYPE=number",
     ]);
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
     assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
     assert!(stdout.contains("missing_number"), "stdout: {stdout}");
 }
@@ -211,13 +206,9 @@ fn stdio_command_reports_coverage_warning_for_missing_required_value() {
         "TOOLTEST_VALUE_TYPE=object",
     ]);
 
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
     assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
     assert!(
         stdout.contains("missing_required_value"),
@@ -253,7 +244,7 @@ fn cli_can_disable_lenient_sourcing_via_flag() {
     let Some(server) = test_server() else {
         return;
     };
-    let payload = run_tooltest_json(&[
+    let (output, payload) = run_tooltest_json_allow_failure(&[
         "--json",
         "--generator-mode",
         "state-machine",
@@ -271,6 +262,8 @@ fn cli_can_disable_lenient_sourcing_via_flag() {
         "TOOLTEST_REQUIRE_VALUE=1",
     ]);
 
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
     let warnings = payload["coverage"]["warnings"]
         .as_array()
         .expect("coverage warnings");

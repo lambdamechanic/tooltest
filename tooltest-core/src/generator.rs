@@ -928,16 +928,32 @@ fn schema_value_strategy(
 
             if let Some(pattern) = schema.get("pattern").and_then(JsonValue::as_str) {
                 let pattern = pattern.to_string();
+                if pattern.contains("(?<=") || pattern.contains("(?<!") {
+                    return Err(InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: "tooltest deficiency: lookbehind not supported".to_string(),
+                    });
+                }
                 let normalized = normalize_pattern_for_generation(&pattern).map_err(|reason| {
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
                         reason,
                     }
                 })?;
+                let normalized = format!("(?-u:{normalized})");
                 let strategy = proptest::string::string_regex(&normalized).map_err(|err| {
+                    let err_string = err.to_string();
+                    let reason = if err_string.contains("backreference")
+                        || err_string.contains("look-behind")
+                        || err_string.contains("lookbehind")
+                    {
+                        format!("tooltest deficiency: {err_string}")
+                    } else {
+                        format!("pattern must be a valid regex: {err}")
+                    };
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
-                        reason: format!("pattern must be a valid regex: {err}"),
+                        reason,
                     }
                 })?;
                 Ok(strategy

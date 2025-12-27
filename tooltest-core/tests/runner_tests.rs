@@ -552,6 +552,33 @@ async fn run_with_session_reports_invalid_tool_schema() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_invalid_input_schema() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object", "properties": { "bad": { "type": 5 } } }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    let RunOutcome::Failure(failure) = &result.outcome else {
+        panic!("expected failure");
+    };
+    assert!(failure.reason.contains("failed to compile input schema"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_invalid_output_schema() {
     let tool = tool_with_schemas(
         "echo",

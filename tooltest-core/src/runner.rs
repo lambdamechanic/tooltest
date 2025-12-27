@@ -78,7 +78,18 @@ pub async fn run_with_session(
         }
     };
 
-    let validators = match build_output_validators(&tools) {
+    let output_validators = match build_output_validators(&tools) {
+        Ok(validators) => validators,
+        Err(reason) => {
+            return failure_result(
+                RunFailure::new(reason),
+                prelude_trace.as_ref().clone(),
+                None,
+                None,
+            )
+        }
+    };
+    let input_validators = match build_input_validators(&tools) {
         Ok(validators) => validators,
         Err(reason) => {
             return failure_result(
@@ -124,7 +135,8 @@ pub async fn run_with_session(
         trace: Vec::new(),
         coverage: None,
     }));
-    let validators = Rc::new(validators);
+    let output_validators = Rc::new(output_validators);
+    let input_validators = Rc::new(input_validators);
     let handle = tokio::runtime::Handle::current();
     if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
         return failure_result(
@@ -146,7 +158,8 @@ pub async fn run_with_session(
         let last_trace = last_trace.clone();
         let last_coverage = last_coverage.clone();
         let last_failure = last_failure.clone();
-        let validators = validators.clone();
+        let output_validators = output_validators.clone();
+        let input_validators = input_validators.clone();
         move |sequence| {
             let execution: Result<Vec<TraceEntry>, FailureContext> =
                 tokio::task::block_in_place(|| {
@@ -156,7 +169,8 @@ pub async fn run_with_session(
                             let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
                             let result = execute_sequence_with_coverage(
                                 session,
-                                &validators,
+                                &input_validators,
+                                &output_validators,
                                 &assertions,
                                 &sequence,
                                 &mut tracker,
@@ -189,9 +203,14 @@ pub async fn run_with_session(
                                 }
                             }
                         } else {
-                            let result =
-                                execute_sequence(session, &validators, &assertions, &sequence)
-                                    .await;
+                            let result = execute_sequence(
+                                session,
+                                &input_validators,
+                                &output_validators,
+                                &assertions,
+                                &sequence,
+                            )
+                            .await;
                             last_coverage.replace(None);
                             result
                         }
@@ -261,13 +280,15 @@ struct FailureContext {
 
 async fn execute_sequence(
     session: &SessionDriver,
-    validators: &BTreeMap<String, jsonschema::Validator>,
+    input_validators: &BTreeMap<String, jsonschema::Validator>,
+    output_validators: &BTreeMap<String, jsonschema::Validator>,
     assertions: &AssertionSet,
     sequence: &[ToolInvocation],
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
     for invocation in sequence {
+        validate_invocation_inputs(invocation, input_validators);
         trace.push(TraceEntry::tool_call(invocation.clone()));
         let entry = match session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
@@ -285,7 +306,7 @@ async fn execute_sequence(
         let response = response.expect("tool call response").clone();
         full_trace.push(entry);
 
-        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+        if let Some(reason) = apply_default_assertions(&invocation, &response, output_validators) {
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
@@ -542,7 +563,8 @@ fn coverage_failure(failure: CoverageValidationFailure) -> RunFailure {
 
 async fn execute_sequence_with_coverage(
     session: &SessionDriver,
-    validators: &BTreeMap<String, jsonschema::Validator>,
+    input_validators: &BTreeMap<String, jsonschema::Validator>,
+    output_validators: &BTreeMap<String, jsonschema::Validator>,
     assertions: &AssertionSet,
     sequence: &[ToolInvocation],
     tracker: &mut CoverageTracker<'_>,
@@ -550,6 +572,7 @@ async fn execute_sequence_with_coverage(
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
     for invocation in sequence {
+        validate_invocation_inputs(invocation, input_validators);
         trace.push(TraceEntry::tool_call(invocation.clone()));
         let entry = match session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
@@ -572,7 +595,7 @@ async fn execute_sequence_with_coverage(
             tracker.mine_response(&response);
         }
 
-        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+        if let Some(reason) = apply_default_assertions(&invocation, &response, output_validators) {
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
@@ -630,6 +653,24 @@ fn apply_default_assertions(
         ));
     }
     None
+}
+
+fn validate_invocation_inputs(
+    invocation: &ToolInvocation,
+    validators: &BTreeMap<String, jsonschema::Validator>,
+) {
+    let tool_name = invocation.name.as_ref();
+    let validator = validators.get(tool_name).unwrap_or_else(|| {
+        panic!("missing input schema validator for tool '{tool_name}'");
+    });
+    let input_payload = invocation
+        .arguments
+        .clone()
+        .map(JsonValue::Object)
+        .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
+    if let Err(error) = validator.validate(&input_payload) {
+        panic!("input schema violation for tool '{tool_name}': {error}; input={input_payload}");
+    }
 }
 
 fn apply_response_assertions(
@@ -773,6 +814,23 @@ fn build_output_validators(
         let validator = draft202012::new(&schema_value).map_err(|error| {
             format!(
                 "failed to compile output schema for tool '{}': {error}",
+                tool.name.as_ref()
+            )
+        })?;
+        validators.insert(tool.name.to_string(), validator);
+    }
+    Ok(validators)
+}
+
+fn build_input_validators(
+    tools: &[Tool],
+) -> Result<BTreeMap<String, jsonschema::Validator>, String> {
+    let mut validators = BTreeMap::new();
+    for tool in tools {
+        let schema_value = JsonValue::Object(tool.input_schema.as_ref().clone());
+        let validator = draft202012::new(&schema_value).map_err(|error| {
+            format!(
+                "failed to compile input schema for tool '{}': {error}",
                 tool.name.as_ref()
             )
         })?;
@@ -1455,18 +1513,18 @@ mod tests {
     async fn execute_sequence_reports_session_error() {
         let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
         let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response).with_call_tool_error(ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            "call failed",
-            None,
-        ));
+        let transport = RunnerTransport::new(tool.clone(), response).with_call_tool_error(
+            ErrorData::new(ErrorCode::INTERNAL_ERROR, "call failed", None),
+        );
         let session = connect_runner_transport(transport).await.expect("connect");
+        let input_validators = build_input_validators(&[tool]).expect("validators");
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
             arguments: None,
         };
         let result = execute_sequence(
             &session,
+            &input_validators,
             &BTreeMap::new(),
             &AssertionSet::default(),
             &[invocation],
@@ -1480,14 +1538,16 @@ mod tests {
     async fn execute_sequence_reports_default_assertion_failure() {
         let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
         let response = CallToolResult::error(vec![Content::text("boom")]);
-        let transport = RunnerTransport::new(tool, response);
+        let transport = RunnerTransport::new(tool.clone(), response);
         let session = connect_runner_transport(transport).await.expect("connect");
+        let input_validators = build_input_validators(&[tool]).expect("validators");
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
             arguments: None,
         };
         let result = execute_sequence(
             &session,
+            &input_validators,
             &BTreeMap::new(),
             &AssertionSet::default(),
             &[invocation],
@@ -1504,8 +1564,9 @@ mod tests {
     async fn execute_sequence_reports_response_assertion_failure() {
         let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
         let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
+        let transport = RunnerTransport::new(tool.clone(), response);
         let session = connect_runner_transport(transport).await.expect("connect");
+        let input_validators = build_input_validators(&[tool]).expect("validators");
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
             arguments: None,
@@ -1520,7 +1581,14 @@ mod tests {
                 }],
             })],
         };
-        let result = execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
+        let result = execute_sequence(
+            &session,
+            &input_validators,
+            &BTreeMap::new(),
+            &assertions,
+            &[invocation],
+        )
+        .await;
         let failure = result.expect_err("expected failure");
         assert!(failure.failure.reason.contains("assertion pointer"));
     }
@@ -1529,8 +1597,9 @@ mod tests {
     async fn execute_sequence_reports_sequence_assertion_failure() {
         let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
         let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
+        let transport = RunnerTransport::new(tool.clone(), response);
         let session = connect_runner_transport(transport).await.expect("connect");
+        let input_validators = build_input_validators(&[tool]).expect("validators");
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
             arguments: None,
@@ -1544,7 +1613,14 @@ mod tests {
                 }],
             })],
         };
-        let result = execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
+        let result = execute_sequence(
+            &session,
+            &input_validators,
+            &BTreeMap::new(),
+            &assertions,
+            &[invocation],
+        )
+        .await;
         let failure = result.expect_err("expected failure");
         assert!(failure.failure.reason.contains("assertion pointer"));
     }
@@ -1563,7 +1639,8 @@ mod tests {
         let response = CallToolResult::structured(json!({ "status": "ok" }));
         let transport = RunnerTransport::new(tool.clone(), response);
         let session = connect_runner_transport(transport).await.expect("connect");
-        let validators = build_output_validators(&[tool]).expect("validators");
+        let input_validators = build_input_validators(&[tool.clone()]).expect("validators");
+        let output_validators = build_output_validators(&[tool]).expect("validators");
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
             arguments: Some(JsonObject::new()),
@@ -1571,7 +1648,8 @@ mod tests {
 
         let result = execute_sequence(
             &session,
-            &validators,
+            &input_validators,
+            &output_validators,
             &AssertionSet::default(),
             &[invocation],
         )
@@ -1588,8 +1666,14 @@ mod tests {
         let transport = RunnerTransport::new(tool, response);
         let session = connect_runner_transport(transport).await.expect("connect");
 
-        let result =
-            execute_sequence(&session, &BTreeMap::new(), &AssertionSet::default(), &[]).await;
+        let result = execute_sequence(
+            &session,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &AssertionSet::default(),
+            &[],
+        )
+        .await;
 
         let trace = result.expect("expected success");
         assert!(trace.is_empty());
@@ -1702,6 +1786,52 @@ mod tests {
         );
         let error = build_output_validators(&[tool]).expect_err("error");
         assert!(error.contains("failed to compile output schema"));
+    }
+
+    #[test]
+    fn build_input_validators_reports_invalid_schema() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({ "type": "object", "properties": { "bad": 5 } }),
+            None,
+        );
+        let error = build_input_validators(&[tool]).expect_err("error");
+        assert!(error.contains("failed to compile input schema"));
+    }
+
+    #[test]
+    fn validate_invocation_inputs_panics_on_schema_violation() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"]
+            }),
+            None,
+        );
+        let validators = build_input_validators(&[tool]).expect("validators");
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: None,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_invocation_inputs(&invocation, &validators);
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_invocation_inputs_panics_on_missing_validator() {
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: None,
+        };
+        let validators = std::collections::BTreeMap::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_invocation_inputs(&invocation, &validators);
+        }));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2056,6 +2186,7 @@ mod tests {
         let session = connect_runner_transport(transport).await.expect("connect");
         let config = StateMachineConfig::default();
         let mut tracker = CoverageTracker::new(&tools, &config);
+        let input_validators = build_input_validators(&tools).expect("validators");
 
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
@@ -2063,6 +2194,7 @@ mod tests {
         };
         let result = execute_sequence_with_coverage(
             &session,
+            &input_validators,
             &BTreeMap::new(),
             &AssertionSet { rules: Vec::new() },
             &[invocation],
@@ -2082,6 +2214,7 @@ mod tests {
         let session = connect_runner_transport(transport).await.expect("connect");
         let config = StateMachineConfig::default();
         let mut tracker = CoverageTracker::new(&tools, &config);
+        let input_validators = build_input_validators(&tools).expect("validators");
 
         let assertions = AssertionSet {
             rules: vec![AssertionRule::Response(ResponseAssertion {
@@ -2099,6 +2232,7 @@ mod tests {
         };
         let result = execute_sequence_with_coverage(
             &session,
+            &input_validators,
             &BTreeMap::new(),
             &assertions,
             &[invocation],
@@ -2118,6 +2252,7 @@ mod tests {
         let session = connect_runner_transport(transport).await.expect("connect");
         let config = StateMachineConfig::default();
         let mut tracker = CoverageTracker::new(&tools, &config);
+        let input_validators = build_input_validators(&tools).expect("validators");
 
         let assertions = AssertionSet {
             rules: vec![AssertionRule::Sequence(SequenceAssertion {
@@ -2134,6 +2269,7 @@ mod tests {
         };
         let result = execute_sequence_with_coverage(
             &session,
+            &input_validators,
             &BTreeMap::new(),
             &assertions,
             &[invocation],
@@ -2153,6 +2289,7 @@ mod tests {
         let session = connect_runner_transport(transport).await.expect("connect");
         let config = StateMachineConfig::default();
         let mut tracker = CoverageTracker::new(&tools, &config);
+        let input_validators = build_input_validators(&tools).expect("validators");
         let invocation = ToolInvocation {
             name: "echo".to_string().into(),
             arguments: Some(JsonObject::new()),
@@ -2160,6 +2297,7 @@ mod tests {
 
         let result = execute_sequence_with_coverage(
             &session,
+            &input_validators,
             &BTreeMap::new(),
             &AssertionSet { rules: Vec::new() },
             &[invocation],
@@ -2188,7 +2326,8 @@ mod tests {
         let response = CallToolResult::structured(json!({ "status": "ok" }));
         let transport = RunnerTransport::new(tool.clone(), response);
         let session = connect_runner_transport(transport).await.expect("connect");
-        let validators = build_output_validators(&[tool.clone()]).expect("validators");
+        let input_validators = build_input_validators(&[tool.clone()]).expect("validators");
+        let output_validators = build_output_validators(&[tool.clone()]).expect("validators");
         let config = StateMachineConfig::default();
         let tools = vec![tool];
         let mut tracker = CoverageTracker::new(&tools, &config);
@@ -2199,7 +2338,8 @@ mod tests {
 
         let result = execute_sequence_with_coverage(
             &session,
-            &validators,
+            &input_validators,
+            &output_validators,
             &AssertionSet { rules: Vec::new() },
             &[invocation],
             &mut tracker,

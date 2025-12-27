@@ -1783,6 +1783,7 @@ fn schema_without_anyof(schema: &JsonObject) -> JsonObject {
 }
 
 fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> usize {
+    assert!(!branches.is_empty(), "union branches must be non-empty");
     let mut best_index = 0;
     let mut best_len = None;
     for (idx, branch) in branches.iter().enumerate() {

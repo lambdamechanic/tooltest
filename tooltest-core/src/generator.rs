@@ -1,6 +1,7 @@
 //! Proptest-based tool invocation generation driven by MCP schemas.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -298,6 +299,7 @@ pub(crate) fn invalid_invocation_strategy(
 fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
     for tool in tools {
         let schema = tool.input_schema.as_ref();
+        let root = JsonValue::Object(schema.clone());
         match schema.get("type") {
             Some(JsonValue::String(schema_type)) if schema_type == "object" => {}
             Some(JsonValue::String(other)) => {
@@ -367,7 +369,7 @@ fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
                         tool: tool.name.to_string(),
                         reason: format!("property '{name}' schema must be an object"),
                     })?;
-            if let Err(error) = schema_value_strategy(schema_object, tool) {
+            if let Err(error) = schema_value_strategy(schema_object, &root, tool) {
                 let detail = schema_error_detail(error);
                 let schema_json = JsonValue::Object(schema_object.clone()).to_string();
                 return Err(InvocationError::UnsupportedSchema {
@@ -403,6 +405,7 @@ fn invocation_from_corpus(
     lenient_sourcing: bool,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
     let schema = tool.input_schema.as_ref();
+    let root = JsonValue::Object(schema.clone());
     let properties = match schema.get("properties") {
         Some(JsonValue::Object(map)) => map,
         Some(_) => return None,
@@ -438,8 +441,14 @@ fn invocation_from_corpus(
     for (name, schema_value) in properties {
         let schema_object = schema_value.as_object()?;
         let required = required_keys.contains(name.as_str());
-        match property_strategy_from_corpus(schema_object, required, corpus, tool, lenient_sourcing)
-        {
+        match property_strategy_from_corpus(
+            schema_object,
+            &root,
+            required,
+            corpus,
+            tool,
+            lenient_sourcing,
+        ) {
             PropertyOutcome::Include(strategy) => {
                 property_strategies.push((name.clone(), strategy));
             }
@@ -514,6 +523,7 @@ pub(crate) enum UncallableReason {
 
 fn property_strategy_from_corpus(
     schema: &JsonObject,
+    root: &JsonValue,
     required: bool,
     corpus: &ValueCorpus,
     tool: &Tool,
@@ -525,10 +535,10 @@ fn property_strategy_from_corpus(
                 .strings()
                 .iter()
                 .map(|value| JsonValue::String(value.clone()))
-                .filter(|value| schema_violations(schema, value).is_empty())
+                .filter(|value| schema_violations(schema, root, value).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
-                return fallback_property_strategy(schema, required, tool, lenient_sourcing);
+                return fallback_property_strategy(schema, root, required, tool, lenient_sourcing);
             }
             PropertyOutcome::Include(proptest::sample::select(values).boxed())
         }
@@ -537,10 +547,10 @@ fn property_strategy_from_corpus(
                 .integers()
                 .iter()
                 .map(|value| JsonValue::Number(Number::from(*value)))
-                .filter(|value| schema_violations(schema, value).is_empty())
+                .filter(|value| schema_violations(schema, root, value).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
-                return fallback_property_strategy(schema, required, tool, lenient_sourcing);
+                return fallback_property_strategy(schema, root, required, tool, lenient_sourcing);
             }
             PropertyOutcome::Include(proptest::sample::select(values).boxed())
         }
@@ -549,19 +559,20 @@ fn property_strategy_from_corpus(
                 .numbers()
                 .iter()
                 .map(|value| JsonValue::Number(value.clone()))
-                .filter(|value| schema_violations(schema, value).is_empty())
+                .filter(|value| schema_violations(schema, root, value).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
-                return fallback_property_strategy(schema, required, tool, lenient_sourcing);
+                return fallback_property_strategy(schema, root, required, tool, lenient_sourcing);
             }
             PropertyOutcome::Include(proptest::sample::select(values).boxed())
         }
-        _ => fallback_property_strategy(schema, required, tool, lenient_sourcing),
+        _ => fallback_property_strategy(schema, root, required, tool, lenient_sourcing),
     }
 }
 
 fn fallback_property_strategy(
     schema: &JsonObject,
+    root: &JsonValue,
     required: bool,
     tool: &Tool,
     lenient_sourcing: bool,
@@ -574,7 +585,7 @@ fn fallback_property_strategy(
         };
     }
 
-    match schema_value_strategy(schema, tool) {
+    match schema_value_strategy(schema, root, tool) {
         Ok(strategy) => PropertyOutcome::Include(strategy),
         Err(_) => {
             if required {
@@ -624,6 +635,7 @@ pub(crate) fn uncallable_reason(
     lenient_sourcing: bool,
 ) -> Option<UncallableReason> {
     let schema = tool.input_schema.as_ref();
+    let root = JsonValue::Object(schema.clone());
     let properties = match schema.get("properties") {
         Some(JsonValue::Object(map)) => map,
         Some(_) => return Some(UncallableReason::RequiredValue),
@@ -663,11 +675,11 @@ pub(crate) fn uncallable_reason(
                     .strings()
                     .iter()
                     .map(|value| JsonValue::String(value.clone()))
-                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                    .any(|value| schema_violations(schema_object, &root, &value).is_empty());
                 if has_match {
                     None
                 } else if lenient_sourcing {
-                    schema_value_strategy(schema_object, tool)
+                    schema_value_strategy(schema_object, &root, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
                 } else {
@@ -679,11 +691,11 @@ pub(crate) fn uncallable_reason(
                     .integers()
                     .iter()
                     .map(|value| JsonValue::Number(Number::from(*value)))
-                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                    .any(|value| schema_violations(schema_object, &root, &value).is_empty());
                 if has_match {
                     None
                 } else if lenient_sourcing {
-                    schema_value_strategy(schema_object, tool)
+                    schema_value_strategy(schema_object, &root, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
                 } else {
@@ -695,11 +707,11 @@ pub(crate) fn uncallable_reason(
                     .numbers()
                     .iter()
                     .map(|value| JsonValue::Number(value.clone()))
-                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                    .any(|value| schema_violations(schema_object, &root, &value).is_empty());
                 if has_match {
                     None
                 } else if lenient_sourcing {
-                    schema_value_strategy(schema_object, tool)
+                    schema_value_strategy(schema_object, &root, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
                 } else {
@@ -708,7 +720,7 @@ pub(crate) fn uncallable_reason(
             }
             None => {
                 if lenient_sourcing {
-                    schema_value_strategy(schema_object, tool)
+                    schema_value_strategy(schema_object, &root, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
                 } else {
@@ -725,7 +737,79 @@ pub(crate) fn uncallable_reason(
 }
 
 fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
-    let schema = tool.input_schema.as_ref();
+    let root = JsonValue::Object(tool.input_schema.as_ref().clone());
+    input_object_strategy_for_schema(tool.input_schema.as_ref(), &root, tool)
+}
+
+fn input_object_strategy_for_schema(
+    schema: &JsonObject,
+    root: &JsonValue,
+    tool: &Tool,
+) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
+    let schema =
+        resolve_schema(schema, root).map_err(|reason| InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason,
+        })?;
+    let all_of_strategy = if let Some(JsonValue::Array(all_of)) = schema.get("allOf") {
+        if all_of.is_empty() {
+            None
+        } else {
+            let mut strategies = Vec::with_capacity(all_of.len() + 1);
+            let base = schema_without_allof(schema.as_ref());
+            if schema_can_generate(&base) {
+                strategies.push(input_object_strategy_for_schema(&base, root, tool)?);
+            }
+            for (idx, subschema) in all_of.iter().enumerate() {
+                let schema_object =
+                    subschema
+                        .as_object()
+                        .ok_or_else(|| InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: format!("allOf[{idx}] schema must be an object"),
+                        })?;
+                let resolved = resolve_schema(schema_object, root).map_err(|reason| {
+                    InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason,
+                    }
+                })?;
+                strategies.push(input_object_strategy_for_schema(&resolved, root, tool)?);
+            }
+            let schema_for_filter = schema.as_ref().clone();
+            let root = root.clone();
+            Some(
+                proptest::strategy::Union::new(strategies)
+                    .boxed()
+                    .prop_filter("allOf must satisfy input schema", move |value| {
+                        let value = JsonValue::Object(value.clone());
+                        schema_violations(&schema_for_filter, &root, &value).is_empty()
+                    })
+                    .boxed(),
+            )
+        }
+    } else {
+        None
+    };
+    if let Some(strategy) = all_of_strategy {
+        return Ok(strategy);
+    }
+    if let Some(branches) = schema_union_branches_for_generation(schema.as_ref(), root, tool)? {
+        let mut strategies = Vec::with_capacity(branches.len());
+        for branch in branches {
+            strategies.push(input_object_strategy_for_schema(&branch, root, tool)?);
+        }
+        let schema_for_filter = schema.as_ref().clone();
+        let root = root.clone();
+        return Ok(proptest::strategy::Union::new(strategies)
+            .boxed()
+            .prop_filter("anyOf union must satisfy input schema", move |value| {
+                let value = JsonValue::Object(value.clone());
+                schema_violations(&schema_for_filter, &root, &value).is_empty()
+            })
+            .boxed());
+    }
+
     match schema.get("type") {
         Some(JsonValue::String(schema_type)) if schema_type == "object" => {}
         Some(JsonValue::String(other)) => {
@@ -795,7 +879,7 @@ fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, Invoc
                     tool: tool.name.to_string(),
                     reason: format!("property '{name}' schema must be an object"),
                 })?;
-        let strategy = schema_value_strategy(schema_object, tool)?;
+        let strategy = schema_value_strategy(schema_object, root, tool)?;
         property_strategies.push((name.clone(), strategy));
     }
 
@@ -832,10 +916,15 @@ fn invalid_input_object_strategy(
 
     let schema = tool.input_schema.clone();
     let schema_for_filter = schema.clone();
+    let schema_root = JsonValue::Object(schema_for_filter.as_ref().clone());
+    let schema_root_for_filter = schema_root.clone();
+    let schema_root_for_violation = schema_root.clone();
     Ok(valid_inputs
         .prop_filter_map("must have a viable invalid mutation", move |args| {
             let value = JsonValue::Object(args.clone());
-            let constraints = applicable_constraints(schema_for_filter.as_ref(), &value);
+            let constraints =
+                applicable_constraints(schema_for_filter.as_ref(), &schema_root_for_filter, &value)
+                    .expect("invalid input schema while collecting constraints");
             let viable = constraints
                 .into_iter()
                 .filter_map(|constraint| {
@@ -847,12 +936,17 @@ fn invalid_input_object_strategy(
         })
         .prop_flat_map(move |viable| {
             let schema = schema.clone();
+            let schema_root_for_violation = schema_root_for_violation.clone();
             let viable: Vec<_> = viable.into();
             proptest::sample::select(viable)
                 .prop_filter_map(
                     "must violate exactly one schema constraint",
                     move |(constraint, mutated)| {
-                        let violations = schema_violations(schema.as_ref(), &mutated);
+                        let violations = schema_violations(
+                            schema.as_ref(),
+                            &schema_root_for_violation,
+                            &mutated,
+                        );
                         let is_valid = violations.len() == 1 && violations[0] == constraint;
                         is_valid
                             .then_some(mutated)
@@ -867,10 +961,146 @@ fn invalid_input_object_strategy(
         .boxed())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SchemaDialect {
+    Draft4,
+    Draft6,
+    Draft7,
+    Draft2019_09,
+    Draft2020_12,
+}
+
+fn schema_dialect_for(schema: &JsonValue) -> SchemaDialect {
+    let Some(schema_id) = schema.get("$schema").and_then(JsonValue::as_str) else {
+        return SchemaDialect::Draft2020_12;
+    };
+    if schema_id.contains("draft-04") {
+        SchemaDialect::Draft4
+    } else if schema_id.contains("draft-06") {
+        SchemaDialect::Draft6
+    } else if schema_id.contains("draft-07") {
+        SchemaDialect::Draft7
+    } else if schema_id.contains("draft/2019-09") {
+        SchemaDialect::Draft2019_09
+    } else {
+        SchemaDialect::Draft2020_12
+    }
+}
+
+fn schema_allows_ref_siblings(dialect: SchemaDialect) -> bool {
+    matches!(
+        dialect,
+        SchemaDialect::Draft2019_09 | SchemaDialect::Draft2020_12
+    )
+}
+
+fn schema_can_generate(schema: &JsonObject) -> bool {
+    schema.contains_key("const")
+        || schema.contains_key("enum")
+        || schema.contains_key("type")
+        || schema.contains_key("anyOf")
+}
+
+fn schema_without_ref(schema: &JsonObject) -> JsonObject {
+    let mut base = schema.clone();
+    base.remove("$ref");
+    base
+}
+
+fn schema_without_allof(schema: &JsonObject) -> JsonObject {
+    let mut base = schema.clone();
+    base.remove("allOf");
+    base
+}
+
+fn resolve_schema<'a>(
+    schema: &'a JsonObject,
+    root: &'a JsonValue,
+) -> Result<Cow<'a, JsonObject>, String> {
+    let mut current = Cow::Borrowed(schema);
+    let mut seen = HashSet::new();
+    loop {
+        let Some(reference) = current.get("$ref").and_then(JsonValue::as_str) else {
+            return Ok(current);
+        };
+        if !seen.insert(reference.to_string()) {
+            return Err(format!("$ref cycle detected at '{reference}'"));
+        }
+        let resolved = resolve_json_pointer(root, reference)
+            .ok_or_else(|| format!("$ref must resolve to a schema object: '{reference}'"))?;
+        let resolved = resolved
+            .as_object()
+            .ok_or_else(|| format!("$ref must resolve to a schema object: '{reference}'"))?;
+        let remainder = schema_without_ref(current.as_ref());
+        if !remainder.is_empty() && schema_allows_ref_siblings(schema_dialect_for(root)) {
+            let mut combined = JsonObject::new();
+            combined.insert(
+                "allOf".to_string(),
+                JsonValue::Array(vec![
+                    JsonValue::Object(resolved.clone()),
+                    JsonValue::Object(remainder),
+                ]),
+            );
+            return Ok(Cow::Owned(combined));
+        }
+        current = Cow::Borrowed(resolved);
+    }
+}
+
 fn schema_value_strategy(
     schema: &JsonObject,
+    root: &JsonValue,
     tool: &Tool,
 ) -> Result<BoxedStrategy<JsonValue>, InvocationError> {
+    let schema =
+        resolve_schema(schema, root).map_err(|reason| InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason,
+        })?;
+
+    let all_of_strategy = if let Some(JsonValue::Array(all_of)) = schema.get("allOf") {
+        if all_of.is_empty() {
+            None
+        } else {
+            let mut strategies = Vec::with_capacity(all_of.len() + 1);
+            let base = schema_without_allof(schema.as_ref());
+            if schema_can_generate(&base) {
+                strategies.push(schema_value_strategy(&base, root, tool)?);
+            }
+            for (idx, value) in all_of.iter().enumerate() {
+                let schema_object =
+                    value
+                        .as_object()
+                        .ok_or_else(|| InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: format!("allOf[{idx}] schema must be an object"),
+                        })?;
+                let resolved = resolve_schema(schema_object, root).map_err(|reason| {
+                    InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason,
+                    }
+                })?;
+                strategies.push(schema_value_strategy(&resolved, root, tool)?);
+            }
+            let schema_for_filter = schema.as_ref().clone();
+            let root = root.clone();
+            Some(
+                proptest::strategy::Union::new(strategies)
+                    .boxed()
+                    .prop_filter("allOf must satisfy schema", move |value| {
+                        schema_violations(&schema_for_filter, &root, value).is_empty()
+                    })
+                    .boxed(),
+            )
+        }
+    } else {
+        None
+    };
+    if let Some(strategy) = all_of_strategy {
+        return Ok(strategy);
+    }
+
     if let Some(value) = schema.get("const") {
         return Ok(Just(value.clone()).boxed());
     }
@@ -887,16 +1117,17 @@ fn schema_value_strategy(
             .boxed());
     }
 
-    if let Some(branches) = schema_union_branches_for_generation(schema, tool)? {
+    if let Some(branches) = schema_union_branches_for_generation(schema.as_ref(), root, tool)? {
         let mut strategies = Vec::with_capacity(branches.len());
         for branch in branches {
-            strategies.push(schema_value_strategy(&branch, tool)?);
+            strategies.push(schema_value_strategy(&branch, root, tool)?);
         }
         let union = proptest::strategy::Union::new(strategies).boxed();
-        let schema = schema.clone();
+        let schema_for_filter = schema.as_ref().clone();
+        let root = root.clone();
         return Ok(union
             .prop_filter("anyOf union must satisfy schema", move |value| {
-                schema_violations(&schema, value).is_empty()
+                schema_violations(&schema_for_filter, &root, value).is_empty()
             })
             .boxed());
     }
@@ -1032,7 +1263,7 @@ fn schema_value_strategy(
                     tool: tool.name.to_string(),
                     reason: "array schema must include object-valued items".to_string(),
                 })?;
-            let item_strategy = schema_value_strategy(item_schema, tool)?;
+            let item_strategy = schema_value_strategy(item_schema, root, tool)?;
             Ok(
                 proptest::collection::vec(item_strategy, min_items..=max_items)
                     .prop_map(JsonValue::from)
@@ -1065,7 +1296,7 @@ fn schema_value_strategy(
                             reason: format!("property '{name}' schema must be an object"),
                         }
                     })?;
-                    let strategy = schema_value_strategy(schema_object, tool)?;
+                    let strategy = schema_value_strategy(schema_object, root, tool)?;
                     property_strategies.push((name.clone(), strategy));
                 }
 
@@ -1115,6 +1346,7 @@ fn schema_value_strategy(
 
 fn schema_union_branches_for_generation(
     schema: &JsonObject,
+    root: &JsonValue,
     tool: &Tool,
 ) -> Result<Option<Vec<JsonObject>>, InvocationError> {
     if let Some(JsonValue::Array(any_of)) = schema.get("anyOf") {
@@ -1133,7 +1365,13 @@ fn schema_union_branches_for_generation(
                         tool: tool.name.to_string(),
                         reason: format!("anyOf[{idx}] schema must be an object"),
                     })?;
-            branches.push(schema_object.clone());
+            let resolved = resolve_schema(schema_object, root).map_err(|reason| {
+                InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason,
+                }
+            })?;
+            branches.push(resolved.into_owned());
         }
         return Ok(Some(branches));
     }
@@ -1229,11 +1467,15 @@ fn is_escaped(bytes: &[u8], idx: usize) -> bool {
     count % 2 == 1
 }
 
-pub(crate) fn applicable_constraints(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
+pub(crate) fn applicable_constraints(
+    schema: &JsonObject,
+    root: &JsonValue,
+    value: &JsonValue,
+) -> Result<Vec<Constraint>, String> {
     let mut constraints = Vec::new();
     let mut path = Vec::new();
-    collect_constraints(schema, value, &mut path, &mut constraints);
-    constraints
+    collect_constraints(schema, root, value, &mut path, &mut constraints)?;
+    Ok(constraints)
 }
 
 fn nonempty_path(path: &[PathSegment]) -> NonEmpty<PathSegment> {
@@ -1248,33 +1490,53 @@ fn nonempty_path(path: &[PathSegment]) -> NonEmpty<PathSegment> {
 
 fn collect_constraints(
     schema: &JsonObject,
+    root: &JsonValue,
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     constraints: &mut Vec<Constraint>,
-) {
-    collect_constraints_inner(schema, value, path, constraints);
+) -> Result<(), String> {
+    collect_constraints_inner(schema, root, value, path, constraints)
 }
 
 fn collect_constraints_inner(
     schema: &JsonObject,
+    root: &JsonValue,
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     constraints: &mut Vec<Constraint>,
-) {
-    if let Some(any_of) = schema_anyof_branches(schema) {
-        let base = schema_without_anyof(schema);
-        collect_constraints_inner(&base, value, path, constraints);
-        let index = best_union_branch(&any_of, value)
-            .expect("anyOf branch selection should always succeed for non-empty schemas");
-        collect_constraints_inner(&any_of[index], value, path, constraints);
-        return;
+) -> Result<(), String> {
+    let schema = resolve_schema(schema, root)?;
+
+    if let Some(JsonValue::Array(all_of)) = schema.get("allOf") {
+        let base = schema_without_allof(schema.as_ref());
+        if !base.is_empty() {
+            collect_constraints_inner(&base, root, value, path, constraints)?;
+        }
+        for (idx, subschema) in all_of.iter().enumerate() {
+            let schema_object = subschema
+                .as_object()
+                .ok_or_else(|| format!("allOf[{idx}] schema must be an object"))?;
+            collect_constraints_inner(schema_object, root, value, path, constraints)?;
+        }
+        return Ok(());
     }
 
-    if let Some(type_union) = schema_type_union_branches(schema) {
-        let index = best_union_branch(&type_union, value)
+    if let Some(any_of) = schema_anyof_branches(schema.as_ref(), root)? {
+        let base = schema_without_anyof(schema.as_ref());
+        collect_constraints_inner(&base, root, value, path, constraints)?;
+        let index = best_union_branch(&any_of, root, value)
+            .expect("anyOf branch selection should always succeed for non-empty schemas");
+        collect_constraints_inner(&any_of[index], root, value, path, constraints)
+            .expect("invalid schema while collecting constraints");
+        return Ok(());
+    }
+
+    if let Some(type_union) = schema_type_union_branches(schema.as_ref()) {
+        let index = best_union_branch(&type_union, root, value)
             .expect("type union branch selection should always succeed for non-empty schemas");
-        collect_constraints_inner(&type_union[index], value, path, constraints);
-        return;
+        collect_constraints_inner(&type_union[index], root, value, path, constraints)
+            .expect("invalid schema while collecting constraints");
+        return Ok(());
     }
 
     if let Some(const_value) = schema.get("const") {
@@ -1301,7 +1563,7 @@ fn collect_constraints_inner(
     if let JsonValue::String(_) = value {
         if let Some(JsonValue::String(schema_type)) = schema.get("type") {
             if schema_type != "string" {
-                return;
+                return Ok(());
             }
         }
         if let Some(min_length) = schema.get("minLength").and_then(JsonValue::as_u64) {
@@ -1357,7 +1619,7 @@ fn collect_constraints_inner(
         if let Some(JsonValue::Object(item_schema)) = schema.get("items") {
             for (index, item) in items.iter().enumerate() {
                 path.push(PathSegment::Index(index));
-                collect_constraints_inner(item_schema, item, path, constraints);
+                collect_constraints_inner(item_schema, root, item, path, constraints)?;
                 path.pop();
             }
         }
@@ -1381,50 +1643,79 @@ fn collect_constraints_inner(
                         path.push(PathSegment::Key(name.clone()));
                         collect_constraints_inner(
                             property_schema,
+                            root,
                             property_value,
                             path,
                             constraints,
-                        );
+                        )?;
                         path.pop();
                     }
                 }
             }
         }
     }
+
+    Ok(())
 }
 
-pub(crate) fn schema_violations(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
+pub(crate) fn schema_violations(
+    schema: &JsonObject,
+    root: &JsonValue,
+    value: &JsonValue,
+) -> Vec<Constraint> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    collect_violations(schema, value, &mut path, &mut violations);
+    collect_violations(schema, root, value, &mut path, &mut violations);
     violations
 }
 
 fn collect_violations(
     schema: &JsonObject,
+    root: &JsonValue,
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
 ) {
-    collect_violations_inner(schema, value, path, violations);
+    collect_violations_inner(schema, root, value, path, violations);
 }
 
 fn collect_violations_inner(
     schema: &JsonObject,
+    root: &JsonValue,
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
 ) {
-    if let Some(any_of) = schema_anyof_branches(schema) {
-        let base = schema_without_anyof(schema);
-        let mut base_violations = schema_violations_inner(&base, value);
+    let schema = resolve_schema(schema, root).unwrap_or_else(|error| {
+        panic!("invalid schema while collecting violations: {error}");
+    });
+
+    if let Some(JsonValue::Array(all_of)) = schema.get("allOf") {
+        let base = schema_without_allof(schema.as_ref());
+        if !base.is_empty() {
+            collect_violations_inner(&base, root, value, path, violations);
+        }
+        for (idx, subschema) in all_of.iter().enumerate() {
+            let schema_object = subschema.as_object().unwrap_or_else(|| {
+                panic!("allOf[{idx}] schema must be an object");
+            });
+            collect_violations_inner(schema_object, root, value, path, violations);
+        }
+        return;
+    }
+
+    if let Some(any_of) = schema_anyof_branches(schema.as_ref(), root).unwrap_or_else(|error| {
+        panic!("invalid schema while collecting violations: {error}");
+    }) {
+        let base = schema_without_anyof(schema.as_ref());
+        let mut base_violations = schema_violations_inner(&base, root, value);
         if !base_violations.is_empty() {
             violations.append(&mut base_violations);
             return;
         }
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &any_of {
-            let branch_violations = schema_violations_inner(branch, value);
+            let branch_violations = schema_violations_inner(branch, root, value);
             if branch_violations.is_empty() {
                 return;
             }
@@ -1442,10 +1733,10 @@ fn collect_violations_inner(
         return;
     }
 
-    if let Some(type_union) = schema_type_union_branches(schema) {
+    if let Some(type_union) = schema_type_union_branches(schema.as_ref()) {
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &type_union {
-            let branch_violations = schema_violations_inner(branch, value);
+            let branch_violations = schema_violations_inner(branch, root, value);
             if branch_violations.is_empty() {
                 return;
             }
@@ -1563,7 +1854,7 @@ fn collect_violations_inner(
             if let Some(JsonValue::Object(item_schema)) = schema.get("items") {
                 for (index, item) in items.iter().enumerate() {
                     path.push(PathSegment::Index(index));
-                    collect_violations_inner(item_schema, item, path, violations);
+                    collect_violations_inner(item_schema, root, item, path, violations);
                     path.pop();
                 }
             }
@@ -1586,6 +1877,7 @@ fn collect_violations_inner(
                             path.push(PathSegment::Key(name.clone()));
                             collect_violations_inner(
                                 property_schema,
+                                root,
                                 property_value,
                                 path,
                                 violations,
@@ -1600,26 +1892,36 @@ fn collect_violations_inner(
     }
 }
 
-fn schema_violations_inner(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
+fn schema_violations_inner(
+    schema: &JsonObject,
+    root: &JsonValue,
+    value: &JsonValue,
+) -> Vec<Constraint> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    collect_violations_inner(schema, value, &mut path, &mut violations);
+    collect_violations_inner(schema, root, value, &mut path, &mut violations);
     violations
 }
 
-fn schema_anyof_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
-    let JsonValue::Array(any_of) = schema.get("anyOf")? else {
-        return None;
+fn schema_anyof_branches(
+    schema: &JsonObject,
+    root: &JsonValue,
+) -> Result<Option<Vec<JsonObject>>, String> {
+    let Some(JsonValue::Array(any_of)) = schema.get("anyOf") else {
+        return Ok(None);
     };
     if any_of.is_empty() {
-        panic!("anyOf must include at least one schema object");
+        return Err("anyOf must include at least one schema object".to_string());
     }
     let mut branches = Vec::with_capacity(any_of.len());
     for value in any_of {
-        let schema_object = value.as_object()?;
-        branches.push(schema_object.clone());
+        let schema_object = value
+            .as_object()
+            .ok_or_else(|| "anyOf schema must be an object".to_string())?;
+        let resolved = resolve_schema(schema_object, root)?;
+        branches.push(resolved.into_owned());
     }
-    Some(branches)
+    Ok(Some(branches))
 }
 
 fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
@@ -1648,11 +1950,15 @@ fn schema_without_anyof(schema: &JsonObject) -> JsonObject {
     base
 }
 
-fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> Option<usize> {
+fn best_union_branch(
+    branches: &[JsonObject],
+    root: &JsonValue,
+    value: &JsonValue,
+) -> Option<usize> {
     let mut best_index = None;
     let mut best_len = None;
     for (idx, branch) in branches.iter().enumerate() {
-        let violations = schema_violations_inner(branch, value);
+        let violations = schema_violations_inner(branch, root, value);
         if violations.is_empty() {
             return Some(idx);
         }
@@ -1700,6 +2006,30 @@ pub(crate) fn decode_pointer_segment(segment: &str) -> String {
         }
     }
     decoded
+}
+
+fn resolve_json_pointer<'a>(root: &'a JsonValue, pointer: &str) -> Option<&'a JsonValue> {
+    if pointer == "#" {
+        return Some(root);
+    }
+    if !pointer.starts_with("#/") {
+        return None;
+    }
+    let mut current = root;
+    for segment in pointer[2..].split('/') {
+        let decoded = decode_pointer_segment(segment);
+        match current {
+            JsonValue::Object(map) => {
+                current = map.get(&decoded)?;
+            }
+            JsonValue::Array(items) => {
+                let index = decoded.parse::<usize>().ok()?;
+                current = items.get(index)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
 }
 
 pub(crate) fn mutate_to_violate_constraint(
@@ -1904,6 +2234,10 @@ mod tests {
             .new_tree(&mut runner)
             .expect("value tree")
             .current()
+    }
+
+    fn schema_root(schema: &JsonObject) -> JsonValue {
+        JsonValue::Object(schema.clone())
     }
 
     fn outcome_is_missing_required(outcome: &PropertyOutcome) -> bool {
@@ -2167,7 +2501,8 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let error = schema_value_strategy(&schema, &tool).expect_err("invalid pattern");
+        let error = schema_value_strategy(&schema, &schema_root(&schema), &tool)
+            .expect_err("invalid pattern");
         assert!(matches!(
             error,
             InvocationError::UnsupportedSchema { reason, .. }
@@ -2212,11 +2547,25 @@ mod tests {
             .cloned()
             .expect("schema");
         let corpus = ValueCorpus::default();
-        let missing = property_strategy_from_corpus(&schema, true, &corpus, &tool, false);
+        let missing = property_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_missing_required(&missing));
         assert!(!outcome_is_omit(&missing));
 
-        let omitted = property_strategy_from_corpus(&schema, false, &corpus, &tool, false);
+        let omitted = property_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            false,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(!outcome_is_missing_required(&omitted));
         assert!(outcome_is_omit(&omitted));
     }
@@ -2233,23 +2582,47 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let integer_required =
-            property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, false);
+        let integer_required = property_strategy_from_corpus(
+            &integer_schema,
+            &schema_root(&integer_schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_missing_required(&integer_required));
         assert!(!outcome_is_omit(&integer_required));
 
-        let integer_optional =
-            property_strategy_from_corpus(&integer_schema, false, &corpus, &tool, false);
+        let integer_optional = property_strategy_from_corpus(
+            &integer_schema,
+            &schema_root(&integer_schema),
+            false,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(!outcome_is_missing_required(&integer_optional));
         assert!(outcome_is_omit(&integer_optional));
 
-        let number_required =
-            property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
+        let number_required = property_strategy_from_corpus(
+            &number_schema,
+            &schema_root(&number_schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_missing_required(&number_required));
         assert!(!outcome_is_omit(&number_required));
 
-        let number_optional =
-            property_strategy_from_corpus(&number_schema, false, &corpus, &tool, false);
+        let number_optional = property_strategy_from_corpus(
+            &number_schema,
+            &schema_root(&number_schema),
+            false,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(!outcome_is_missing_required(&number_optional));
         assert!(outcome_is_omit(&number_optional));
     }
@@ -2263,7 +2636,14 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool, false);
+        let outcome = property_strategy_from_corpus(
+            &string_schema,
+            &schema_root(&string_schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_omit(&outcome));
     }
@@ -2284,7 +2664,14 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
+        let outcome = property_strategy_from_corpus(
+            &number_schema,
+            &schema_root(&number_schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_missing_required(&outcome));
     }
@@ -2294,7 +2681,14 @@ mod tests {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let corpus = ValueCorpus::default();
         let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
-        let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool, false);
+        let outcome = property_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_missing_required(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
@@ -2307,7 +2701,14 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool, false);
+        let outcome = property_strategy_from_corpus(
+            &const_schema,
+            &schema_root(&const_schema),
+            true,
+            &corpus,
+            &tool,
+            false,
+        );
         assert!(outcome_is_missing_required(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
@@ -2320,7 +2721,14 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool, true);
+        let outcome = property_strategy_from_corpus(
+            &const_schema,
+            &schema_root(&const_schema),
+            true,
+            &corpus,
+            &tool,
+            true,
+        );
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_missing_required(&outcome));
 
@@ -2328,7 +2736,14 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&bad_schema, true, &corpus, &tool, true);
+        let outcome = property_strategy_from_corpus(
+            &bad_schema,
+            &schema_root(&bad_schema),
+            true,
+            &corpus,
+            &tool,
+            true,
+        );
         assert!(outcome_is_missing_required(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
@@ -2341,7 +2756,14 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&schema, false, &corpus, &tool, true);
+        let outcome = property_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            false,
+            &corpus,
+            &tool,
+            true,
+        );
         assert!(outcome_is_omit(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
@@ -2635,37 +3057,37 @@ mod tests {
     fn schema_value_strategy_reports_errors() {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
-        assert!(schema_value_strategy(&schema, &tool).is_err());
+        assert!(schema_value_strategy(&schema, &schema_root(&schema), &tool).is_err());
 
         let schema = json!({ "maxLength": 1 })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_value_strategy(&schema, &tool).is_err());
+        assert!(schema_value_strategy(&schema, &schema_root(&schema), &tool).is_err());
 
         let schema = json!({ "type": "string", "minLength": 2, "maxLength": 1 })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_value_strategy(&schema, &tool).is_err());
+        assert!(schema_value_strategy(&schema, &schema_root(&schema), &tool).is_err());
 
         let schema = json!({ "type": "number", "minimum": 2.0, "maximum": 1.0 })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_value_strategy(&schema, &tool).is_err());
+        assert!(schema_value_strategy(&schema, &schema_root(&schema), &tool).is_err());
 
         let schema = json!({ "type": "integer", "minimum": 2.0, "maximum": 1.0 })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_value_strategy(&schema, &tool).is_err());
+        assert!(schema_value_strategy(&schema, &schema_root(&schema), &tool).is_err());
 
         let schema = json!({ "type": "array", "minItems": 2, "maxItems": 1, "items": {} })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_value_strategy(&schema, &tool).is_err());
+        assert!(schema_value_strategy(&schema, &schema_root(&schema), &tool).is_err());
     }
 
     #[test]
@@ -2678,7 +3100,9 @@ mod tests {
             ]
         });
         let schema_object = schema.as_object().cloned().expect("schema");
-        assert!(schema_value_strategy(&schema_object, &tool).is_err());
+        assert!(
+            schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool).is_err()
+        );
     }
 
     #[test]
@@ -2691,7 +3115,9 @@ mod tests {
             "maxItems": 2
         });
         let schema_object = schema.as_object().cloned().expect("schema");
-        assert!(schema_value_strategy(&schema_object, &tool).is_err());
+        assert!(
+            schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool).is_err()
+        );
     }
 
     #[test]
@@ -2704,9 +3130,10 @@ mod tests {
             ]
         });
         let schema_object = schema.as_object().cloned().expect("schema");
-        let strategy = schema_value_strategy(&schema_object, &tool).expect("strategy");
+        let strategy = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect("strategy");
         let value = sample(strategy);
-        assert!(schema_violations(&schema_object, &value).is_empty());
+        assert!(schema_violations(&schema_object, &schema_root(&schema_object), &value).is_empty());
     }
 
     #[test]
@@ -2719,7 +3146,8 @@ mod tests {
             "maxItems": 2
         });
         let schema_object = schema.as_object().cloned().expect("schema");
-        let strategy = schema_value_strategy(&schema_object, &tool).expect("strategy");
+        let strategy = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect("strategy");
         let value = sample(strategy);
         let items = value.as_array().expect("array");
         assert!(!items.is_empty());
@@ -2738,8 +3166,10 @@ mod tests {
             "maxLength": 5
         });
         let value = json!("ok");
+        let schema_object = schema.as_object().expect("schema object");
         let constraints =
-            applicable_constraints(schema.as_object().expect("schema object"), &value);
+            applicable_constraints(schema_object, &schema_root(schema_object), &value)
+                .expect("constraints");
         assert!(constraints
             .iter()
             .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
@@ -2752,8 +3182,10 @@ mod tests {
             "minLength": 2
         });
         let value = json!("ok");
+        let schema_object = schema.as_object().expect("schema object");
         let constraints =
-            applicable_constraints(schema.as_object().expect("schema object"), &value);
+            applicable_constraints(schema_object, &schema_root(schema_object), &value)
+                .expect("constraints");
         assert!(constraints
             .iter()
             .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
@@ -2770,12 +3202,15 @@ mod tests {
         let value = json!("ok");
         let mut path = Vec::new();
         let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
         collect_constraints_inner(
-            schema.as_object().expect("schema object"),
+            schema_object,
+            &schema_root(schema_object),
             &value,
             &mut path,
             &mut constraints,
-        );
+        )
+        .expect("constraints");
         assert!(constraints
             .iter()
             .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
@@ -2790,12 +3225,15 @@ mod tests {
         let value = json!("ok");
         let mut path = Vec::new();
         let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
         collect_constraints_inner(
-            schema.as_object().expect("schema object"),
+            schema_object,
+            &schema_root(schema_object),
             &value,
             &mut path,
             &mut constraints,
-        );
+        )
+        .expect("constraints");
         assert!(constraints
             .iter()
             .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
@@ -2805,7 +3243,20 @@ mod tests {
     fn schema_anyof_branches_rejects_non_object_entries() {
         let schema = json!({ "anyOf": ["nope"] });
         let schema_object = schema.as_object().cloned().expect("schema");
-        assert!(schema_anyof_branches(&schema_object).is_none());
+        assert!(schema_anyof_branches(&schema_object, &schema_root(&schema_object)).is_err());
+    }
+
+    #[test]
+    fn schema_anyof_branches_reports_ref_error() {
+        let schema = json!({
+            "anyOf": [
+                { "$ref": "#/$defs/missing" }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let error =
+            schema_anyof_branches(&schema_object, &schema_root(&schema_object)).expect_err("error");
+        assert!(error.contains("$ref must resolve to a schema object"));
     }
 
     #[test]
@@ -2824,7 +3275,8 @@ mod tests {
             ]
         });
         let value = json!("no");
-        let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+        let schema_object = schema.as_object().expect("schema object");
+        let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
         assert!(violations
             .iter()
             .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(4))));
@@ -2837,7 +3289,8 @@ mod tests {
     fn schema_violations_type_union_selects_best_branch() {
         let schema = json!({ "type": ["string", "number"], "minLength": 2 });
         let value = json!(true);
-        let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+        let schema_object = schema.as_object().expect("schema object");
+        let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
         assert!(violations
             .iter()
             .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
@@ -2854,8 +3307,10 @@ mod tests {
         let value = json!("no");
         let mut path = Vec::new();
         let mut violations = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
         collect_violations_inner(
-            schema.as_object().expect("schema object"),
+            schema_object,
+            &schema_root(schema_object),
             &value,
             &mut path,
             &mut violations,
@@ -2871,8 +3326,10 @@ mod tests {
         let value = json!(true);
         let mut path = Vec::new();
         let mut violations = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
         collect_violations_inner(
-            schema.as_object().expect("schema object"),
+            schema_object,
+            &schema_root(schema_object),
             &value,
             &mut path,
             &mut violations,
@@ -2880,6 +3337,703 @@ mod tests {
         assert!(violations
             .iter()
             .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
+    }
+
+    #[test]
+    fn input_object_strategy_supports_allof_generation() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": {
+                    "vendor": { "type": "string" }
+                },
+                "allOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "vendor": { "type": "string" }
+                        },
+                        "required": ["vendor"]
+                    }
+                ]
+            }),
+        );
+        let strategy = input_object_strategy(&tool).expect("strategy");
+        let args = sample(strategy);
+        assert!(args.contains_key("vendor"));
+    }
+
+    #[test]
+    fn input_object_strategy_supports_allof_without_base() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "allOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "vendor": { "type": "string" }
+                        },
+                        "required": ["vendor"]
+                    }
+                ]
+            }),
+        );
+        let strategy = input_object_strategy(&tool).expect("strategy");
+        let args = sample(strategy);
+        assert!(args.contains_key("vendor"));
+    }
+
+    #[test]
+    fn input_object_strategy_ignores_empty_allof() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": {
+                    "vendor": { "type": "string" }
+                },
+                "required": ["vendor"],
+                "allOf": []
+            }),
+        );
+        let strategy = input_object_strategy(&tool).expect("strategy");
+        let args = sample(strategy);
+        assert!(args.contains_key("vendor"));
+    }
+
+    #[test]
+    fn input_object_strategy_reports_allof_base_error() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "string",
+                "allOf": [
+                    { "type": "object" }
+                ]
+            }),
+        );
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("inputSchema type must be object, got string")
+        ));
+    }
+
+    #[test]
+    fn input_object_strategy_reports_allof_branch_error() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "allOf": [
+                    { "type": "string" }
+                ]
+            }),
+        );
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("inputSchema type must be object, got string")
+        ));
+    }
+
+    #[test]
+    fn input_object_strategy_rejects_empty_anyof() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "anyOf": []
+            }),
+        );
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("anyOf must include at least one schema object")
+        ));
+    }
+
+    #[test]
+    fn input_object_strategy_reports_anyof_branch_error() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "anyOf": [
+                    { "type": "string" }
+                ]
+            }),
+        );
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("inputSchema type must be object, got string")
+        ));
+    }
+
+    #[test]
+    fn input_object_strategy_rejects_allof_non_object_branch() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "allOf": ["nope"]
+            }),
+        );
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("allOf[0] schema must be an object")
+        ));
+    }
+
+    #[test]
+    fn input_object_strategy_rejects_ref_cycle() {
+        let tool = tool_with_schema("echo", json!({ "$ref": "#" }));
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("$ref cycle")
+        ));
+    }
+
+    #[test]
+    fn input_object_strategy_rejects_allof_ref_error() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "allOf": [
+                    { "$ref": "#/missing" }
+                ]
+            }),
+        );
+        let error = input_object_strategy(&tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("$ref must resolve")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_supports_allof_generation() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "allOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "string", "pattern": "^a+$" }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let strategy = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect("strategy");
+        let value = sample(strategy);
+        assert!(schema_violations(&schema_object, &schema_root(&schema_object), &value).is_empty());
+    }
+
+    #[test]
+    fn schema_value_strategy_ignores_empty_allof() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "string",
+            "minLength": 2,
+            "allOf": []
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let strategy = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect("strategy");
+        let value = sample(strategy);
+        assert!(schema_violations(&schema_object, &schema_root(&schema_object), &value).is_empty());
+    }
+
+    #[test]
+    fn schema_value_strategy_reports_allof_base_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "enum": [],
+            "allOf": [
+                { "type": "string" }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let error = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("enum must include at least one value")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_reports_allof_branch_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "string",
+            "allOf": [
+                { "enum": [] }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let error = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("enum must include at least one value")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_supports_allof_with_base() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "string",
+            "allOf": [
+                { "type": "string", "minLength": 2 }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let strategy = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect("strategy");
+        let value = sample(strategy);
+        assert!(schema_violations(&schema_object, &schema_root(&schema_object), &value).is_empty());
+    }
+
+    #[test]
+    fn schema_value_strategy_rejects_allof_non_object_branch() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "allOf": ["nope"] });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let error = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("allOf[0] schema must be an object")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_reports_ref_cycle() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "$ref": "#" });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let error = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("$ref cycle")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_rejects_allof_ref_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "allOf": [
+                { "$ref": "#/missing" }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let error = schema_value_strategy(&schema_object, &schema_root(&schema_object), &tool)
+            .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("$ref must resolve")
+        ));
+    }
+
+    #[test]
+    fn schema_union_branches_report_ref_resolution_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                { "$ref": "#/missing" }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let root = schema_root(&schema_object);
+        let error =
+            schema_union_branches_for_generation(&schema_object, &root, &tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { ref reason, .. }
+                if reason.contains("$ref must resolve")
+        ));
+    }
+
+    #[test]
+    fn schema_dialect_for_recognizes_versions() {
+        let drafts = [
+            (
+                "http://json-schema.org/draft-04/schema#",
+                SchemaDialect::Draft4,
+                false,
+            ),
+            (
+                "http://json-schema.org/draft-06/schema#",
+                SchemaDialect::Draft6,
+                false,
+            ),
+            (
+                "http://json-schema.org/draft-07/schema#",
+                SchemaDialect::Draft7,
+                false,
+            ),
+            (
+                "https://json-schema.org/draft/2019-09/schema",
+                SchemaDialect::Draft2019_09,
+                true,
+            ),
+            (
+                "https://json-schema.org/draft/2020-12/schema",
+                SchemaDialect::Draft2020_12,
+                true,
+            ),
+        ];
+        for (schema_id, expected, allows) in drafts {
+            let schema = json!({ "$schema": schema_id });
+            let dialect = schema_dialect_for(&schema);
+            assert_eq!(dialect, expected);
+            assert_eq!(schema_allows_ref_siblings(dialect), allows);
+        }
+        let schema = json!({ "type": "object" });
+        assert_eq!(schema_dialect_for(&schema), SchemaDialect::Draft2020_12);
+    }
+
+    #[test]
+    fn schema_can_generate_detects_keywords() {
+        let empty = json!({}).as_object().cloned().expect("schema");
+        assert!(!schema_can_generate(&empty));
+        let schema = json!({ "const": "ok" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_can_generate(&schema));
+        let schema = json!({ "enum": ["a"] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_can_generate(&schema));
+        let schema = json!({ "type": "string" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_can_generate(&schema));
+        let schema = json!({ "anyOf": [{ "type": "string" }] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        assert!(schema_can_generate(&schema));
+    }
+
+    #[test]
+    fn resolve_schema_wraps_ref_siblings_for_modern_draft() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {
+                "base": { "type": "string" }
+            },
+            "$ref": "#/$defs/base",
+            "minLength": 2
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let root = schema_root(&schema_object);
+        let resolved = resolve_schema(&schema_object, &root).expect("resolved");
+        assert!(resolved.get("allOf").is_some());
+    }
+
+    #[test]
+    fn resolve_schema_ignores_ref_siblings_for_legacy_draft() {
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {
+                "base": { "type": "string" }
+            },
+            "$ref": "#/$defs/base",
+            "minLength": 2
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let root = schema_root(&schema_object);
+        let resolved = resolve_schema(&schema_object, &root).expect("resolved");
+        assert!(resolved.get("allOf").is_none());
+        assert_eq!(resolved.get("type"), Some(&json!("string")));
+    }
+
+    #[test]
+    fn collect_constraints_inner_handles_allof_and_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 2 }
+            },
+            "allOf": [
+                { "type": "object", "required": ["name"] }
+            ]
+        });
+        let value = json!({ "name": "ok" });
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect("constraints");
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn collect_constraints_inner_handles_property_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "minLength": 1 }
+            }
+        });
+        let value = json!({ "name": "ok" });
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect("constraints");
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(1))));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_property_schema_error() {
+        let schema = json!({
+            "$defs": { "notObject": "nope" },
+            "type": "object",
+            "properties": {
+                "name": { "$ref": "#/$defs/notObject" }
+            }
+        });
+        let value = json!({ "name": "ok" });
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("$ref must resolve to a schema object"));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_allof_base_error() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "$ref": "#/$defs/missing" }
+            },
+            "allOf": [
+                { "type": "object" }
+            ]
+        });
+        let value = json!({ "name": "ok" });
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("$ref must resolve to a schema object"));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_allof_non_object_error() {
+        let schema = json!({ "allOf": ["nope"] });
+        let value = json!("ok");
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("allOf[0] schema must be an object"));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_allof_branch_error() {
+        let schema = json!({
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "name": { "$ref": "#/$defs/missing" }
+                    }
+                }
+            ]
+        });
+        let value = json!({ "name": "ok" });
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("$ref must resolve to a schema object"));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_anyof_base_error() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "$ref": "#/$defs/missing" }
+            },
+            "anyOf": [
+                { "type": "object" }
+            ]
+        });
+        let value = json!({ "name": "ok" });
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("$ref must resolve to a schema object"));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_array_item_error() {
+        let schema = json!({
+            "type": "array",
+            "items": { "$ref": "#/$defs/missing" }
+        });
+        let value = json!(["ok"]);
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("$ref must resolve to a schema object"));
+    }
+
+    #[test]
+    fn schema_violations_handle_allof_constraints() {
+        let schema = json!({
+            "allOf": [
+                { "type": "string", "minLength": 4 }
+            ]
+        });
+        let value = json!("no");
+        let schema_object = schema.as_object().expect("schema object");
+        let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(4))));
+    }
+
+    #[test]
+    fn schema_violations_panics_on_anyof_non_object() {
+        let _ = std::panic::catch_unwind(|| {
+            let schema = json!({ "anyOf": ["nope"] });
+            let value = json!("ok");
+            let schema_object = schema.as_object().expect("schema object");
+            let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
+        })
+        .expect_err("anyOf with non-object should panic");
+    }
+
+    #[test]
+    fn schema_violations_panics_on_ref_cycle() {
+        let _ = std::panic::catch_unwind(|| {
+            let schema = json!({ "$ref": "#" });
+            let value = json!("ok");
+            let schema_object = schema.as_object().expect("schema object");
+            let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
+        })
+        .expect_err("ref cycle should panic");
+    }
+
+    #[test]
+    fn schema_violations_panics_on_allof_non_object() {
+        let _ = std::panic::catch_unwind(|| {
+            let schema = json!({
+                "allOf": ["nope"],
+                "type": "string"
+            });
+            let value = json!("ok");
+            let schema_object = schema.as_object().expect("schema object");
+            let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
+        })
+        .expect_err("allOf with non-object should panic");
+    }
+
+    #[test]
+    fn resolve_json_pointer_handles_root_and_invalid_targets() {
+        let root = json!({ "items": [1, 2] });
+        let pointer = resolve_json_pointer(&root, "#");
+        assert!(pointer.is_some());
+        assert!(pointer.unwrap().is_object());
+        assert!(resolve_json_pointer(&root, "nope").is_none());
+        let root = json!("text");
+        assert!(resolve_json_pointer(&root, "#/value").is_none());
+    }
+
+    #[test]
+    fn resolve_json_pointer_handles_invalid_array_indices() {
+        let root = json!({ "items": [1, 2] });
+        assert!(resolve_json_pointer(&root, "#/items/nope").is_none());
+        assert!(resolve_json_pointer(&root, "#/items/9").is_none());
     }
 
     #[test]

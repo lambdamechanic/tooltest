@@ -36,6 +36,10 @@ fn sample_many<T: fmt::Debug>(strategy: BoxedStrategy<T>, count: usize) -> Vec<T
     values
 }
 
+fn schema_root(schema: &JsonObject) -> JsonValue {
+    JsonValue::Object(schema.clone())
+}
+
 fn tool_with_schema(name: &str, schema: JsonObject) -> Tool {
     Tool {
         name: name.to_string().into(),
@@ -688,11 +692,60 @@ fn invalid_invocation_strategy_violates_single_constraint() {
     let strategy = invalid_invocation_strategy(&[tool], None).expect("strategy");
     let invocation = sample(strategy);
     let args = invocation.arguments.expect("arguments");
+    let schema_object = schema.as_object().expect("schema object");
     let violations = schema_violations(
-        schema.as_object().expect("schema object"),
+        schema_object,
+        &schema_root(schema_object),
         &JsonValue::Object(args),
     );
     assert_eq!(violations.len(), 1, "expected exactly one violation");
+}
+
+#[test]
+fn invocation_strategy_supports_anyof_with_ref_properties() {
+    let schema = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "vendor": { "type": "string" },
+                    "product": { "type": "string" },
+                    "limit": { "type": "number" },
+                    "fields": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["cveID"] }
+                    }
+                },
+                "required": ["vendor"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "vendor": { "type": "string" },
+                    "product": { "type": "string" },
+                    "limit": { "$ref": "#/anyOf/0/properties/limit" },
+                    "fields": { "$ref": "#/anyOf/0/properties/fields" }
+                },
+                "required": ["product"],
+                "additionalProperties": false
+            }
+        ]
+    });
+    let tool = tool_with_schema_value("get_related_cves", schema.clone());
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let invocation = sample(strategy);
+    let args = invocation.arguments.expect("arguments");
+    assert!(args.contains_key("vendor") || args.contains_key("product"));
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(
+        schema_object,
+        &schema_root(schema_object),
+        &JsonValue::Object(args),
+    );
+    assert!(violations.is_empty());
 }
 
 #[test]
@@ -1270,7 +1323,8 @@ fn schema_violations_detect_constraints() {
         "list": ["x"]
     });
 
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Const(_))));
@@ -1321,7 +1375,8 @@ fn schema_violations_reports_enum_bounds_and_required() {
         "max": 3.0
     });
 
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Enum(_))));
@@ -1345,7 +1400,8 @@ fn schema_violations_accepts_matching_string_constraints() {
         }
     });
     let value = json!({ "text": "aa" });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(_))));
@@ -1366,7 +1422,8 @@ fn schema_violations_accepts_number_bounds() {
         }
     });
     let value = json!({ "number": 5.0 });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Minimum(_))));
@@ -1384,7 +1441,8 @@ fn schema_violations_accepts_array_bounds() {
         }
     });
     let value = json!({ "list": [1, 2] });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::MinItems(_))));
@@ -1403,7 +1461,8 @@ fn schema_violations_accepts_required_present() {
         }
     });
     let value = json!({ "required": "ok" });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Required(_))));
@@ -1419,8 +1478,10 @@ fn schema_violations_accepts_anyof_branch() {
     });
     let string_ok = json!("ok");
     let number_ok = json!(6.0);
-    assert!(schema_violations(schema.as_object().expect("schema object"), &string_ok).is_empty());
-    assert!(schema_violations(schema.as_object().expect("schema object"), &number_ok).is_empty());
+    let schema_object = schema.as_object().expect("schema object");
+    let root = schema_root(schema_object);
+    assert!(schema_violations(schema_object, &root, &string_ok).is_empty());
+    assert!(schema_violations(schema_object, &root, &number_ok).is_empty());
 }
 
 #[test]
@@ -1433,7 +1494,8 @@ fn schema_violations_reports_anyof_base_constraints() {
         "maxLength": 2
     });
     let value = json!("toolong");
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::MaxLength(2))));
@@ -1443,7 +1505,8 @@ fn schema_violations_reports_anyof_base_constraints() {
 fn schema_violations_reports_type_union_miss() {
     let schema = json!({ "type": ["string", "number"], "minLength": 2 });
     let value = json!(true);
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations.is_empty());
 }
 
@@ -1456,7 +1519,8 @@ fn schema_violations_rejects_anyof_miss() {
         ]
     });
     let value = json!("no");
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations.is_empty());
 }
 
@@ -1469,7 +1533,8 @@ fn schema_violations_panics_on_empty_anyof() {
             "minLength": 2
         });
         let value = json!("ok");
-        let _ = schema_violations(schema.as_object().expect("schema object"), &value);
+        let schema_object = schema.as_object().expect("schema object");
+        let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
     })
     .expect_err("empty anyOf should panic");
 }
@@ -1482,7 +1547,8 @@ fn schema_violations_handles_empty_allof() {
         "minLength": 2
     });
     let value = json!(1);
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
@@ -1492,7 +1558,8 @@ fn schema_violations_handles_empty_allof() {
 fn schema_violations_accepts_nullable_type_union() {
     let schema = json!({ "type": ["string", "null"], "minLength": 2 });
     let value = json!(null);
-    assert!(schema_violations(schema.as_object().expect("schema object"), &value).is_empty());
+    let schema_object = schema.as_object().expect("schema object");
+    assert!(schema_violations(schema_object, &schema_root(schema_object), &value).is_empty());
 }
 
 #[test]
@@ -1508,7 +1575,8 @@ fn schema_violations_accepts_const_and_enum() {
         "const": "fixed",
         "enum": "a"
     });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Const(_))));
@@ -1526,7 +1594,8 @@ fn schema_violations_skips_non_object_property_schema() {
         }
     });
     let value = json!({ "bad": "x" });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(!violations
         .iter()
         .any(|violation| { violation.path == nonempty![PathSegment::Key("bad".to_string())] }));
@@ -1548,7 +1617,8 @@ fn schema_violations_covers_type_matching() {
 
     for (schema_type, value) in cases {
         let schema = json!({ "type": schema_type });
-        let _ = schema_violations(schema.as_object().expect("schema object"), &value);
+        let schema_object = schema.as_object().expect("schema object");
+        let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
     }
 }
 
@@ -1576,7 +1646,9 @@ fn applicable_constraints_collects_nested_paths() {
         "nested": { "inner": true },
         "list": ["aa"]
     });
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Required(_))));
@@ -1612,7 +1684,9 @@ fn applicable_constraints_collects_scalar_constraints() {
         "number": 1.5,
         "list": ["x"]
     });
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Enum(_))));
@@ -1642,7 +1716,9 @@ fn applicable_constraints_skips_empty_pattern() {
         }
     });
     let value = json!({ "text": "ok" });
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(!constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Pattern(_))));
@@ -1657,7 +1733,9 @@ fn applicable_constraints_skips_number_bounds_when_absent() {
         }
     });
     let value = json!({ "number": 4.0 });
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(!constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Minimum(_))));
@@ -1676,7 +1754,9 @@ fn applicable_constraints_skips_missing_required_key() {
         }
     });
     let value = json!({});
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(!constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Required(_))));
@@ -1691,7 +1771,9 @@ fn applicable_constraints_skips_non_object_property_schema() {
         }
     });
     let value = json!({ "bad": "x" });
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(!constraints
         .iter()
         .any(|constraint| { constraint.path == nonempty![PathSegment::Key("bad".to_string())] }));
@@ -1701,7 +1783,9 @@ fn applicable_constraints_skips_non_object_property_schema() {
 fn applicable_constraints_skips_string_rules_for_non_string_schema() {
     let schema = json!({ "type": "number", "minLength": 2 });
     let value = json!("text");
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
@@ -1714,7 +1798,9 @@ fn applicable_constraints_skips_string_rules_for_non_string_schema() {
 fn applicable_constraints_skips_non_object_items() {
     let schema = json!({ "type": "array", "items": "invalid" });
     let value = json!(["item"]);
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
@@ -1730,7 +1816,9 @@ fn applicable_constraints_uses_anyof_branch_constraints() {
         "maxLength": 5
     });
     let value = json!("ok");
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
@@ -1750,7 +1838,9 @@ fn applicable_constraints_handles_anyof_non_array() {
         "minLength": 1
     });
     let value = json!("ok");
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
@@ -1768,7 +1858,9 @@ fn applicable_constraints_panics_on_empty_anyof() {
             "minLength": 1
         });
         let value = json!("ok");
-        let _ = applicable_constraints(schema.as_object().expect("schema object"), &value);
+        let schema_object = schema.as_object().expect("schema object");
+        let _ = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+            .expect("constraints");
     })
     .expect_err("empty anyOf should panic");
 }
@@ -1780,7 +1872,9 @@ fn applicable_constraints_uses_type_union_branch_constraints() {
         "minLength": 2
     });
     let value = json!("ok");
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
@@ -1793,7 +1887,9 @@ fn applicable_constraints_handles_type_union_miss() {
         "minLength": 2
     });
     let value = json!(true);
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(!constraints.is_empty());
 }
 
@@ -1801,7 +1897,9 @@ fn applicable_constraints_handles_type_union_miss() {
 fn applicable_constraints_skips_empty_type_union() {
     let schema = json!({ "type": [] });
     let value = json!(null);
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(!constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
@@ -1817,7 +1915,9 @@ fn applicable_constraints_skips_missing_property_values() {
         }
     });
     let value = json!({ "present": true });
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints.iter().any(|constraint| {
         matches!(constraint.kind, ConstraintKind::Const(_))
             && constraint.path == nonempty![PathSegment::Key("present".to_string())]
@@ -1828,7 +1928,9 @@ fn applicable_constraints_skips_missing_property_values() {
 fn applicable_constraints_skips_non_object_properties() {
     let schema = json!({ "type": "object", "properties": "invalid" });
     let value = json!({});
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let constraints = applicable_constraints(schema_object, &schema_root(schema_object), &value)
+        .expect("constraints");
     assert!(constraints
         .iter()
         .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
@@ -1841,7 +1943,8 @@ fn schema_violations_handles_invalid_pattern() {
         "properties": { "value": { "type": "string", "pattern": "[" } }
     });
     let value = json!({ "value": "text" });
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
     assert!(violations
         .iter()
         .any(|violation| matches!(violation.kind, ConstraintKind::Pattern(_))));
@@ -1889,7 +1992,8 @@ fn schema_violations_skips_missing_property_values() {
         }
     });
     let value = json!({ "present": "ok" });
-    let _ = schema_violations(schema.as_object().expect("schema object"), &value);
+    let schema_object = schema.as_object().expect("schema object");
+    let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
 }
 
 #[test]

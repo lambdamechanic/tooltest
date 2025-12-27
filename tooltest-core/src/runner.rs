@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
-use jsonschema::draft202012;
+use jsonschema::{draft201909, draft202012, draft4, draft6, draft7, Validator};
 use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestError, TestRunner};
 use rmcp::model::{CallToolResult, ListToolsResult, Tool};
 use serde_json::{json, Value as JsonValue};
@@ -855,6 +855,49 @@ fn evaluate_checks(
     None
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchemaDialect {
+    Draft4,
+    Draft6,
+    Draft7,
+    Draft2019_09,
+    Draft2020_12,
+}
+
+fn schema_dialect_for(schema: &JsonValue) -> SchemaDialect {
+    let Some(schema_id) = schema.get("$schema").and_then(JsonValue::as_str) else {
+        return SchemaDialect::Draft2020_12;
+    };
+    if schema_id.contains("draft-04") {
+        SchemaDialect::Draft4
+    } else if schema_id.contains("draft-06") {
+        SchemaDialect::Draft6
+    } else if schema_id.contains("draft-07") {
+        SchemaDialect::Draft7
+    } else if schema_id.contains("draft/2019-09") {
+        SchemaDialect::Draft2019_09
+    } else {
+        SchemaDialect::Draft2020_12
+    }
+}
+
+fn build_schema_validator(
+    schema_value: &JsonValue,
+    tool_name: &str,
+    schema_label: &str,
+) -> Result<Validator, String> {
+    let validator = match schema_dialect_for(schema_value) {
+        SchemaDialect::Draft4 => draft4::new(schema_value),
+        SchemaDialect::Draft6 => draft6::new(schema_value),
+        SchemaDialect::Draft7 => draft7::new(schema_value),
+        SchemaDialect::Draft2019_09 => draft201909::new(schema_value),
+        SchemaDialect::Draft2020_12 => draft202012::new(schema_value),
+    };
+    validator.map_err(|error| {
+        format!("failed to compile {schema_label} for tool '{tool_name}': {error}")
+    })
+}
+
 fn build_output_validators(
     tools: &[Tool],
 ) -> Result<BTreeMap<String, jsonschema::Validator>, String> {
@@ -864,12 +907,7 @@ fn build_output_validators(
             continue;
         };
         let schema_value = JsonValue::Object(schema.as_ref().clone());
-        let validator = draft202012::new(&schema_value).map_err(|error| {
-            format!(
-                "failed to compile output schema for tool '{}': {error}",
-                tool.name.as_ref()
-            )
-        })?;
+        let validator = build_schema_validator(&schema_value, tool.name.as_ref(), "output schema")?;
         validators.insert(tool.name.to_string(), validator);
     }
     Ok(validators)
@@ -881,12 +919,7 @@ fn build_input_validators(
     let mut validators = BTreeMap::new();
     for tool in tools {
         let schema_value = JsonValue::Object(tool.input_schema.as_ref().clone());
-        let validator = draft202012::new(&schema_value).map_err(|error| {
-            format!(
-                "failed to compile input schema for tool '{}': {error}",
-                tool.name.as_ref()
-            )
-        })?;
+        let validator = build_schema_validator(&schema_value, tool.name.as_ref(), "input schema")?;
         validators.insert(tool.name.to_string(), validator);
     }
     Ok(validators)
@@ -1066,6 +1099,18 @@ mod tests {
 
     #[cfg(coverage)]
     fn assert_failure_reason_eq(_result: &RunResult, _expected: &str) {}
+
+    #[test]
+    fn schema_dialect_for_defaults_without_schema() {
+        let schema = json!({ "type": "object" });
+        assert_eq!(schema_dialect_for(&schema), SchemaDialect::Draft2020_12);
+    }
+
+    #[test]
+    fn schema_dialect_for_defaults_for_unknown_schema() {
+        let schema = json!({ "$schema": "https://example.com/schema" });
+        assert_eq!(schema_dialect_for(&schema), SchemaDialect::Draft2020_12);
+    }
 
     #[test]
     fn finalize_run_result_uses_abort_path() {
@@ -1865,6 +1910,61 @@ mod tests {
         );
         let error = build_input_validators(&[tool]).expect_err("error");
         assert!(error.contains("failed to compile input schema"));
+    }
+
+    #[test]
+    fn build_input_validators_respects_declared_schema_draft() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "type": "number",
+                        "minimum": 1,
+                        "exclusiveMinimum": true
+                    }
+                }
+            }),
+            None,
+        );
+        let validators = build_input_validators(&[tool]).expect("validators");
+        assert!(validators.contains_key("echo"));
+    }
+
+    #[test]
+    fn build_input_validators_supports_additional_schema_drafts() {
+        let tools = vec![
+            tool_with_schemas(
+                "draft6",
+                json!({
+                    "$schema": "http://json-schema.org/draft-06/schema#",
+                    "type": "object"
+                }),
+                None,
+            ),
+            tool_with_schemas(
+                "draft7",
+                json!({
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object"
+                }),
+                None,
+            ),
+            tool_with_schemas(
+                "draft2019",
+                json!({
+                    "$schema": "https://json-schema.org/draft/2019-09/schema",
+                    "type": "object"
+                }),
+                None,
+            ),
+        ];
+        let validators = build_input_validators(&tools).expect("validators");
+        assert!(validators.contains_key("draft6"));
+        assert!(validators.contains_key("draft7"));
+        assert!(validators.contains_key("draft2019"));
     }
 
     #[test]

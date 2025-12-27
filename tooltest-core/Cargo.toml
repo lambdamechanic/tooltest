@@ -22,6 +22,8 @@ proptest_async = { version = "0.2", default-features = false, features = ["tokio
 proptest-state-machine = "0.6"
 jsonschema = "0.26"
 regex = "1"
+regex-syntax = "0.8"
+rslint_regex = "0.3"
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 nonempty = "0.10"
 tooltest-test-support = { path = "../tooltest-test-support", optional = true }

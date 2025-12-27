@@ -37,6 +37,11 @@ tooltest http --url http://127.0.0.1:8080/mcp
 
 Human-readable output on stdout by default; pass `--json` for JSON output (including error messages).
 
+### JSON Schema patterns
+
+Tooltest treats JSON Schema `pattern` values as ECMAScript regexes and relies on `rslint_regex` plus
+`regex_syntax`/`proptest` to keep generation aligned with ECMA-262 semantics (e.g., ASCII-only `\d`, `\w`).
+
 ### Exit codes
 
 - `0` = success

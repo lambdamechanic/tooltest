@@ -3,9 +3,6 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(test)]
-use std::cell::Cell;
-
 use rmcp::model::{
     CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
     JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
@@ -81,18 +78,10 @@ fn validate_expectations() -> Result<(), String> {
 }
 
 fn current_dir() -> io::Result<PathBuf> {
-    #[cfg(test)]
-    {
-        if FORCE_CWD_ERROR.with(|flag| flag.get()) {
-            return Err(io::Error::new(io::ErrorKind::Other, "forced"));
-        }
+    if env::var("FORCE_CWD_ERROR").is_ok() {
+        return Err(io::Error::other("forced"));
     }
     env::current_dir()
-}
-
-#[cfg(test)]
-thread_local! {
-    static FORCE_CWD_ERROR: Cell<bool> = Cell::new(false);
 }
 
 fn run_server(lines: &mut dyn Iterator<Item = io::Result<String>>, stdout: &mut dyn Write) {
@@ -414,8 +403,8 @@ mod tests {
     #[test]
     fn validate_expectations_errors_on_unreadable_cwd() {
         let _lock = ENV_LOCK.lock().expect("lock env");
-        let _force = force_cwd_error();
         let _guard = EnvGuard::set("EXPECT_CWD", "unused".to_string());
+        let _force = EnvGuard::set("FORCE_CWD_ERROR", "1".to_string());
         let result = validate_expectations();
         assert!(result.is_err());
     }
@@ -438,7 +427,8 @@ mod tests {
 
     #[test]
     fn current_dir_errors_when_forced() {
-        let _force = force_cwd_error();
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        let _force = EnvGuard::set("FORCE_CWD_ERROR", "1".to_string());
         assert!(current_dir().is_err());
     }
 
@@ -524,6 +514,16 @@ mod tests {
     }
 
     #[test]
+    fn tool_stub_requires_value_when_env_set() {
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        let _guard = EnvGuard::set("TOOLTEST_REQUIRE_VALUE", "1".to_string());
+
+        let tool = tool_stub();
+        let schema = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+        assert_eq!(schema["required"], json!(["value"]));
+    }
+
+    #[test]
     fn run_server_handles_read_errors() {
         let mut lines = vec![Err(io::Error::new(io::ErrorKind::Other, "read failed"))].into_iter();
         let mut output = Vec::new();
@@ -549,18 +549,5 @@ mod tests {
         let response = init_response(RequestId::Number(1));
         let mut writer = FlushFailingWriter;
         assert!(write_response(&mut writer, &response).is_err());
-    }
-
-    struct CwdErrorGuard;
-
-    impl Drop for CwdErrorGuard {
-        fn drop(&mut self) {
-            FORCE_CWD_ERROR.with(|flag| flag.set(false));
-        }
-    }
-
-    fn force_cwd_error() -> CwdErrorGuard {
-        FORCE_CWD_ERROR.with(|flag| flag.set(true));
-        CwdErrorGuard
     }
 }

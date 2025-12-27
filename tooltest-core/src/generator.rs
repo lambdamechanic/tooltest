@@ -7,12 +7,7 @@ use std::fmt;
 use nonempty::NonEmpty;
 use proptest::prelude::*;
 use regex::Regex;
-use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange, Hir, Repetition};
 use rmcp::model::{JsonObject, Tool};
-use rslint_regex::{
-    AssertionKind, CharacterClass, CharacterClassMember, ClassPerlKind, EcmaVersion, Flags, Node,
-    Parser, QuantifierKind,
-};
 use serde_json::{Number, Value as JsonValue};
 
 use crate::{StateMachineConfig, ToolInvocation, ToolPredicate};
@@ -235,7 +230,7 @@ pub(crate) fn state_machine_sequence_strategy(
     let mut strategies = Vec::new();
     let mut has_callable = false;
     for tool in tools {
-        match invocation_from_corpus(tool, predicate, &corpus) {
+        match invocation_from_corpus(tool, predicate, &corpus, config.lenient_sourcing) {
             Some(strategy) => {
                 has_callable = true;
                 strategies.push(strategy.prop_map(Some).boxed());
@@ -405,6 +400,7 @@ fn invocation_from_corpus(
     tool: &Tool,
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,
+    lenient_sourcing: bool,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
     let schema = tool.input_schema.as_ref();
     let properties = match schema.get("properties") {
@@ -442,7 +438,8 @@ fn invocation_from_corpus(
     for (name, schema_value) in properties {
         let schema_object = schema_value.as_object()?;
         let required = required_keys.contains(name.as_str());
-        match property_strategy_from_corpus(schema_object, required, corpus, tool) {
+        match property_strategy_from_corpus(schema_object, required, corpus, tool, lenient_sourcing)
+        {
             PropertyOutcome::Include(strategy) => {
                 property_strategies.push((name.clone(), strategy));
             }
@@ -520,6 +517,7 @@ fn property_strategy_from_corpus(
     required: bool,
     corpus: &ValueCorpus,
     tool: &Tool,
+    lenient_sourcing: bool,
 ) -> PropertyOutcome {
     match schema_type_hint(schema) {
         Some(SchemaType::String) => {
@@ -530,11 +528,7 @@ fn property_strategy_from_corpus(
                 .filter(|value| schema_violations(schema, value).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
-                return if required {
-                    PropertyOutcome::MissingRequired
-                } else {
-                    PropertyOutcome::Omit
-                };
+                return fallback_property_strategy(schema, required, tool, lenient_sourcing);
             }
             PropertyOutcome::Include(proptest::sample::select(values).boxed())
         }
@@ -546,11 +540,7 @@ fn property_strategy_from_corpus(
                 .filter(|value| schema_violations(schema, value).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
-                return if required {
-                    PropertyOutcome::MissingRequired
-                } else {
-                    PropertyOutcome::Omit
-                };
+                return fallback_property_strategy(schema, required, tool, lenient_sourcing);
             }
             PropertyOutcome::Include(proptest::sample::select(values).boxed())
         }
@@ -562,18 +552,37 @@ fn property_strategy_from_corpus(
                 .filter(|value| schema_violations(schema, value).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
-                return if required {
-                    PropertyOutcome::MissingRequired
-                } else {
-                    PropertyOutcome::Omit
-                };
+                return fallback_property_strategy(schema, required, tool, lenient_sourcing);
             }
             PropertyOutcome::Include(proptest::sample::select(values).boxed())
         }
-        _ => match schema_value_strategy(schema, tool) {
-            Ok(strategy) => PropertyOutcome::Include(strategy),
-            Err(_) => PropertyOutcome::MissingRequired,
-        },
+        _ => fallback_property_strategy(schema, required, tool, lenient_sourcing),
+    }
+}
+
+fn fallback_property_strategy(
+    schema: &JsonObject,
+    required: bool,
+    tool: &Tool,
+    lenient_sourcing: bool,
+) -> PropertyOutcome {
+    if !lenient_sourcing {
+        return if required {
+            PropertyOutcome::MissingRequired
+        } else {
+            PropertyOutcome::Omit
+        };
+    }
+
+    match schema_value_strategy(schema, tool) {
+        Ok(strategy) => PropertyOutcome::Include(strategy),
+        Err(_) => {
+            if required {
+                PropertyOutcome::MissingRequired
+            } else {
+                PropertyOutcome::Omit
+            }
+        }
     }
 }
 
@@ -609,7 +618,11 @@ fn schema_type_hint(schema: &JsonObject) -> Option<SchemaType> {
     None
 }
 
-pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<UncallableReason> {
+pub(crate) fn uncallable_reason(
+    tool: &Tool,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+) -> Option<UncallableReason> {
     let schema = tool.input_schema.as_ref();
     let properties = match schema.get("properties") {
         Some(JsonValue::Object(map)) => map,
@@ -651,7 +664,15 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
                     .iter()
                     .map(|value| JsonValue::String(value.clone()))
                     .any(|value| schema_violations(schema_object, &value).is_empty());
-                (!has_match).then_some(UncallableReason::String)
+                if has_match {
+                    None
+                } else if lenient_sourcing {
+                    schema_value_strategy(schema_object, tool)
+                        .err()
+                        .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::String)
+                }
             }
             Some(SchemaType::Integer) => {
                 let has_match = corpus
@@ -659,7 +680,15 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
                     .iter()
                     .map(|value| JsonValue::Number(Number::from(*value)))
                     .any(|value| schema_violations(schema_object, &value).is_empty());
-                (!has_match).then_some(UncallableReason::Integer)
+                if has_match {
+                    None
+                } else if lenient_sourcing {
+                    schema_value_strategy(schema_object, tool)
+                        .err()
+                        .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::Integer)
+                }
             }
             Some(SchemaType::Number) => {
                 let has_match = corpus
@@ -667,11 +696,25 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
                     .iter()
                     .map(|value| JsonValue::Number(value.clone()))
                     .any(|value| schema_violations(schema_object, &value).is_empty());
-                (!has_match).then_some(UncallableReason::Number)
+                if has_match {
+                    None
+                } else if lenient_sourcing {
+                    schema_value_strategy(schema_object, tool)
+                        .err()
+                        .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::Number)
+                }
             }
-            None => schema_value_strategy(schema_object, tool)
-                .err()
-                .map(|_| UncallableReason::RequiredValue),
+            None => {
+                if lenient_sourcing {
+                    schema_value_strategy(schema_object, tool)
+                        .err()
+                        .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::RequiredValue)
+                }
+            }
         };
         if let Some(reason) = reason {
             return Some(reason);
@@ -885,14 +928,18 @@ fn schema_value_strategy(
 
             if let Some(pattern) = schema.get("pattern").and_then(JsonValue::as_str) {
                 let pattern = pattern.to_string();
-                let hir = parse_ecma_pattern_for_generation(&pattern).map_err(|reason| {
+                let normalized = normalize_pattern_for_generation(&pattern).map_err(|reason| {
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
                         reason,
                     }
                 })?;
-                let strategy = proptest::string::string_regex_parsed(&hir)
-                    .map_err(|err| pattern_generation_error(tool, err))?;
+                let strategy = proptest::string::string_regex(&normalized).map_err(|err| {
+                    InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("pattern must be a valid regex: {err}"),
+                    }
+                })?;
                 Ok(strategy
                     .prop_filter("string length out of bounds", move |value| {
                         let len = value.chars().count();
@@ -1050,13 +1097,6 @@ fn schema_value_strategy(
     }
 }
 
-fn pattern_generation_error(tool: &Tool, err: proptest::string::Error) -> InvocationError {
-    InvocationError::UnsupportedSchema {
-        tool: tool.name.to_string(),
-        reason: format!("pattern must be a valid ECMAScript regex: {err}"),
-    }
-}
-
 fn schema_union_branches_for_generation(
     schema: &JsonObject,
     tool: &Tool,
@@ -1112,32 +1152,16 @@ fn schema_union_branches_for_generation(
     Ok(None)
 }
 
-fn parse_ecma_pattern_for_generation(pattern: &str) -> Result<Hir, String> {
+fn normalize_pattern_for_generation(pattern: &str) -> Result<String, String> {
     if pattern.is_empty() {
-        return Ok(Hir::empty());
+        return Ok(String::new());
     }
-    if contains_unicode_property_escape(pattern) {
-        return Err(unsupported_feature("unicode property escape"));
+    if contains_boundary_escape(pattern) {
+        return Err(
+            "pattern uses word boundary escapes which are unsupported for string generation"
+                .to_string(),
+        );
     }
-    let normalized = strip_pattern_anchors(pattern);
-    if normalized.is_empty() {
-        return Ok(Hir::empty());
-    }
-    let regex = Parser::new_from_pattern_and_flags(
-        &normalized,
-        0,
-        0,
-        EcmaVersion::ES2021,
-        false,
-        Flags::empty(),
-    )
-    .parse()
-    .map_err(|err| format!("pattern must be a valid ECMAScript regex: {err:?}"))?;
-    let mut builder = EcmaHirBuilder::new();
-    builder.build(&regex.node)
-}
-
-fn strip_pattern_anchors(pattern: &str) -> String {
     let bytes = pattern.as_bytes();
     let mut start = 0;
     let mut end = bytes.len();
@@ -1147,207 +1171,29 @@ fn strip_pattern_anchors(pattern: &str) -> String {
     if end > start && bytes[end - 1] == b'$' && !is_escaped(bytes, end - 1) {
         end -= 1;
     }
-    pattern[start..end].to_string()
+    Ok(pattern[start..end].to_string())
 }
 
-fn contains_unicode_property_escape(pattern: &str) -> bool {
+fn contains_boundary_escape(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     let mut idx = 0;
     while idx < bytes.len() {
-        if bytes[idx] == b'\\' && !is_escaped(bytes, idx) {
+        if bytes[idx] == b'\\' {
             if let Some(next) = bytes.get(idx + 1) {
-                if matches!(*next, b'p' | b'P') {
-                    return true;
+                match *next {
+                    b'b' | b'B' | b'A' | b'Z' | b'z' | b'G' => return true,
+                    _ => {
+                        idx += 2;
+                        continue;
+                    }
                 }
+            } else {
+                break;
             }
         }
         idx += 1;
     }
     false
-}
-
-struct EcmaHirBuilder {
-    next_capture_index: u32,
-}
-
-impl EcmaHirBuilder {
-    fn new() -> Self {
-        Self {
-            next_capture_index: 1,
-        }
-    }
-
-    fn build(&mut self, node: &Node) -> Result<Hir, String> {
-        match node {
-            Node::Empty => Ok(Hir::empty()),
-            Node::Disjunction(_, nodes) => {
-                let mut parts = Vec::with_capacity(nodes.len());
-                for node in nodes {
-                    parts.push(self.build(node)?);
-                }
-                Ok(Hir::alternation(parts))
-            }
-            Node::Alternative(_, nodes) => {
-                let mut parts = Vec::with_capacity(nodes.len());
-                for node in nodes {
-                    parts.push(self.build(node)?);
-                }
-                Ok(Hir::concat(parts))
-            }
-            Node::Literal(_, ch, _) => Ok(Hir::literal(char_to_bytes(*ch).as_slice())),
-            Node::PerlClass(_, kind, negated) => {
-                let mut class = self.perl_class(kind)?;
-                if *negated {
-                    class.negate();
-                }
-                Ok(Hir::class(Class::Unicode(class)))
-            }
-            Node::BackReference(_, _) => Err(unsupported_feature("backreference")),
-            Node::NamedBackReference(_, _) => Err(unsupported_feature("named backreference")),
-            Node::Dot(_) => Ok(Hir::class(Class::Unicode(dot_class()))),
-            Node::CharacterClass(_, class) => {
-                let mut unicode = self.character_class(class)?;
-                if class.negated {
-                    unicode.negate();
-                }
-                Ok(Hir::class(Class::Unicode(unicode)))
-            }
-            Node::Group(_, group) => {
-                let inner = self.build(&group.inner)?;
-                if group.noncapturing {
-                    Ok(inner)
-                } else {
-                    let capture = regex_syntax::hir::Capture {
-                        index: self.next_capture_index,
-                        name: group
-                            .name
-                            .as_deref()
-                            .map(|name| name.to_owned().into_boxed_str()),
-                        sub: Box::new(inner),
-                    };
-                    self.next_capture_index += 1;
-                    Ok(Hir::capture(capture))
-                }
-            }
-            Node::Quantifier(_, node, kind, lazy) => {
-                let (min, max) = quantifier_bounds(kind)?;
-                let rep = Repetition {
-                    min,
-                    max,
-                    greedy: !*lazy,
-                    sub: Box::new(self.build(node)?),
-                };
-                Ok(Hir::repetition(rep))
-            }
-            Node::Assertion(_, kind) => match kind {
-                AssertionKind::StartOfLine | AssertionKind::EndOfLine => Ok(Hir::empty()),
-                AssertionKind::WordBoundary | AssertionKind::NonWordBoundary => {
-                    Err(unsupported_feature("word boundary"))
-                }
-                AssertionKind::Lookahead(_) => Err(unsupported_feature("lookahead")),
-                AssertionKind::NegativeLookahead(_) => {
-                    Err(unsupported_feature("negative lookahead"))
-                }
-                AssertionKind::Lookbehind(_) => Err(unsupported_feature("lookbehind")),
-                AssertionKind::NegativeLookbehind(_) => {
-                    Err(unsupported_feature("negative lookbehind"))
-                }
-            },
-        }
-    }
-
-    fn character_class(&mut self, class: &CharacterClass) -> Result<ClassUnicode, String> {
-        let mut unicode = ClassUnicode::empty();
-        for member in &class.members {
-            match member {
-                CharacterClassMember::Range(start, end) => {
-                    let start_char = self.class_char(start)?;
-                    let end_char = self.class_char(end)?;
-                    unicode.push(ClassUnicodeRange::new(start_char, end_char));
-                }
-                CharacterClassMember::Single(node) => match node {
-                    Node::Literal(_, ch, _) => {
-                        unicode.push(ClassUnicodeRange::new(*ch, *ch));
-                    }
-                    Node::PerlClass(_, kind, negated) => {
-                        if *negated {
-                            return Err(unsupported_feature(
-                                "negated class escape inside character class",
-                            ));
-                        }
-                        let class = self.perl_class(kind)?;
-                        for range in class.iter() {
-                            unicode.push(*range);
-                        }
-                    }
-                    _ => return Err(unsupported_feature("character class member escape")),
-                },
-            }
-        }
-        Ok(unicode)
-    }
-
-    fn class_char(&self, node: &Node) -> Result<char, String> {
-        match node {
-            Node::Literal(_, ch, _) => Ok(*ch),
-            _ => Err(unsupported_feature("character class range")),
-        }
-    }
-
-    fn perl_class(&self, kind: &ClassPerlKind) -> Result<ClassUnicode, String> {
-        let ranges = match kind {
-            ClassPerlKind::Digit => vec![ClassUnicodeRange::new('0', '9')],
-            ClassPerlKind::Word => vec![
-                ClassUnicodeRange::new('0', '9'),
-                ClassUnicodeRange::new('A', 'Z'),
-                ClassUnicodeRange::new('a', 'z'),
-                ClassUnicodeRange::new('_', '_'),
-            ],
-            ClassPerlKind::Space => vec![
-                ClassUnicodeRange::new('\t', '\t'),
-                ClassUnicodeRange::new('\n', '\n'),
-                ClassUnicodeRange::new('\u{0B}', '\u{0B}'),
-                ClassUnicodeRange::new('\u{0C}', '\u{0C}'),
-                ClassUnicodeRange::new('\r', '\r'),
-                ClassUnicodeRange::new(' ', ' '),
-            ],
-            ClassPerlKind::Unicode(_, _) => {
-                return Err(unsupported_feature("unicode property escape"))
-            }
-        };
-        Ok(ClassUnicode::new(ranges))
-    }
-}
-
-fn dot_class() -> ClassUnicode {
-    let mut class = ClassUnicode::new(vec![
-        ClassUnicodeRange::new('\n', '\n'),
-        ClassUnicodeRange::new('\r', '\r'),
-        ClassUnicodeRange::new('\u{2028}', '\u{2028}'),
-        ClassUnicodeRange::new('\u{2029}', '\u{2029}'),
-    ]);
-    class.negate();
-    class
-}
-
-fn char_to_bytes(ch: char) -> Vec<u8> {
-    let mut buf = [0u8; 4];
-    let bytes = ch.encode_utf8(&mut buf);
-    bytes.as_bytes().to_vec()
-}
-
-fn quantifier_bounds(kind: &QuantifierKind) -> Result<(u32, Option<u32>), String> {
-    match kind {
-        QuantifierKind::Optional => Ok((0, Some(1))),
-        QuantifierKind::Multiple => Ok((0, None)),
-        QuantifierKind::AtLeastOne => Ok((1, None)),
-        QuantifierKind::Number(value) => Ok((*value, Some(*value))),
-        QuantifierKind::Between(min, max) => Ok((*min, *max)),
-    }
-}
-
-fn unsupported_feature(feature: &str) -> String {
-    format!("tooltest deficiency: unsupported ECMAScript regex feature: {feature}")
 }
 
 fn is_escaped(bytes: &[u8], idx: usize) -> bool {
@@ -1402,13 +1248,15 @@ fn collect_constraints_inner(
     if let Some(any_of) = schema_anyof_branches(schema) {
         let base = schema_without_anyof(schema);
         collect_constraints_inner(&base, value, path, constraints);
-        let index = best_union_branch(&any_of, value);
+        let index = best_union_branch(&any_of, value)
+            .expect("anyOf branch selection should always succeed for non-empty schemas");
         collect_constraints_inner(&any_of[index], value, path, constraints);
         return;
     }
 
     if let Some(type_union) = schema_type_union_branches(schema) {
-        let index = best_union_branch(&type_union, value);
+        let index = best_union_branch(&type_union, value)
+            .expect("type union branch selection should always succeed for non-empty schemas");
         collect_constraints_inner(&type_union[index], value, path, constraints);
         return;
     }
@@ -1572,7 +1420,8 @@ fn collect_violations_inner(
                 best = Some(branch_violations);
             }
         }
-        let mut best = best.expect("anyOf branches must be non-empty");
+        let mut best =
+            best.expect("best anyOf violation selection should exist for non-empty schemas");
         violations.append(&mut best);
         return;
     }
@@ -1592,7 +1441,8 @@ fn collect_violations_inner(
                 best = Some(branch_violations);
             }
         }
-        let mut best = best.expect("type union branches must be non-empty");
+        let mut best =
+            best.expect("best type union violation selection should exist for non-empty schemas");
         violations.append(&mut best);
         return;
     }
@@ -1746,7 +1596,7 @@ fn schema_anyof_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
         return None;
     };
     if any_of.is_empty() {
-        return None;
+        panic!("anyOf must include at least one schema object");
     }
     let mut branches = Vec::with_capacity(any_of.len());
     for value in any_of {
@@ -1782,19 +1632,18 @@ fn schema_without_anyof(schema: &JsonObject) -> JsonObject {
     base
 }
 
-fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> usize {
-    assert!(!branches.is_empty(), "union branches must be non-empty");
-    let mut best_index = 0;
+fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> Option<usize> {
+    let mut best_index = None;
     let mut best_len = None;
     for (idx, branch) in branches.iter().enumerate() {
         let violations = schema_violations_inner(branch, value);
         if violations.is_empty() {
-            return idx;
+            return Some(idx);
         }
         let len = violations.len();
         if best_len.is_none_or(|current| len < current) {
             best_len = Some(len);
-            best_index = idx;
+            best_index = Some(idx);
         }
     }
     best_index
@@ -2015,7 +1864,6 @@ fn get_value_at_path_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::strategy::ValueTree;
     use rmcp::model::Tool;
     use serde_json::json;
     use std::fmt;
@@ -2200,13 +2048,13 @@ mod tests {
     fn invocation_from_corpus_handles_missing_properties() {
         let tool = tool_with_schema("alpha", json!({ "type": "object", "properties": "nope" }));
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
 
         let tool = tool_with_schema("beta", json!({ "type": "object", "required": ["missing"] }));
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
 
         let tool = tool_with_schema("gamma", json!({ "type": "object" }));
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         assert_eq!(invocation.name.as_ref(), "gamma");
         assert_eq!(invocation.arguments, Some(JsonObject::new()));
@@ -2222,7 +2070,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -2235,7 +2083,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -2248,7 +2096,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         assert_eq!(invocation.arguments, Some(JsonObject::new()));
     }
@@ -2264,7 +2112,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -2278,7 +2126,8 @@ mod tests {
         );
         let predicate: ToolPredicate = Arc::new(|_name, _input| false);
         let corpus = ValueCorpus::default();
-        let strategy = invocation_from_corpus(&tool, Some(&predicate), &corpus).expect("strategy");
+        let strategy =
+            invocation_from_corpus(&tool, Some(&predicate), &corpus, false).expect("strategy");
         let mut runner = proptest::test_runner::TestRunner::deterministic();
         assert!(strategy.new_tree(&mut runner).is_err());
     }
@@ -2287,15 +2136,6 @@ mod tests {
     fn schema_error_detail_handles_no_eligible_tools() {
         let detail = schema_error_detail(InvocationError::NoEligibleTools);
         assert_eq!(detail, "no eligible tools to generate");
-    }
-
-    #[test]
-    fn schema_error_detail_handles_unsupported_schema() {
-        let detail = schema_error_detail(InvocationError::UnsupportedSchema {
-            tool: "tool".to_string(),
-            reason: "bad schema".to_string(),
-        });
-        assert_eq!(detail, "bad schema");
     }
 
     #[test]
@@ -2315,371 +2155,30 @@ mod tests {
         assert!(matches!(
             error,
             InvocationError::UnsupportedSchema { reason, .. }
-                if reason.contains("pattern must be a valid ECMAScript regex")
+                if reason.contains("pattern must be a valid regex")
         ));
     }
 
     #[test]
-    fn schema_value_strategy_reports_regex_generation_failure() {
-        let tool = tool_with_schema(
-            "echo",
-            json!({
-                "type": "object",
-                "properties": { "text": { "type": "string", "pattern": "a{4294967295}" } }
-            }),
-        );
-        let schema = json!({ "type": "string", "pattern": "a{4294967295}" })
-            .as_object()
-            .cloned()
-            .expect("schema");
-        let error = schema_value_strategy(&schema, &tool).expect_err("unsupported repetition");
-        assert!(matches!(
-            error,
-            InvocationError::UnsupportedSchema { reason, .. }
-                if reason.contains("pattern must be a valid ECMAScript regex")
-                    && reason.contains("Cannot have repetition of exactly u32::MAX")
-        ));
+    fn normalize_pattern_for_generation_handles_empty_pattern() {
+        let normalized = normalize_pattern_for_generation("").expect("empty");
+        assert_eq!(normalized, "");
     }
 
     #[test]
-    fn parse_ecma_pattern_for_generation_handles_empty_pattern() {
-        let hir = parse_ecma_pattern_for_generation("").expect("empty");
-        assert!(matches!(hir.kind(), regex_syntax::hir::HirKind::Empty));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_strips_anchors() {
-        let hir = parse_ecma_pattern_for_generation("^$").expect("anchors");
-        assert!(matches!(hir.kind(), regex_syntax::hir::HirKind::Empty));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_rejects_word_boundary() {
-        let error = parse_ecma_pattern_for_generation(r"\b").expect_err("boundary");
+    fn normalize_pattern_for_generation_rejects_word_boundary() {
+        let error = normalize_pattern_for_generation(r"\b").expect_err("boundary");
         assert!(error.contains("word boundary"));
     }
 
     #[test]
-    fn parse_ecma_pattern_for_generation_rejects_negated_class_escape_in_class() {
-        let error = parse_ecma_pattern_for_generation(r"[\D]").expect_err("negated");
-        assert!(error.contains("negated class escape"));
+    fn contains_boundary_escape_handles_trailing_escape() {
+        assert!(!contains_boundary_escape("\\"));
     }
 
     #[test]
-    fn parse_ecma_pattern_for_generation_rejects_unicode_property_escape() {
-        let error = parse_ecma_pattern_for_generation(r"\p{L}").expect_err("property");
-        assert!(error.contains("unicode property escape"));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_rejects_negative_lookahead() {
-        let error = parse_ecma_pattern_for_generation("a(?!b)").expect_err("lookahead");
-        assert!(error.contains("negative lookahead"));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_rejects_positive_lookahead() {
-        let error = parse_ecma_pattern_for_generation("a(?=b)").expect_err("lookahead");
-        assert!(error.contains("lookahead"));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_rejects_negative_lookbehind() {
-        let error = parse_ecma_pattern_for_generation("(?<!a)b").expect_err("lookbehind");
-        assert!(error.contains("negative lookbehind"));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_named_groups() {
-        let hir = parse_ecma_pattern_for_generation("(?<word>a)").expect("named");
-        let sample = sample_string_regex(&hir);
-        assert_eq!(sample, "a");
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_disjunction() {
-        let hir = parse_ecma_pattern_for_generation("a|b").expect("alts");
-        let sample = sample_string_regex(&hir);
-        assert!(sample == "a" || sample == "b");
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_character_class_range() {
-        let hir = parse_ecma_pattern_for_generation("[A-C]").expect("range");
-        let sample = sample_string_regex(&hir);
-        assert!(matches!(sample.as_str(), "A" | "B" | "C"));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_character_class_negation() {
-        let hir = parse_ecma_pattern_for_generation("[^A]").expect("negated");
-        let sample = sample_string_regex(&hir);
-        assert_ne!(sample, "A");
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_perl_class_in_character_class() {
-        let hir = parse_ecma_pattern_for_generation(r"[\d]").expect("class");
-        let sample = sample_string_regex(&hir);
-        assert!(sample.chars().all(|ch| ch.is_ascii_digit()));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_dot_class() {
-        let hir = parse_ecma_pattern_for_generation(".").expect("dot");
-        let sample = sample_string_regex(&hir);
-        assert!(!matches!(
-            sample.as_str(),
-            "\n" | "\r" | "\u{2028}" | "\u{2029}"
-        ));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_quantifier_variants() {
-        let optional = parse_ecma_pattern_for_generation("a?").expect("optional");
-        let multiple = parse_ecma_pattern_for_generation("a*").expect("multiple");
-        let exact = parse_ecma_pattern_for_generation("a{2}").expect("exact");
-        let bounded = parse_ecma_pattern_for_generation("a{2,4}").expect("bounded");
-        let unbounded = parse_ecma_pattern_for_generation("a{2,}").expect("unbounded");
-
-        let optional_sample = sample_string_regex(&optional);
-        assert!(optional_sample.is_empty() || optional_sample == "a");
-        assert!(!sample_string_regex(&multiple).contains('b'));
-        assert_eq!(sample_string_regex(&exact).len(), 2);
-        let bounded_len = sample_string_regex(&bounded).len();
-        assert!((2..=4).contains(&bounded_len));
-        assert!(sample_string_regex(&unbounded).len() >= 2);
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_assertions_in_middle() {
-        let start = parse_ecma_pattern_for_generation("a^b").expect("start");
-        let end = parse_ecma_pattern_for_generation("a$b").expect("end");
-        assert_eq!(sample_string_regex(&start), "ab");
-        assert_eq!(sample_string_regex(&end), "ab");
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_space_class() {
-        let hir = parse_ecma_pattern_for_generation(r"\s").expect("space");
-        let sample = sample_string_regex(&hir);
-        assert!(matches!(
-            sample.as_str(),
-            " " | "\t" | "\n" | "\r" | "\u{0B}" | "\u{0C}"
-        ));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_negated_digit_class() {
-        let hir = parse_ecma_pattern_for_generation(r"\D").expect("negated");
-        let sample = sample_string_regex(&hir);
-        assert!(!sample.chars().all(|ch| ch.is_ascii_digit()));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_handles_negated_class_with_escape() {
-        let hir = parse_ecma_pattern_for_generation(r"[^\d]").expect("negated class");
-        let sample = sample_string_regex(&hir);
-        assert!(!sample.chars().all(|ch| ch.is_ascii_digit()));
-    }
-
-    #[test]
-    fn parse_ecma_pattern_for_generation_rejects_named_backreference() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let node = Node::NamedBackReference(span, "name".to_string());
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.build(&node).expect_err("named");
-        assert!(error.contains("named backreference"));
-    }
-
-    #[test]
-    fn perl_class_rejects_unicode_kind() {
-        let builder = EcmaHirBuilder::new();
-        let error = builder
-            .perl_class(&ClassPerlKind::Unicode(None, "Latin".to_string()))
-            .expect_err("unicode");
-        assert!(error.contains("unicode property escape"));
-    }
-
-    #[test]
-    fn builder_handles_empty_node() {
-        let mut builder = EcmaHirBuilder::new();
-        let hir = builder.build(&Node::Empty).expect("empty");
-        assert!(matches!(hir.kind(), regex_syntax::hir::HirKind::Empty));
-    }
-
-    #[test]
-    fn builder_reports_error_for_disjunction_child() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let node = Node::Disjunction(
-            span.clone(),
-            vec![
-                Node::Literal(span.clone(), 'a', "a".to_string()),
-                Node::NamedBackReference(span, "name".to_string()),
-            ],
-        );
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.build(&node).expect_err("disjunction");
-        assert!(error.contains("named backreference"));
-    }
-
-    #[test]
-    fn builder_reports_error_for_alternative_child() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let node = Node::Alternative(
-            span.clone(),
-            vec![
-                Node::Literal(span.clone(), 'a', "a".to_string()),
-                Node::NamedBackReference(span, "name".to_string()),
-            ],
-        );
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.build(&node).expect_err("alternative");
-        assert!(error.contains("named backreference"));
-    }
-
-    #[test]
-    fn builder_reports_error_for_invalid_perl_class() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let node = Node::PerlClass(
-            span,
-            ClassPerlKind::Unicode(None, "Latin".to_string()),
-            false,
-        );
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.build(&node).expect_err("perl");
-        assert!(error.contains("unicode property escape"));
-    }
-
-    #[test]
-    fn builder_handles_noncapturing_group() {
-        let hir = parse_ecma_pattern_for_generation("(?:a)").expect("noncapturing");
-        let sample = sample_string_regex(&hir);
-        assert_eq!(sample, "a");
-    }
-
-    #[test]
-    fn builder_reports_error_for_group_child() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let node = Node::Group(
-            span.clone(),
-            rslint_regex::Group {
-                noncapturing: false,
-                inner: Box::new(Node::NamedBackReference(span, "name".to_string())),
-                name: None,
-            },
-        );
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.build(&node).expect_err("group");
-        assert!(error.contains("named backreference"));
-    }
-
-    #[test]
-    fn builder_reports_error_for_quantifier_child() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let node = Node::Quantifier(
-            span.clone(),
-            Box::new(Node::NamedBackReference(span, "name".to_string())),
-            QuantifierKind::AtLeastOne,
-            false,
-        );
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.build(&node).expect_err("quantifier");
-        assert!(error.contains("named backreference"));
-    }
-
-    #[test]
-    fn character_class_rejects_non_literal_range_end() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let class = CharacterClass {
-            negated: false,
-            members: vec![CharacterClassMember::Range(
-                Node::Literal(span.clone(), 'a', "a".to_string()),
-                Node::PerlClass(span, ClassPerlKind::Digit, false),
-            )],
-        };
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.character_class(&class).expect_err("range");
-        assert!(error.contains("character class range"));
-    }
-
-    #[test]
-    fn character_class_rejects_unknown_member_escape() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let class = CharacterClass {
-            negated: false,
-            members: vec![CharacterClassMember::Single(Node::Dot(span))],
-        };
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.character_class(&class).expect_err("member");
-        assert!(error.contains("character class member escape"));
-    }
-
-    #[test]
-    fn character_class_rejects_unicode_member_escape() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let class = CharacterClass {
-            negated: false,
-            members: vec![CharacterClassMember::Single(Node::PerlClass(
-                span,
-                ClassPerlKind::Unicode(None, "Latin".to_string()),
-                false,
-            ))],
-        };
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.character_class(&class).expect_err("member");
-        assert!(error.contains("unicode property escape"));
-    }
-
-    #[test]
-    fn character_class_rejects_non_literal_range() {
-        let span = rslint_regex::Span::new(0, 0, 0);
-        let class = CharacterClass {
-            negated: false,
-            members: vec![CharacterClassMember::Range(
-                Node::PerlClass(span.clone(), ClassPerlKind::Digit, false),
-                Node::Literal(span, 'a', "a".to_string()),
-            )],
-        };
-        let mut builder = EcmaHirBuilder::new();
-        let error = builder.character_class(&class).expect_err("range");
-        assert!(error.contains("character class range"));
-    }
-
-    #[test]
-    fn contains_unicode_property_escape_handles_trailing_escape() {
-        assert!(!contains_unicode_property_escape("\\"));
-    }
-
-    #[test]
-    fn unsupported_feature_formats_message() {
-        let message = unsupported_feature("lookbehind");
-        assert_eq!(
-            message,
-            "tooltest deficiency: unsupported ECMAScript regex feature: lookbehind"
-        );
-    }
-
-    #[test]
-    fn schema_value_strategy_reports_regex_generation_error() {
-        let tool = tool_with_schema(
-            "bad",
-            json!({
-                "type": "object",
-                "properties": { "text": { "type": "string", "pattern": "a" } }
-            }),
-        );
-        let err = proptest::string::Error::UnsupportedRegex("unsupported");
-        let error = pattern_generation_error(&tool, err);
-        let (tool, reason) = unwrap_unsupported_schema(error);
-        assert_eq!(tool, "bad");
-        assert!(reason.contains("pattern must be a valid ECMAScript regex"));
-    }
-
-    #[test]
-    #[should_panic(expected = "expected UnsupportedSchema")]
-    fn unwrap_unsupported_schema_panics_on_other_variant() {
-        let _ = unwrap_unsupported_schema(InvocationError::NoEligibleTools);
+    fn contains_boundary_escape_skips_non_boundary_escapes() {
+        assert!(!contains_boundary_escape(r"\d"));
     }
 
     #[test]
@@ -2687,22 +2186,6 @@ mod tests {
         assert!(!is_escaped(b"\\", 0));
         assert!(is_escaped(br"\\a", 1));
         assert!(!is_escaped(br"\\\\a", 2));
-    }
-
-    fn sample_string_regex(hir: &Hir) -> String {
-        let strategy = proptest::string::string_regex_parsed(hir).expect("strategy");
-        let mut runner = proptest::test_runner::TestRunner::deterministic();
-        strategy
-            .new_tree(&mut runner)
-            .expect("value tree")
-            .current()
-    }
-
-    fn unwrap_unsupported_schema(error: InvocationError) -> (String, String) {
-        match error {
-            InvocationError::UnsupportedSchema { tool, reason } => (tool, reason),
-            _ => panic!("expected UnsupportedSchema"),
-        }
     }
 
     #[test]
@@ -2713,11 +2196,11 @@ mod tests {
             .cloned()
             .expect("schema");
         let corpus = ValueCorpus::default();
-        let missing = property_strategy_from_corpus(&schema, true, &corpus, &tool);
+        let missing = property_strategy_from_corpus(&schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&missing));
         assert!(!outcome_is_omit(&missing));
 
-        let omitted = property_strategy_from_corpus(&schema, false, &corpus, &tool);
+        let omitted = property_strategy_from_corpus(&schema, false, &corpus, &tool, false);
         assert!(!outcome_is_missing_required(&omitted));
         assert!(outcome_is_omit(&omitted));
     }
@@ -2734,20 +2217,23 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let integer_required = property_strategy_from_corpus(&integer_schema, true, &corpus, &tool);
+        let integer_required =
+            property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&integer_required));
         assert!(!outcome_is_omit(&integer_required));
 
         let integer_optional =
-            property_strategy_from_corpus(&integer_schema, false, &corpus, &tool);
+            property_strategy_from_corpus(&integer_schema, false, &corpus, &tool, false);
         assert!(!outcome_is_missing_required(&integer_optional));
         assert!(outcome_is_omit(&integer_optional));
 
-        let number_required = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        let number_required =
+            property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&number_required));
         assert!(!outcome_is_omit(&number_required));
 
-        let number_optional = property_strategy_from_corpus(&number_schema, false, &corpus, &tool);
+        let number_optional =
+            property_strategy_from_corpus(&number_schema, false, &corpus, &tool, false);
         assert!(!outcome_is_missing_required(&number_optional));
         assert!(outcome_is_omit(&number_optional));
     }
@@ -2761,7 +2247,7 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool, false);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_omit(&outcome));
     }
@@ -2782,7 +2268,7 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_missing_required(&outcome));
     }
@@ -2792,20 +2278,33 @@ mod tests {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let corpus = ValueCorpus::default();
         let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
-        let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
 
     #[test]
-    fn property_strategy_from_corpus_handles_schema_value_strategy_results() {
+    fn property_strategy_from_corpus_strict_skips_schema_generation() {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let corpus = ValueCorpus::default();
         let const_schema = json!({ "const": true })
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool, false);
+        assert!(outcome_is_missing_required(&outcome));
+        assert!(!outcome_is_include(&outcome));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_lenient_uses_schema_generation() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let const_schema = json!({ "const": true })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool, true);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_missing_required(&outcome));
 
@@ -2813,8 +2312,21 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&bad_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&bad_schema, true, &corpus, &tool, true);
         assert!(outcome_is_missing_required(&outcome));
+        assert!(!outcome_is_include(&outcome));
+    }
+
+    #[test]
+    fn property_strategy_from_corpus_lenient_omits_invalid_optional_schema() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let schema = json!({ "type": "integer", "minimum": 5, "maximum": 1 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let outcome = property_strategy_from_corpus(&schema, false, &corpus, &tool, true);
+        assert!(outcome_is_omit(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
 
@@ -2893,19 +2405,19 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&string_tool, &corpus),
+            uncallable_reason(&string_tool, &corpus, false),
             Some(UncallableReason::String)
         );
         assert_eq!(
-            uncallable_reason(&integer_tool, &corpus),
+            uncallable_reason(&integer_tool, &corpus, false),
             Some(UncallableReason::Integer)
         );
         assert_eq!(
-            uncallable_reason(&number_tool, &corpus),
+            uncallable_reason(&number_tool, &corpus, false),
             Some(UncallableReason::Number)
         );
         assert_eq!(
-            uncallable_reason(&required_tool, &corpus),
+            uncallable_reason(&required_tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2927,7 +2439,7 @@ mod tests {
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
         corpus.seed_numbers([Number::from(7)]);
-        assert_eq!(uncallable_reason(&tool, &corpus), None);
+        assert_eq!(uncallable_reason(&tool, &corpus, false), None);
     }
 
     #[test]
@@ -2935,7 +2447,7 @@ mod tests {
         let tool = tool_with_schema("bad", json!({ "type": "object", "properties": "nope" }));
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2944,7 +2456,7 @@ mod tests {
     fn uncallable_reason_handles_empty_required_without_properties() {
         let tool = tool_with_schema("empty", json!({ "type": "object", "required": [] }));
         let corpus = ValueCorpus::default();
-        assert_eq!(uncallable_reason(&tool, &corpus), None);
+        assert_eq!(uncallable_reason(&tool, &corpus, false), None);
     }
 
     #[test]
@@ -2955,7 +2467,7 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2980,12 +2492,67 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&string_tool, &corpus),
+            uncallable_reason(&string_tool, &corpus, false),
             Some(UncallableReason::String)
         );
         assert_eq!(
-            uncallable_reason(&number_tool, &corpus),
+            uncallable_reason(&number_tool, &corpus, false),
             Some(UncallableReason::Number)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_lenient_allows_schema_generation() {
+        let tool = tool_with_schema(
+            "echo",
+            json!( {
+                "type": "object",
+                "properties": { "value": { "type": "string", "minLength": 1 } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(uncallable_reason(&tool, &corpus, true), None);
+    }
+
+    #[test]
+    fn uncallable_reason_lenient_reports_invalid_schema() {
+        let integer_tool = tool_with_schema(
+            "bad-integer",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "integer", "minimum": 5, "maximum": 1 } },
+                "required": ["value"]
+            }),
+        );
+        let number_tool = tool_with_schema(
+            "bad-number",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "number", "minimum": 5.0, "maximum": 1.0 } },
+                "required": ["value"]
+            }),
+        );
+        let unknown_tool = tool_with_schema(
+            "bad-schema",
+            json!({
+                "type": "object",
+                "properties": { "value": { "minLength": 2 } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&integer_tool, &corpus, true),
+            Some(UncallableReason::RequiredValue)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus, true),
+            Some(UncallableReason::RequiredValue)
+        );
+        assert_eq!(
+            uncallable_reason(&unknown_tool, &corpus, true),
+            Some(UncallableReason::RequiredValue)
         );
     }
 
@@ -3001,7 +2568,7 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -3018,7 +2585,7 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -3083,5 +2650,225 @@ mod tests {
             .cloned()
             .expect("schema");
         assert!(schema_value_strategy(&schema, &tool).is_err());
+    }
+
+    #[test]
+    fn schema_value_strategy_rejects_anyof_with_invalid_branch() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                { "type": "string" },
+                { "minLength": 2 }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        assert!(schema_value_strategy(&schema_object, &tool).is_err());
+    }
+
+    #[test]
+    fn schema_value_strategy_rejects_invalid_array_items() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "items": { "minLength": 2 },
+            "minItems": 1,
+            "maxItems": 2
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        assert!(schema_value_strategy(&schema_object, &tool).is_err());
+    }
+
+    #[test]
+    fn schema_value_strategy_supports_anyof_generation() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "number", "minimum": 1.0 }
+            ]
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let strategy = schema_value_strategy(&schema_object, &tool).expect("strategy");
+        let value = sample(strategy);
+        assert!(schema_violations(&schema_object, &value).is_empty());
+    }
+
+    #[test]
+    fn schema_value_strategy_supports_array_items() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1,
+            "maxItems": 2
+        });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        let strategy = schema_value_strategy(&schema_object, &tool).expect("strategy");
+        let value = sample(strategy);
+        let items = value.as_array().expect("array");
+        assert!(!items.is_empty());
+        assert!(items
+            .iter()
+            .all(|item| matches!(item, JsonValue::String(_))));
+    }
+
+    #[test]
+    fn collect_constraints_selects_anyof_branch() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "number", "minimum": 3.0 }
+            ],
+            "maxLength": 5
+        });
+        let value = json!("ok");
+        let constraints =
+            applicable_constraints(schema.as_object().expect("schema object"), &value);
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn collect_constraints_selects_type_union_branch() {
+        let schema = json!({
+            "type": ["string", "number"],
+            "minLength": 2
+        });
+        let value = json!("ok");
+        let constraints =
+            applicable_constraints(schema.as_object().expect("schema object"), &value);
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn collect_constraints_inner_adds_anyof_branch_constraints() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "number", "minimum": 3.0 }
+            ]
+        });
+        let value = json!("ok");
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        collect_constraints_inner(
+            schema.as_object().expect("schema object"),
+            &value,
+            &mut path,
+            &mut constraints,
+        );
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn collect_constraints_inner_adds_type_union_constraints() {
+        let schema = json!({
+            "type": ["string", "number"],
+            "minLength": 2
+        });
+        let value = json!("ok");
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        collect_constraints_inner(
+            schema.as_object().expect("schema object"),
+            &value,
+            &mut path,
+            &mut constraints,
+        );
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn schema_anyof_branches_rejects_non_object_entries() {
+        let schema = json!({ "anyOf": ["nope"] });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        assert!(schema_anyof_branches(&schema_object).is_none());
+    }
+
+    #[test]
+    fn schema_type_union_branches_rejects_non_string_entries() {
+        let schema = json!({ "type": [1, "string"] });
+        let schema_object = schema.as_object().cloned().expect("schema");
+        assert!(schema_type_union_branches(&schema_object).is_none());
+    }
+
+    #[test]
+    fn schema_violations_anyof_selects_best_branch() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 4 },
+                { "type": "string", "minLength": 4, "pattern": "^a+$" }
+            ]
+        });
+        let value = json!("no");
+        let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(4))));
+        assert!(!violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::Pattern(_))));
+    }
+
+    #[test]
+    fn schema_violations_type_union_selects_best_branch() {
+        let schema = json!({ "type": ["string", "number"], "minLength": 2 });
+        let value = json!(true);
+        let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
+    }
+
+    #[test]
+    fn collect_violations_inner_adds_anyof_best_branch() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 4 },
+                { "type": "string", "minLength": 4, "pattern": "^a+$" }
+            ]
+        });
+        let value = json!("no");
+        let mut path = Vec::new();
+        let mut violations = Vec::new();
+        collect_violations_inner(
+            schema.as_object().expect("schema object"),
+            &value,
+            &mut path,
+            &mut violations,
+        );
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(4))));
+    }
+
+    #[test]
+    fn collect_violations_inner_adds_type_union_best_branch() {
+        let schema = json!({ "type": ["string", "number"], "minLength": 2 });
+        let value = json!(true);
+        let mut path = Vec::new();
+        let mut violations = Vec::new();
+        collect_violations_inner(
+            schema.as_object().expect("schema object"),
+            &value,
+            &mut path,
+            &mut violations,
+        );
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
+    }
+
+    #[test]
+    fn mismatched_type_value_handles_null() {
+        let value = mismatched_type_value("null");
+        assert!(matches!(value, JsonValue::Bool(true)));
     }
 }

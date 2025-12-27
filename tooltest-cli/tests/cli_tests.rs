@@ -86,6 +86,158 @@ fn stdio_command_reports_success_with_state_machine_mode() {
 }
 
 #[test]
+fn stdio_command_reports_coverage_warning_for_missing_string() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_string"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_reports_coverage_warning_for_missing_integer() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+        "--env",
+        "TOOLTEST_VALUE_TYPE=integer",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_integer"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_reports_coverage_warning_for_missing_number() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+        "--env",
+        "TOOLTEST_VALUE_TYPE=number",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_number"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_reports_coverage_warning_for_missing_required_value() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+        "--env",
+        "TOOLTEST_VALUE_TYPE=object",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("missing_required_value"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn stdio_command_accepts_lenient_sourcing_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--lenient-sourcing",
+        "--cases",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn test_server_exits_on_expectation_failure() {
     let Some(server) = test_server() else {
         return;
@@ -299,6 +451,7 @@ async fn run_http_failure_returns_exit_code_1() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::StateMachine,
+        lenient_sourcing: false,
         json: false,
         state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
         command: TooltestCommand::Http {
@@ -318,6 +471,7 @@ async fn run_invalid_sequence_len_returns_exit_code_2() {
         min_sequence_len: 0,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        lenient_sourcing: false,
         json: false,
         state_machine_config: None,
         command: TooltestCommand::Http {
@@ -337,6 +491,7 @@ async fn run_invalid_state_machine_config_returns_exit_code_2() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        lenient_sourcing: false,
         json: false,
         state_machine_config: Some("not-json".to_string()),
         command: TooltestCommand::Http {
@@ -356,6 +511,7 @@ async fn run_missing_state_machine_config_file_returns_exit_code_2() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        lenient_sourcing: false,
         json: false,
         state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
         command: TooltestCommand::Http {
@@ -378,6 +534,7 @@ async fn run_stdio_success_returns_exit_code_0() {
         min_sequence_len: 1,
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
+        lenient_sourcing: false,
         json: false,
         state_machine_config: None,
         command: TooltestCommand::Stdio {

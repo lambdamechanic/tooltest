@@ -127,3 +127,25 @@ fn state_machine_generator_returns_empty_when_no_callable_tools() {
     let sequence = sample(strategy);
     assert!(sequence.is_empty());
 }
+
+#[test]
+fn state_machine_generator_lenient_generates_without_corpus() {
+    let tool = tool_with_schema(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
+            },
+            "required": ["text"]
+        }),
+    );
+    let config = StateMachineConfig::default().with_lenient_sourcing(true);
+    let strategy =
+        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
+
+    let sequence = sample(strategy);
+    assert_eq!(sequence.len(), 1);
+    let args = sequence[0].arguments.as_ref().expect("args");
+    assert!(matches!(args.get("text"), Some(JsonValue::String(_))));
+}

@@ -17,9 +17,9 @@ use crate::generator::{
 use crate::schema::parse_list_tools;
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageReport, CoverageRule,
-    CoverageWarning, CoverageWarningReason, GeneratorMode, HttpConfig, MinimizedSequence,
-    RunConfig, RunFailure, RunOutcome, RunResult, SessionDriver, StdioConfig, ToolInvocation,
-    TraceEntry,
+    CoverageWarning, CoverageWarningReason, GeneratorMode, HttpConfig, JsonObject,
+    MinimizedSequence, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
+    SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
 };
 
 /// Configuration for proptest-driven run behavior.
@@ -61,6 +61,7 @@ pub async fn run_with_session(
                 RunFailure::new(reason.clone()),
                 vec![TraceEntry::list_tools_with_failure(reason)],
                 None,
+                Vec::new(),
                 None,
             );
         }
@@ -73,10 +74,12 @@ pub async fn run_with_session(
                 RunFailure::new(reason),
                 prelude_trace.as_ref().clone(),
                 None,
+                Vec::new(),
                 None,
             )
         }
     };
+    let warnings = collect_schema_warnings(&tools);
 
     let output_validators = match build_output_validators(&tools) {
         Ok(validators) => validators,
@@ -85,6 +88,7 @@ pub async fn run_with_session(
                 RunFailure::new(reason),
                 prelude_trace.as_ref().clone(),
                 None,
+                warnings,
                 None,
             )
         }
@@ -96,6 +100,7 @@ pub async fn run_with_session(
                 RunFailure::new(reason),
                 prelude_trace.as_ref().clone(),
                 None,
+                warnings,
                 None,
             )
         }
@@ -121,6 +126,7 @@ pub async fn run_with_session(
                 RunFailure::new(error.to_string()),
                 prelude_trace.as_ref().clone(),
                 None,
+                warnings,
                 None,
             )
         }
@@ -135,17 +141,19 @@ pub async fn run_with_session(
         trace: Vec::new(),
         coverage: None,
     }));
-    let output_validators = Rc::new(output_validators);
-    let input_validators = Rc::new(input_validators);
     let handle = tokio::runtime::Handle::current();
     if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
         return failure_result(
             RunFailure::new("run_with_session requires a multi-thread Tokio runtime".to_string()),
             Vec::new(),
             None,
+            warnings.clone(),
             None,
         );
     }
+    let warnings = Rc::new(warnings);
+    let output_validators = Rc::new(output_validators);
+    let input_validators = Rc::new(input_validators);
 
     let mut runner = TestRunner::new(ProptestConfig {
         cases: options.cases,
@@ -234,7 +242,13 @@ pub async fn run_with_session(
         }
     });
 
-    finalize_run_result(run_result, &last_trace, &last_failure, &last_coverage)
+    finalize_run_result(
+        run_result,
+        &last_trace,
+        &last_failure,
+        &last_coverage,
+        warnings.as_ref(),
+    )
 }
 
 /// Execute a tooltest run against a stdio MCP endpoint.
@@ -553,6 +567,45 @@ fn map_uncallable_reason(reason: UncallableReason) -> CoverageWarningReason {
     }
 }
 
+fn collect_schema_warnings(tools: &[Tool]) -> Vec<RunWarning> {
+    let mut warnings = Vec::new();
+    for tool in tools {
+        collect_schema_keyword_warnings(tool, "inputSchema", &tool.input_schema, &mut warnings);
+        if let Some(schema) = &tool.output_schema {
+            collect_schema_keyword_warnings(tool, "outputSchema", schema, &mut warnings);
+        }
+    }
+    warnings
+}
+
+fn collect_schema_keyword_warnings(
+    tool: &Tool,
+    schema_label: &str,
+    schema: &JsonObject,
+    warnings: &mut Vec<RunWarning>,
+) {
+    if !schema.contains_key("$defs") {
+        return;
+    }
+    let schema_id = schema
+        .get("$schema")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if schema_id.contains("draft-07")
+        || schema_id.contains("draft-06")
+        || schema_id.contains("draft-04")
+    {
+        warnings.push(RunWarning {
+            code: RunWarningCode::SchemaUnsupportedKeyword,
+            message: format!(
+                "tool '{}' {schema_label} declares {schema_id} but uses '$defs'; draft-07 and earlier use 'definitions'",
+                tool.name
+            ),
+            tool: Some(tool.name.to_string()),
+        });
+    }
+}
+
 fn coverage_failure(failure: CoverageValidationFailure) -> RunFailure {
     RunFailure {
         reason: "coverage validation failed".to_string(),
@@ -854,12 +907,14 @@ fn failure_result(
     failure: RunFailure,
     trace: Vec<TraceEntry>,
     minimized: Option<MinimizedSequence>,
+    warnings: Vec<RunWarning>,
     coverage: Option<CoverageReport>,
 ) -> RunResult {
     RunResult {
         outcome: RunOutcome::Failure(failure),
         trace,
         minimized,
+        warnings,
         coverage,
     }
 }
@@ -869,18 +924,21 @@ fn finalize_run_result(
     last_trace: &Rc<RefCell<Vec<TraceEntry>>>,
     last_failure: &Rc<RefCell<FailureContext>>,
     last_coverage: &Rc<RefCell<Option<CoverageReport>>>,
+    warnings: &[RunWarning],
 ) -> RunResult {
     match run_result {
         Ok(()) => RunResult {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: warnings.to_vec(),
             coverage: last_coverage.borrow().clone(),
         },
         Err(TestError::Abort(reason)) => failure_result(
             RunFailure::new(format!("proptest aborted: {reason}")),
             last_trace.borrow().clone(),
             None,
+            warnings.to_vec(),
             last_coverage.borrow().clone(),
         ),
         Err(TestError::Fail(_reason, sequence)) => {
@@ -889,7 +947,13 @@ fn finalize_run_result(
             let minimized = Some(MinimizedSequence {
                 invocations: sequence,
             });
-            failure_result(failure.failure, trace, minimized, failure.coverage)
+            failure_result(
+                failure.failure,
+                trace,
+                minimized,
+                warnings.to_vec(),
+                failure.coverage,
+            )
         }
     }
 }
@@ -911,6 +975,7 @@ async fn run_with_transport(
                 RunFailure::new(format!("failed to connect {label} transport: {error:?}")),
                 Vec::new(),
                 None,
+                Vec::new(),
                 None,
             );
         }
@@ -1020,6 +1085,7 @@ mod tests {
             &last_trace,
             &last_failure,
             &Rc::new(RefCell::new(None)),
+            &[],
         );
 
         #[cfg(coverage)]
@@ -1504,6 +1570,7 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
         assert_success(&result);
@@ -1701,6 +1768,7 @@ mod tests {
             &last_trace,
             &last_failure,
             &Rc::new(RefCell::new(None)),
+            &[],
         );
 
         assert_failure_reason_eq(&result, "failure");
@@ -2171,6 +2239,99 @@ mod tests {
             map_uncallable_reason(UncallableReason::RequiredValue),
             CoverageWarningReason::MissingRequiredValue
         );
+    }
+
+    #[test]
+    fn collect_schema_warnings_flags_defs_in_draft07() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$defs": {
+                    "thing": { "type": "string" }
+                },
+                "type": "object",
+                "properties": {}
+            }),
+            None,
+        );
+        let warnings = collect_schema_warnings(&[tool]);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, RunWarningCode::SchemaUnsupportedKeyword);
+        assert!(warnings[0].message.contains("$defs"));
+    }
+
+    #[test]
+    fn collect_schema_warnings_flags_defs_in_draft06() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "$schema": "http://json-schema.org/draft-06/schema#",
+                "$defs": {
+                    "thing": { "type": "string" }
+                },
+                "type": "object",
+                "properties": {}
+            }),
+            None,
+        );
+        let warnings = collect_schema_warnings(&[tool]);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, RunWarningCode::SchemaUnsupportedKeyword);
+        assert!(warnings[0].message.contains("draft-06"));
+    }
+
+    #[test]
+    fn collect_schema_warnings_flags_defs_in_draft04() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "$defs": {
+                    "thing": { "type": "string" }
+                },
+                "type": "object",
+                "properties": {}
+            }),
+            None,
+        );
+        let warnings = collect_schema_warnings(&[tool]);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, RunWarningCode::SchemaUnsupportedKeyword);
+        assert!(warnings[0].message.contains("draft-04"));
+    }
+
+    #[test]
+    fn collect_schema_warnings_skips_without_defs() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {}
+            }),
+            None,
+        );
+        let warnings = collect_schema_warnings(&[tool]);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn collect_schema_warnings_ignores_defs_in_modern_schema() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$defs": {
+                    "thing": { "type": "string" }
+                },
+                "type": "object",
+                "properties": {}
+            }),
+            None,
+        );
+        let warnings = collect_schema_warnings(&[tool]);
+        assert!(warnings.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

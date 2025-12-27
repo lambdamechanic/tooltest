@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
-    CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult,
-    RunnerOptions, StateMachineConfig, StdioConfig,
+    CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
+    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
 };
 
 #[derive(Parser)]
@@ -268,6 +268,17 @@ fn format_run_result_human(result: &RunResult) -> String {
         }
     }
 
+    if !result.warnings.is_empty() {
+        output.push_str("Warnings:\n");
+        for warning in &result.warnings {
+            output.push_str(&format!(
+                "- {}: {}\n",
+                format_run_warning_code(&warning.code),
+                format_run_warning_message(warning)
+            ));
+        }
+    }
+
     if !result.trace.is_empty() {
         let trace = serde_json::to_string_pretty(&result.trace).expect("serialize trace");
         output.push_str("Trace:\n");
@@ -287,6 +298,20 @@ fn format_coverage_warning_reason(reason: &CoverageWarningReason) -> &'static st
     }
 }
 
+fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
+    match code {
+        RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
+    }
+}
+
+fn format_run_warning_message(warning: &RunWarning) -> String {
+    if let Some(tool) = &warning.tool {
+        format!("{} ({tool})", warning.message)
+    } else {
+        warning.message.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +319,10 @@ mod tests {
 
     use clap::CommandFactory;
     use rmcp::model::{CallToolResult, Content};
-    use tooltest_core::{CoverageReport, CoverageWarning, RunFailure, ToolInvocation, TraceEntry};
+    use tooltest_core::{
+        CoverageReport, CoverageWarning, RunFailure, RunWarning, RunWarningCode, ToolInvocation,
+        TraceEntry,
+    };
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -490,6 +518,7 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
 
@@ -508,6 +537,7 @@ mod tests {
             outcome: RunOutcome::Failure(failure),
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
 
@@ -546,6 +576,7 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: Some(coverage),
         };
 
@@ -555,6 +586,46 @@ mod tests {
         assert!(output.contains("- beta: missing_integer"));
         assert!(output.contains("- gamma: missing_number"));
         assert!(output.contains("- delta: missing_required_value"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_warnings() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::SchemaUnsupportedKeyword,
+                message: "schema warning".to_string(),
+                tool: Some("echo".to_string()),
+            }],
+            coverage: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Warnings:"));
+        assert!(output.contains("schema_unsupported_keyword"));
+        assert!(output.contains("schema warning"));
+        assert!(output.contains("echo"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_warning_without_tool() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::SchemaUnsupportedKeyword,
+                message: "standalone warning".to_string(),
+                tool: None,
+            }],
+            coverage: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("standalone warning"));
+        assert!(!output.contains("standalone warning ("));
     }
 
     #[test]
@@ -576,6 +647,7 @@ mod tests {
             outcome: RunOutcome::Failure(RunFailure::new("failed")),
             trace,
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
 
@@ -595,6 +667,7 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: Some(coverage),
         };
 

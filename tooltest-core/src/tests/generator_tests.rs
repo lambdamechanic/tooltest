@@ -1461,6 +1461,32 @@ fn schema_violations_rejects_anyof_miss() {
 }
 
 #[test]
+fn schema_violations_handles_empty_anyof() {
+    let schema = json!({
+        "anyOf": [],
+        "type": "string",
+        "minLength": 2
+    });
+    let value = json!("ok");
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(violations.is_empty());
+}
+
+#[test]
+fn schema_violations_handles_empty_allof() {
+    let schema = json!({
+        "allOf": [],
+        "type": "string",
+        "minLength": 2
+    });
+    let value = json!(1);
+    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
+}
+
+#[test]
 fn schema_violations_accepts_nullable_type_union() {
     let schema = json!({ "type": ["string", "null"], "minLength": 2 });
     let value = json!(null);

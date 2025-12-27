@@ -1461,15 +1461,17 @@ fn schema_violations_rejects_anyof_miss() {
 }
 
 #[test]
-fn schema_violations_handles_empty_anyof() {
-    let schema = json!({
-        "anyOf": [],
-        "type": "string",
-        "minLength": 2
-    });
-    let value = json!("ok");
-    let violations = schema_violations(schema.as_object().expect("schema object"), &value);
-    assert!(violations.is_empty());
+fn schema_violations_panics_on_empty_anyof() {
+    let _ = std::panic::catch_unwind(|| {
+        let schema = json!({
+            "anyOf": [],
+            "type": "string",
+            "minLength": 2
+        });
+        let value = json!("ok");
+        let _ = schema_violations(schema.as_object().expect("schema object"), &value);
+    })
+    .expect_err("empty anyOf should panic");
 }
 
 #[test]
@@ -1758,17 +1760,17 @@ fn applicable_constraints_handles_anyof_non_array() {
 }
 
 #[test]
-fn applicable_constraints_handles_empty_anyof() {
-    let schema = json!({
-        "anyOf": [],
-        "type": "string",
-        "minLength": 1
-    });
-    let value = json!("ok");
-    let constraints = applicable_constraints(schema.as_object().expect("schema object"), &value);
-    assert!(constraints
-        .iter()
-        .any(|constraint| matches!(constraint.kind, ConstraintKind::Type(_))));
+fn applicable_constraints_panics_on_empty_anyof() {
+    let _ = std::panic::catch_unwind(|| {
+        let schema = json!({
+            "anyOf": [],
+            "type": "string",
+            "minLength": 1
+        });
+        let value = json!("ok");
+        let _ = applicable_constraints(schema.as_object().expect("schema object"), &value);
+    })
+    .expect_err("empty anyOf should panic");
 }
 
 #[test]

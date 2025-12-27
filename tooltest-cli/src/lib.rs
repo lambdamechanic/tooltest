@@ -413,6 +413,7 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
         assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
@@ -421,6 +422,7 @@ mod tests {
             outcome: RunOutcome::Failure(RunFailure::new("nope")),
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
         assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));

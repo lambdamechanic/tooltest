@@ -184,7 +184,7 @@ fn stdio_command_reports_coverage_warning_for_missing_number() {
 }
 
 #[test]
-fn stdio_command_reports_coverage_warning_for_missing_required_value() {
+fn stdio_command_accepts_required_object_value() {
     let Some(server) = test_server() else {
         return;
     };
@@ -205,13 +205,9 @@ fn stdio_command_reports_coverage_warning_for_missing_required_value() {
     ]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
-    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
-    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("missing_required_value"),
-        "stdout: {stdout}"
-    );
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: success"), "stdout: {stdout}");
+    assert!(!stdout.contains("Coverage warnings:"), "stdout: {stdout}");
 }
 
 #[test]
@@ -491,13 +487,14 @@ fn state_machine_coverage_warnings_reported() {
         "--command",
         server,
         "--env",
-        "REQUIRE_VALUE=1",
+        "TOOLTEST_REQUIRE_VALUE=1",
     ]);
 
-    assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Coverage warnings:"));
-    assert!(stdout.contains("missing_string"));
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_string"), "stdout: {stdout}");
 }
 
 #[test]

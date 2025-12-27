@@ -7,7 +7,12 @@ use std::fmt;
 use nonempty::NonEmpty;
 use proptest::prelude::*;
 use regex::Regex;
+use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange, Hir, Repetition};
 use rmcp::model::{JsonObject, Tool};
+use rslint_regex::{
+    AssertionKind, CharacterClass, CharacterClassMember, ClassPerlKind, EcmaVersion, Flags, Node,
+    Parser, QuantifierKind,
+};
 use serde_json::{Number, Value as JsonValue};
 
 use crate::{StateMachineConfig, ToolInvocation, ToolPredicate};
@@ -880,18 +885,14 @@ fn schema_value_strategy(
 
             if let Some(pattern) = schema.get("pattern").and_then(JsonValue::as_str) {
                 let pattern = pattern.to_string();
-                let normalized = normalize_pattern_for_generation(&pattern).map_err(|reason| {
+                let hir = parse_ecma_pattern_for_generation(&pattern).map_err(|reason| {
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
                         reason,
                     }
                 })?;
-                let strategy = proptest::string::string_regex(&normalized).map_err(|err| {
-                    InvocationError::UnsupportedSchema {
-                        tool: tool.name.to_string(),
-                        reason: format!("pattern must be a valid regex: {err}"),
-                    }
-                })?;
+                let strategy = proptest::string::string_regex_parsed(&hir)
+                    .map_err(|err| pattern_generation_error(tool, err))?;
                 Ok(strategy
                     .prop_filter("string length out of bounds", move |value| {
                         let len = value.chars().count();
@@ -1049,6 +1050,13 @@ fn schema_value_strategy(
     }
 }
 
+fn pattern_generation_error(tool: &Tool, err: proptest::string::Error) -> InvocationError {
+    InvocationError::UnsupportedSchema {
+        tool: tool.name.to_string(),
+        reason: format!("pattern must be a valid regex: {err}"),
+    }
+}
+
 fn schema_union_branches_for_generation(
     schema: &JsonObject,
     tool: &Tool,
@@ -1104,16 +1112,32 @@ fn schema_union_branches_for_generation(
     Ok(None)
 }
 
-fn normalize_pattern_for_generation(pattern: &str) -> Result<String, String> {
+fn parse_ecma_pattern_for_generation(pattern: &str) -> Result<Hir, String> {
     if pattern.is_empty() {
-        return Ok(String::new());
+        return Ok(Hir::empty());
     }
-    if contains_boundary_escape(pattern) {
-        return Err(
-            "pattern uses word boundary escapes which are unsupported for string generation"
-                .to_string(),
-        );
+    if contains_unicode_property_escape(pattern) {
+        return Err(unsupported_feature("unicode property escape"));
     }
+    let normalized = strip_pattern_anchors(pattern);
+    if normalized.is_empty() {
+        return Ok(Hir::empty());
+    }
+    let regex = Parser::new_from_pattern_and_flags(
+        &normalized,
+        0,
+        0,
+        EcmaVersion::ES2021,
+        false,
+        Flags::empty(),
+    )
+    .parse()
+    .map_err(|err| format!("pattern must be a valid ECMAScript regex: {err:?}"))?;
+    let mut builder = EcmaHirBuilder::new();
+    builder.build(&regex.node)
+}
+
+fn strip_pattern_anchors(pattern: &str) -> String {
     let bytes = pattern.as_bytes();
     let mut start = 0;
     let mut end = bytes.len();
@@ -1123,29 +1147,207 @@ fn normalize_pattern_for_generation(pattern: &str) -> Result<String, String> {
     if end > start && bytes[end - 1] == b'$' && !is_escaped(bytes, end - 1) {
         end -= 1;
     }
-    Ok(pattern[start..end].to_string())
+    pattern[start..end].to_string()
 }
 
-fn contains_boundary_escape(pattern: &str) -> bool {
+fn contains_unicode_property_escape(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     let mut idx = 0;
     while idx < bytes.len() {
-        if bytes[idx] == b'\\' {
+        if bytes[idx] == b'\\' && !is_escaped(bytes, idx) {
             if let Some(next) = bytes.get(idx + 1) {
-                match *next {
-                    b'b' | b'B' | b'A' | b'Z' | b'z' | b'G' => return true,
-                    _ => {
-                        idx += 2;
-                        continue;
-                    }
+                if matches!(*next, b'p' | b'P') {
+                    return true;
                 }
-            } else {
-                break;
             }
         }
         idx += 1;
     }
     false
+}
+
+struct EcmaHirBuilder {
+    next_capture_index: u32,
+}
+
+impl EcmaHirBuilder {
+    fn new() -> Self {
+        Self {
+            next_capture_index: 1,
+        }
+    }
+
+    fn build(&mut self, node: &Node) -> Result<Hir, String> {
+        match node {
+            Node::Empty => Ok(Hir::empty()),
+            Node::Disjunction(_, nodes) => {
+                let mut parts = Vec::with_capacity(nodes.len());
+                for node in nodes {
+                    parts.push(self.build(node)?);
+                }
+                Ok(Hir::alternation(parts))
+            }
+            Node::Alternative(_, nodes) => {
+                let mut parts = Vec::with_capacity(nodes.len());
+                for node in nodes {
+                    parts.push(self.build(node)?);
+                }
+                Ok(Hir::concat(parts))
+            }
+            Node::Literal(_, ch, _) => Ok(Hir::literal(char_to_bytes(*ch).as_slice())),
+            Node::PerlClass(_, kind, negated) => {
+                let mut class = self.perl_class(kind)?;
+                if *negated {
+                    class.negate();
+                }
+                Ok(Hir::class(Class::Unicode(class)))
+            }
+            Node::BackReference(_, _) => Err(unsupported_feature("backreference")),
+            Node::NamedBackReference(_, _) => Err(unsupported_feature("named backreference")),
+            Node::Dot(_) => Ok(Hir::class(Class::Unicode(dot_class()))),
+            Node::CharacterClass(_, class) => {
+                let mut unicode = self.character_class(class)?;
+                if class.negated {
+                    unicode.negate();
+                }
+                Ok(Hir::class(Class::Unicode(unicode)))
+            }
+            Node::Group(_, group) => {
+                let inner = self.build(&group.inner)?;
+                if group.noncapturing {
+                    Ok(inner)
+                } else {
+                    let capture = regex_syntax::hir::Capture {
+                        index: self.next_capture_index,
+                        name: group
+                            .name
+                            .as_deref()
+                            .map(|name| name.to_owned().into_boxed_str()),
+                        sub: Box::new(inner),
+                    };
+                    self.next_capture_index += 1;
+                    Ok(Hir::capture(capture))
+                }
+            }
+            Node::Quantifier(_, node, kind, lazy) => {
+                let (min, max) = quantifier_bounds(kind)?;
+                let rep = Repetition {
+                    min,
+                    max,
+                    greedy: !*lazy,
+                    sub: Box::new(self.build(node)?),
+                };
+                Ok(Hir::repetition(rep))
+            }
+            Node::Assertion(_, kind) => match kind {
+                AssertionKind::StartOfLine | AssertionKind::EndOfLine => Ok(Hir::empty()),
+                AssertionKind::WordBoundary | AssertionKind::NonWordBoundary => {
+                    Err(unsupported_feature("word boundary"))
+                }
+                AssertionKind::Lookahead(_) => Err(unsupported_feature("lookahead")),
+                AssertionKind::NegativeLookahead(_) => {
+                    Err(unsupported_feature("negative lookahead"))
+                }
+                AssertionKind::Lookbehind(_) => Err(unsupported_feature("lookbehind")),
+                AssertionKind::NegativeLookbehind(_) => {
+                    Err(unsupported_feature("negative lookbehind"))
+                }
+            },
+        }
+    }
+
+    fn character_class(&mut self, class: &CharacterClass) -> Result<ClassUnicode, String> {
+        let mut unicode = ClassUnicode::empty();
+        for member in &class.members {
+            match member {
+                CharacterClassMember::Range(start, end) => {
+                    let start_char = self.class_char(start)?;
+                    let end_char = self.class_char(end)?;
+                    unicode.push(ClassUnicodeRange::new(start_char, end_char));
+                }
+                CharacterClassMember::Single(node) => match node {
+                    Node::Literal(_, ch, _) => {
+                        unicode.push(ClassUnicodeRange::new(*ch, *ch));
+                    }
+                    Node::PerlClass(_, kind, negated) => {
+                        if *negated {
+                            return Err(unsupported_feature(
+                                "negated class escape inside character class",
+                            ));
+                        }
+                        let class = self.perl_class(kind)?;
+                        for range in class.iter() {
+                            unicode.push(*range);
+                        }
+                    }
+                    _ => return Err(unsupported_feature("character class member escape")),
+                },
+            }
+        }
+        Ok(unicode)
+    }
+
+    fn class_char(&self, node: &Node) -> Result<char, String> {
+        match node {
+            Node::Literal(_, ch, _) => Ok(*ch),
+            _ => Err(unsupported_feature("character class range")),
+        }
+    }
+
+    fn perl_class(&self, kind: &ClassPerlKind) -> Result<ClassUnicode, String> {
+        let ranges = match kind {
+            ClassPerlKind::Digit => vec![ClassUnicodeRange::new('0', '9')],
+            ClassPerlKind::Word => vec![
+                ClassUnicodeRange::new('0', '9'),
+                ClassUnicodeRange::new('A', 'Z'),
+                ClassUnicodeRange::new('a', 'z'),
+                ClassUnicodeRange::new('_', '_'),
+            ],
+            ClassPerlKind::Space => vec![
+                ClassUnicodeRange::new('\t', '\t'),
+                ClassUnicodeRange::new('\n', '\n'),
+                ClassUnicodeRange::new('\u{0B}', '\u{0B}'),
+                ClassUnicodeRange::new('\u{0C}', '\u{0C}'),
+                ClassUnicodeRange::new('\r', '\r'),
+                ClassUnicodeRange::new(' ', ' '),
+            ],
+            ClassPerlKind::Unicode(_, _) => {
+                return Err(unsupported_feature("unicode property escape"))
+            }
+        };
+        Ok(ClassUnicode::new(ranges))
+    }
+}
+
+fn dot_class() -> ClassUnicode {
+    let mut class = ClassUnicode::new(vec![
+        ClassUnicodeRange::new('\n', '\n'),
+        ClassUnicodeRange::new('\r', '\r'),
+        ClassUnicodeRange::new('\u{2028}', '\u{2028}'),
+        ClassUnicodeRange::new('\u{2029}', '\u{2029}'),
+    ]);
+    class.negate();
+    class
+}
+
+fn char_to_bytes(ch: char) -> Vec<u8> {
+    let mut buf = [0u8; 4];
+    let bytes = ch.encode_utf8(&mut buf);
+    bytes.as_bytes().to_vec()
+}
+
+fn quantifier_bounds(kind: &QuantifierKind) -> Result<(u32, Option<u32>), String> {
+    match kind {
+        QuantifierKind::Optional => Ok((0, Some(1))),
+        QuantifierKind::Multiple => Ok((0, None)),
+        QuantifierKind::AtLeastOne => Ok((1, None)),
+        QuantifierKind::Number(value) => Ok((*value, Some(*value))),
+        QuantifierKind::Between(min, max) => Ok((*min, *max)),
+    }
+}
+
+fn unsupported_feature(feature: &str) -> String {
+    format!("tooltest deficiency: unsupported ECMAScript regex feature: {feature}")
 }
 
 fn is_escaped(bytes: &[u8], idx: usize) -> bool {
@@ -1200,16 +1402,14 @@ fn collect_constraints_inner(
     if let Some(any_of) = schema_anyof_branches(schema) {
         let base = schema_without_anyof(schema);
         collect_constraints_inner(&base, value, path, constraints);
-        if let Some(index) = best_union_branch(&any_of, value) {
-            collect_constraints_inner(&any_of[index], value, path, constraints);
-        }
+        let index = best_union_branch(&any_of, value);
+        collect_constraints_inner(&any_of[index], value, path, constraints);
         return;
     }
 
     if let Some(type_union) = schema_type_union_branches(schema) {
-        if let Some(index) = best_union_branch(&type_union, value) {
-            collect_constraints_inner(&type_union[index], value, path, constraints);
-        }
+        let index = best_union_branch(&type_union, value);
+        collect_constraints_inner(&type_union[index], value, path, constraints);
         return;
     }
 
@@ -1372,9 +1572,8 @@ fn collect_violations_inner(
                 best = Some(branch_violations);
             }
         }
-        if let Some(mut best) = best {
-            violations.append(&mut best);
-        }
+        let mut best = best.expect("anyOf branches must be non-empty");
+        violations.append(&mut best);
         return;
     }
 
@@ -1393,9 +1592,8 @@ fn collect_violations_inner(
                 best = Some(branch_violations);
             }
         }
-        if let Some(mut best) = best {
-            violations.append(&mut best);
-        }
+        let mut best = best.expect("type union branches must be non-empty");
+        violations.append(&mut best);
         return;
     }
 
@@ -1584,18 +1782,18 @@ fn schema_without_anyof(schema: &JsonObject) -> JsonObject {
     base
 }
 
-fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> Option<usize> {
-    let mut best_index = None;
+fn best_union_branch(branches: &[JsonObject], value: &JsonValue) -> usize {
+    let mut best_index = 0;
     let mut best_len = None;
     for (idx, branch) in branches.iter().enumerate() {
         let violations = schema_violations_inner(branch, value);
         if violations.is_empty() {
-            return Some(idx);
+            return idx;
         }
         let len = violations.len();
         if best_len.is_none_or(|current| len < current) {
             best_len = Some(len);
-            best_index = Some(idx);
+            best_index = idx;
         }
     }
     best_index
@@ -1816,6 +2014,7 @@ fn get_value_at_path_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::strategy::ValueTree;
     use rmcp::model::Tool;
     use serde_json::json;
     use std::fmt;
@@ -2090,6 +2289,15 @@ mod tests {
     }
 
     #[test]
+    fn schema_error_detail_handles_unsupported_schema() {
+        let detail = schema_error_detail(InvocationError::UnsupportedSchema {
+            tool: "tool".to_string(),
+            reason: "bad schema".to_string(),
+        });
+        assert_eq!(detail, "bad schema");
+    }
+
+    #[test]
     fn schema_value_strategy_rejects_invalid_pattern() {
         let tool = tool_with_schema(
             "echo",
@@ -2106,30 +2314,364 @@ mod tests {
         assert!(matches!(
             error,
             InvocationError::UnsupportedSchema { reason, .. }
-                if reason.contains("pattern must be a valid regex")
+                if reason.contains("pattern must be a valid ECMAScript regex")
         ));
     }
 
     #[test]
-    fn normalize_pattern_for_generation_handles_empty_pattern() {
-        let normalized = normalize_pattern_for_generation("").expect("empty");
-        assert_eq!(normalized, "");
+    fn schema_value_strategy_reports_regex_generation_failure() {
+        let tool = tool_with_schema(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string", "pattern": "a{4294967295}" } }
+            }),
+        );
+        let schema = json!({ "type": "string", "pattern": "a{4294967295}" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let error = schema_value_strategy(&schema, &tool).expect_err("unsupported repetition");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("pattern must be a valid regex")
+                    && reason.contains("Cannot have repetition of exactly u32::MAX")
+        ));
     }
 
     #[test]
-    fn normalize_pattern_for_generation_rejects_word_boundary() {
-        let error = normalize_pattern_for_generation(r"\b").expect_err("boundary");
+    fn parse_ecma_pattern_for_generation_handles_empty_pattern() {
+        let hir = parse_ecma_pattern_for_generation("").expect("empty");
+        assert!(matches!(hir.kind(), regex_syntax::hir::HirKind::Empty));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_strips_anchors() {
+        let hir = parse_ecma_pattern_for_generation("^$").expect("anchors");
+        assert!(matches!(hir.kind(), regex_syntax::hir::HirKind::Empty));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_rejects_word_boundary() {
+        let error = parse_ecma_pattern_for_generation(r"\b").expect_err("boundary");
         assert!(error.contains("word boundary"));
     }
 
     #[test]
-    fn contains_boundary_escape_handles_trailing_escape() {
-        assert!(!contains_boundary_escape("\\"));
+    fn parse_ecma_pattern_for_generation_rejects_negated_class_escape_in_class() {
+        let error = parse_ecma_pattern_for_generation(r"[\D]").expect_err("negated");
+        assert!(error.contains("negated class escape"));
     }
 
     #[test]
-    fn contains_boundary_escape_skips_non_boundary_escapes() {
-        assert!(!contains_boundary_escape(r"\d"));
+    fn parse_ecma_pattern_for_generation_rejects_unicode_property_escape() {
+        let error = parse_ecma_pattern_for_generation(r"\p{L}").expect_err("property");
+        assert!(error.contains("unicode property escape"));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_rejects_negative_lookahead() {
+        let error = parse_ecma_pattern_for_generation("a(?!b)").expect_err("lookahead");
+        assert!(error.contains("negative lookahead"));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_rejects_positive_lookahead() {
+        let error = parse_ecma_pattern_for_generation("a(?=b)").expect_err("lookahead");
+        assert!(error.contains("lookahead"));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_rejects_negative_lookbehind() {
+        let error = parse_ecma_pattern_for_generation("(?<!a)b").expect_err("lookbehind");
+        assert!(error.contains("negative lookbehind"));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_named_groups() {
+        let hir = parse_ecma_pattern_for_generation("(?<word>a)").expect("named");
+        let sample = sample_string_regex(&hir);
+        assert_eq!(sample, "a");
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_disjunction() {
+        let hir = parse_ecma_pattern_for_generation("a|b").expect("alts");
+        let sample = sample_string_regex(&hir);
+        assert!(sample == "a" || sample == "b");
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_character_class_range() {
+        let hir = parse_ecma_pattern_for_generation("[A-C]").expect("range");
+        let sample = sample_string_regex(&hir);
+        assert!(matches!(sample.as_str(), "A" | "B" | "C"));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_character_class_negation() {
+        let hir = parse_ecma_pattern_for_generation("[^A]").expect("negated");
+        let sample = sample_string_regex(&hir);
+        assert_ne!(sample, "A");
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_perl_class_in_character_class() {
+        let hir = parse_ecma_pattern_for_generation(r"[\d]").expect("class");
+        let sample = sample_string_regex(&hir);
+        assert!(sample.chars().all(|ch| ch.is_ascii_digit()));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_dot_class() {
+        let hir = parse_ecma_pattern_for_generation(".").expect("dot");
+        let sample = sample_string_regex(&hir);
+        assert!(!matches!(
+            sample.as_str(),
+            "\n" | "\r" | "\u{2028}" | "\u{2029}"
+        ));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_quantifier_variants() {
+        let optional = parse_ecma_pattern_for_generation("a?").expect("optional");
+        let multiple = parse_ecma_pattern_for_generation("a*").expect("multiple");
+        let exact = parse_ecma_pattern_for_generation("a{2}").expect("exact");
+        let bounded = parse_ecma_pattern_for_generation("a{2,4}").expect("bounded");
+        let unbounded = parse_ecma_pattern_for_generation("a{2,}").expect("unbounded");
+
+        let optional_sample = sample_string_regex(&optional);
+        assert!(optional_sample.is_empty() || optional_sample == "a");
+        assert!(!sample_string_regex(&multiple).contains('b'));
+        assert_eq!(sample_string_regex(&exact).len(), 2);
+        let bounded_len = sample_string_regex(&bounded).len();
+        assert!((2..=4).contains(&bounded_len));
+        assert!(sample_string_regex(&unbounded).len() >= 2);
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_assertions_in_middle() {
+        let start = parse_ecma_pattern_for_generation("a^b").expect("start");
+        let end = parse_ecma_pattern_for_generation("a$b").expect("end");
+        assert_eq!(sample_string_regex(&start), "ab");
+        assert_eq!(sample_string_regex(&end), "ab");
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_space_class() {
+        let hir = parse_ecma_pattern_for_generation(r"\s").expect("space");
+        let sample = sample_string_regex(&hir);
+        assert!(matches!(
+            sample.as_str(),
+            " " | "\t" | "\n" | "\r" | "\u{0B}" | "\u{0C}"
+        ));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_negated_digit_class() {
+        let hir = parse_ecma_pattern_for_generation(r"\D").expect("negated");
+        let sample = sample_string_regex(&hir);
+        assert!(!sample.chars().all(|ch| ch.is_ascii_digit()));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_rejects_named_backreference() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let node = Node::NamedBackReference(span, "name".to_string());
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.build(&node).expect_err("named");
+        assert!(error.contains("named backreference"));
+    }
+
+    #[test]
+    fn perl_class_rejects_unicode_kind() {
+        let builder = EcmaHirBuilder::new();
+        let error = builder
+            .perl_class(&ClassPerlKind::Unicode(None, "Latin".to_string()))
+            .expect_err("unicode");
+        assert!(error.contains("unicode property escape"));
+    }
+
+    #[test]
+    fn builder_handles_empty_node() {
+        let mut builder = EcmaHirBuilder::new();
+        let hir = builder.build(&Node::Empty).expect("empty");
+        assert!(matches!(hir.kind(), regex_syntax::hir::HirKind::Empty));
+    }
+
+    #[test]
+    fn builder_reports_error_for_disjunction_child() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let node = Node::Disjunction(
+            span.clone(),
+            vec![
+                Node::Literal(span.clone(), 'a', "a".to_string()),
+                Node::NamedBackReference(span, "name".to_string()),
+            ],
+        );
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.build(&node).expect_err("disjunction");
+        assert!(error.contains("named backreference"));
+    }
+
+    #[test]
+    fn builder_reports_error_for_alternative_child() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let node = Node::Alternative(
+            span.clone(),
+            vec![
+                Node::Literal(span.clone(), 'a', "a".to_string()),
+                Node::NamedBackReference(span, "name".to_string()),
+            ],
+        );
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.build(&node).expect_err("alternative");
+        assert!(error.contains("named backreference"));
+    }
+
+    #[test]
+    fn builder_reports_error_for_invalid_perl_class() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let node = Node::PerlClass(
+            span,
+            ClassPerlKind::Unicode(None, "Latin".to_string()),
+            false,
+        );
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.build(&node).expect_err("perl");
+        assert!(error.contains("unicode property escape"));
+    }
+
+    #[test]
+    fn builder_handles_noncapturing_group() {
+        let hir = parse_ecma_pattern_for_generation("(?:a)").expect("noncapturing");
+        let sample = sample_string_regex(&hir);
+        assert_eq!(sample, "a");
+    }
+
+    #[test]
+    fn builder_reports_error_for_group_child() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let node = Node::Group(
+            span.clone(),
+            rslint_regex::Group {
+                noncapturing: false,
+                inner: Box::new(Node::NamedBackReference(span, "name".to_string())),
+                name: None,
+            },
+        );
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.build(&node).expect_err("group");
+        assert!(error.contains("named backreference"));
+    }
+
+    #[test]
+    fn builder_reports_error_for_quantifier_child() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let node = Node::Quantifier(
+            span.clone(),
+            Box::new(Node::NamedBackReference(span, "name".to_string())),
+            QuantifierKind::AtLeastOne,
+            false,
+        );
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.build(&node).expect_err("quantifier");
+        assert!(error.contains("named backreference"));
+    }
+
+    #[test]
+    fn character_class_rejects_non_literal_range_end() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let class = CharacterClass {
+            negated: false,
+            members: vec![CharacterClassMember::Range(
+                Node::Literal(span.clone(), 'a', "a".to_string()),
+                Node::PerlClass(span, ClassPerlKind::Digit, false),
+            )],
+        };
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.character_class(&class).expect_err("range");
+        assert!(error.contains("character class range"));
+    }
+
+    #[test]
+    fn character_class_rejects_unknown_member_escape() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let class = CharacterClass {
+            negated: false,
+            members: vec![CharacterClassMember::Single(Node::Dot(span))],
+        };
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.character_class(&class).expect_err("member");
+        assert!(error.contains("character class member escape"));
+    }
+
+    #[test]
+    fn character_class_rejects_unicode_member_escape() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let class = CharacterClass {
+            negated: false,
+            members: vec![CharacterClassMember::Single(Node::PerlClass(
+                span,
+                ClassPerlKind::Unicode(None, "Latin".to_string()),
+                false,
+            ))],
+        };
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.character_class(&class).expect_err("member");
+        assert!(error.contains("unicode property escape"));
+    }
+
+    #[test]
+    fn character_class_rejects_non_literal_range() {
+        let span = rslint_regex::Span::new(0, 0, 0);
+        let class = CharacterClass {
+            negated: false,
+            members: vec![CharacterClassMember::Range(
+                Node::PerlClass(span.clone(), ClassPerlKind::Digit, false),
+                Node::Literal(span, 'a', "a".to_string()),
+            )],
+        };
+        let mut builder = EcmaHirBuilder::new();
+        let error = builder.character_class(&class).expect_err("range");
+        assert!(error.contains("character class range"));
+    }
+
+    #[test]
+    fn contains_unicode_property_escape_handles_trailing_escape() {
+        assert!(!contains_unicode_property_escape("\\"));
+    }
+
+    #[test]
+    fn unsupported_feature_formats_message() {
+        let message = unsupported_feature("lookbehind");
+        assert_eq!(
+            message,
+            "tooltest deficiency: unsupported ECMAScript regex feature: lookbehind"
+        );
+    }
+
+    #[test]
+    fn schema_value_strategy_reports_regex_generation_error() {
+        let tool = tool_with_schema(
+            "bad",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string", "pattern": "a" } }
+            }),
+        );
+        let err = proptest::string::Error::UnsupportedRegex("unsupported");
+        let error = pattern_generation_error(&tool, err);
+        let (tool, reason) = unwrap_unsupported_schema(error);
+        assert_eq!(tool, "bad");
+        assert!(reason.contains("pattern must be a valid regex"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected UnsupportedSchema")]
+    fn unwrap_unsupported_schema_panics_on_other_variant() {
+        let _ = unwrap_unsupported_schema(InvocationError::NoEligibleTools);
     }
 
     #[test]
@@ -2137,6 +2679,22 @@ mod tests {
         assert!(!is_escaped(b"\\", 0));
         assert!(is_escaped(br"\\a", 1));
         assert!(!is_escaped(br"\\\\a", 2));
+    }
+
+    fn sample_string_regex(hir: &Hir) -> String {
+        let strategy = proptest::string::string_regex_parsed(hir).expect("strategy");
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        strategy
+            .new_tree(&mut runner)
+            .expect("value tree")
+            .current()
+    }
+
+    fn unwrap_unsupported_schema(error: InvocationError) -> (String, String) {
+        match error {
+            InvocationError::UnsupportedSchema { tool, reason } => (tool, reason),
+            _ => panic!("expected UnsupportedSchema"),
+        }
     }
 
     #[test]

@@ -276,6 +276,102 @@ fn invocation_strategy_respects_pattern() {
 }
 
 #[test]
+fn invocation_strategy_respects_ecma_digit_class() {
+    let tool = tool_with_schema_value(
+        "digits",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "\\d+" }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let samples = sample_many(strategy, 64);
+    let all_ascii_digits = samples.iter().all(|invocation| {
+        invocation
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("value"))
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| value.chars().all(|ch| ch.is_ascii_digit()))
+    });
+    assert!(all_ascii_digits, "expected ASCII digit-only output");
+}
+
+#[test]
+fn invocation_strategy_respects_ecma_word_class() {
+    let tool = tool_with_schema_value(
+        "words",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "\\w+" }
+            }
+        }),
+    );
+    let strategy = invocation_strategy(&[tool], None).expect("strategy");
+    let samples = sample_many(strategy, 64);
+    let all_ascii_words = samples.iter().all(|invocation| {
+        invocation
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("value"))
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| {
+                value
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            })
+    });
+    assert!(all_ascii_words, "expected ASCII word output");
+}
+
+#[test]
+fn invocation_strategy_rejects_backreference_pattern() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "(a)\\1" }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert!(reason.contains("tooltest deficiency"));
+            assert!(reason.contains("backreference"));
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
+fn invocation_strategy_rejects_lookbehind_pattern() {
+    let tool = tool_with_schema_value(
+        "invalid",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string", "pattern": "(?<=a)b" }
+            }
+        }),
+    );
+    let error = invocation_strategy(&[tool], None).expect_err("error");
+    match error {
+        InvocationError::UnsupportedSchema { tool, reason } => {
+            assert_eq!(tool, "invalid");
+            assert!(reason.contains("tooltest deficiency"));
+            assert!(reason.contains("lookbehind"));
+        }
+        _ => panic!("expected UnsupportedSchema"),
+    }
+}
+
+#[test]
 fn invocation_strategy_errors_on_invalid_string_length_bounds() {
     let tool = tool_with_schema_value(
         "invalid",

@@ -66,6 +66,17 @@ fn validate_expectations() -> Result<(), String> {
         }
     }
 
+    if let Ok(value_type) = env::var("TOOLTEST_VALUE_TYPE") {
+        match value_type.as_str() {
+            "string" | "integer" | "number" | "object" => {}
+            _ => {
+                return Err(format!(
+                    "invalid TOOLTEST_VALUE_TYPE '{value_type}', expected string, integer, number, or object"
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -136,12 +147,19 @@ fn handle_message(message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMessage>
 }
 
 fn tool_stub() -> Tool {
-    let input_schema = json!({
-        "type": "object",
-        "properties": {
-            "value": { "type": "string" }
-        }
-    });
+    let value_type = env::var("TOOLTEST_VALUE_TYPE").unwrap_or_else(|_| "string".to_string());
+    let mut input_schema = serde_json::Map::new();
+    input_schema.insert("type".to_string(), json!("object"));
+    input_schema.insert(
+        "properties".to_string(),
+        json!({
+            "value": { "type": value_type }
+        }),
+    );
+    if env::var_os("TOOLTEST_REQUIRE_VALUE").is_some() {
+        input_schema.insert("required".to_string(), json!(["value"]));
+    }
+    let input_schema = serde_json::Value::Object(input_schema);
     let output_schema = json!({
         "type": "object",
         "properties": {
@@ -400,6 +418,22 @@ mod tests {
         let _guard = EnvGuard::set("EXPECT_CWD", "unused".to_string());
         let result = validate_expectations();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_expectations_rejects_invalid_value_type() {
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "nope".to_string());
+        let result = validate_expectations();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_expectations_accepts_valid_value_type() {
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "number".to_string());
+        let result = validate_expectations();
+        assert!(result.is_ok());
     }
 
     #[test]

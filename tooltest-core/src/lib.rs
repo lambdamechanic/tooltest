@@ -62,6 +62,8 @@ pub struct StateMachineConfig {
     pub seed_numbers: Vec<Number>,
     /// Seed strings added to the corpus before generation.
     pub seed_strings: Vec<String>,
+    /// Allow schema-based generation when corpus lacks required values.
+    pub lenient_sourcing: bool,
     /// Optional allowlist for coverage warnings and validation.
     pub coverage_allowlist: Option<Vec<String>>,
     /// Optional blocklist for coverage warnings and validation.
@@ -80,6 +82,12 @@ impl StateMachineConfig {
     /// Sets the seed strings for the state-machine corpus.
     pub fn with_seed_strings(mut self, seed_strings: Vec<String>) -> Self {
         self.seed_strings = seed_strings;
+        self
+    }
+
+    /// Enables schema-based generation when corpus lacks required values.
+    pub fn with_lenient_sourcing(mut self, lenient_sourcing: bool) -> Self {
+        self.lenient_sourcing = lenient_sourcing;
         self
     }
 
@@ -415,6 +423,25 @@ impl RunFailure {
     }
 }
 
+/// Warning emitted during a tooltest run.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunWarning {
+    /// Structured warning code.
+    pub code: RunWarningCode,
+    /// Human-readable warning message.
+    pub message: String,
+    /// Optional tool name associated with the warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+}
+
+/// Structured warning codes for tooltest runs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunWarningCode {
+    SchemaUnsupportedKeyword,
+}
+
 /// Warning describing a coverage issue in a state-machine run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoverageWarning {
@@ -481,6 +508,8 @@ pub struct RunResult {
     pub trace: Vec<TraceEntry>,
     /// Minimized sequence for failures, when available.
     pub minimized: Option<MinimizedSequence>,
+    /// Non-fatal warnings collected during the run.
+    pub warnings: Vec<RunWarning>,
     /// Coverage report for state-machine runs, when enabled.
     pub coverage: Option<CoverageReport>,
 }

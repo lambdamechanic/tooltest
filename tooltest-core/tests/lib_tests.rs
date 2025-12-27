@@ -79,6 +79,12 @@ fn state_machine_config_sets_seed_strings() {
 }
 
 #[test]
+fn state_machine_config_sets_lenient_sourcing() {
+    let config = StateMachineConfig::default().with_lenient_sourcing(true);
+    assert!(config.lenient_sourcing);
+}
+
+#[test]
 fn coverage_rule_no_uncalled_tools_builder() {
     let rule = CoverageRule::no_uncalled_tools();
     assert!(matches!(rule, CoverageRule::NoUncalledTools));

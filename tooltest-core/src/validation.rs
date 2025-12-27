@@ -13,6 +13,7 @@ use crate::{
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use rmcp::model::Tool;
+use serde_json::Value as JsonValue;
 
 const DEFAULT_CASES_PER_TOOL: usize = 50;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_CASES_PER_TOOL";
@@ -374,7 +375,8 @@ fn output_schema_validator(tool: &Tool, trace: &TraceEntry) -> ToolValidationDec
             tool.name
         )));
     };
-    let violations = schema_violations(schema.as_ref(), structured);
+    let root = JsonValue::Object(schema.as_ref().clone());
+    let violations = schema_violations(schema.as_ref(), &root, structured);
     if violations.is_empty() {
         ToolValidationDecision::Defer
     } else {

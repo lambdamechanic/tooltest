@@ -1,8 +1,6 @@
 use std::fs;
-use std::process::{Command, ExitCode, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use tooltest_cli::{run, Cli, Command as TooltestCommand, GeneratorModeArg};
 
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
@@ -305,6 +303,34 @@ fn cli_can_enable_lenient_sourcing_via_flag() {
 }
 
 #[test]
+fn run_stdio_reports_success_with_env_and_cwd() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let cwd = temp_dir("run-stdio");
+    fs::create_dir_all(&cwd).expect("create cwd");
+    let expected_arg = "--expected";
+    let output = Command::new(env!("CARGO_BIN_EXE_tooltest"))
+        .args([
+            "--json",
+            "stdio",
+            "--command",
+            server,
+            &format!("--arg={expected_arg}"),
+            "--env",
+            &format!("EXPECT_ARG={expected_arg}"),
+            "--env",
+            &format!("EXPECT_CWD={}", cwd.display()),
+            "--cwd",
+            &cwd.to_string_lossy(),
+        ])
+        .output()
+        .expect("run tooltest");
+
+    assert!(output.status.success());
+}
+
+#[test]
 fn test_server_exits_on_expectation_failure() {
     let Some(server) = test_server() else {
         return;
@@ -316,6 +342,21 @@ fn test_server_exits_on_expectation_failure() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("tooltest_cli_test_server"));
+}
+
+#[test]
+fn test_server_exits_on_forced_cwd_error() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .env("EXPECT_CWD", "unused")
+        .env("FORCE_CWD_ERROR", "1")
+        .output()
+        .expect("run test server");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to read cwd"));
 }
 
 #[test]
@@ -394,6 +435,27 @@ fn sequence_len_inverted_exits() {
 }
 
 #[test]
+fn sequence_len_inverted_exits_with_json_error() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--json",
+        "--min-sequence-len",
+        "4",
+        "--max-sequence-len",
+        "2",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"status\": \"error\""));
+}
+
+#[test]
 fn state_machine_config_invalid_json_exits() {
     let Some(server) = test_server() else {
         return;
@@ -409,6 +471,66 @@ fn state_machine_config_invalid_json_exits() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid state-machine-config"));
+}
+
+#[test]
+fn state_machine_coverage_warnings_reported() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "REQUIRE_VALUE=1",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Coverage warnings:"));
+    assert!(stdout.contains("missing_string"));
+}
+
+#[test]
+fn state_machine_coverage_validation_failure_emits_details_and_trace() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let config =
+        r#"{"seed_strings":["alpha"],"coverage_rules":[{"rule":"min_calls_per_tool","min":2}]}"#;
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--state-machine-config",
+        config,
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "REQUIRE_VALUE=1",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Outcome: failure"));
+    assert!(stdout.contains("Code: coverage_validation_failed"));
+    assert!(stdout.contains("Details:"));
+    assert!(stdout.contains("Trace:"));
 }
 
 #[test]
@@ -511,112 +633,66 @@ fn http_command_accepts_auth_token() {
     assert_eq!(payload["outcome"]["status"], "failure");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_http_failure_returns_exit_code_1() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::StateMachine,
-        lenient_sourcing: false,
-        no_lenient_sourcing: false,
-        json: false,
-        state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_http_failure_returns_exit_code_1() {
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--state-machine-config",
+        r#"{"seed_numbers":[1]}"#,
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(1));
+    assert_eq!(output.status.code(), Some(1));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_invalid_sequence_len_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 0,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        lenient_sourcing: false,
-        no_lenient_sourcing: false,
-        json: false,
-        state_machine_config: None,
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_invalid_sequence_len_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--min-sequence-len",
+        "0",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(output.status.code(), Some(2));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_invalid_state_machine_config_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        lenient_sourcing: false,
-        no_lenient_sourcing: false,
-        json: false,
-        state_machine_config: Some("not-json".to_string()),
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_invalid_state_machine_config_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        "not-json",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(output.status.code(), Some(2));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_missing_state_machine_config_file_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        lenient_sourcing: false,
-        no_lenient_sourcing: false,
-        json: false,
-        state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_missing_state_machine_config_file_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        "@/nonexistent-tooltest-config.json",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(output.status.code(), Some(2));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_stdio_success_returns_exit_code_0() {
+#[test]
+fn run_stdio_success_returns_exit_code_0() {
     let Some(server) = test_server() else {
         return;
     };
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        lenient_sourcing: false,
-        no_lenient_sourcing: false,
-        json: false,
-        state_machine_config: None,
-        command: TooltestCommand::Stdio {
-            command: server.to_string(),
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: None,
-        },
-    };
+    let output = run_tooltest(&["stdio", "--command", server]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(output.status.success());
 }

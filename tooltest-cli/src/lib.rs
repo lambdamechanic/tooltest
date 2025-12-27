@@ -171,10 +171,7 @@ pub async fn run(cli: Cli) -> ExitCode {
     };
     print!("{output}");
 
-    match result.outcome {
-        RunOutcome::Success => ExitCode::SUCCESS,
-        RunOutcome::Failure(_) => ExitCode::from(1),
-    }
+    exit_code_for_result(&result)
 }
 
 pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
@@ -231,6 +228,13 @@ fn error_exit(message: &str, json: bool) -> ExitCode {
         eprintln!("{message}");
     }
     ExitCode::from(2)
+}
+
+fn exit_code_for_result(result: &RunResult) -> ExitCode {
+    match &result.outcome {
+        RunOutcome::Success => ExitCode::SUCCESS,
+        RunOutcome::Failure(_) => ExitCode::from(1),
+    }
 }
 
 fn format_run_result_human(result: &RunResult) -> String {
@@ -398,9 +402,28 @@ mod tests {
     }
 
     #[test]
-    fn error_exit_emits_json_when_requested() {
-        let exit = error_exit("boom", true);
+    fn error_exit_formats_json_payload() {
+        let exit = error_exit("bad", true);
         assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[test]
+    fn exit_code_for_result_handles_success_and_failure() {
+        let success = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            coverage: None,
+        };
+        assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
+
+        let failure = RunResult {
+            outcome: RunOutcome::Failure(RunFailure::new("nope")),
+            trace: Vec::new(),
+            minimized: None,
+            coverage: None,
+        };
+        assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
     }
 
     #[test]
@@ -715,5 +738,72 @@ mod tests {
 
         let exit = run(cli).await;
         assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_state_machine_mode_returns_failure_for_unreachable_http() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::StateMachine,
+            lenient_sourcing: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_stdio_returns_failure_when_command_missing() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Stdio {
+                command: "tooltest-missing-command".to_string(),
+                args: Vec::new(),
+                env: vec!["FOO=bar".to_string()],
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_stdio_exits_on_invalid_env_entry() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Stdio {
+                command: "tooltest-missing-command".to_string(),
+                args: Vec::new(),
+                env: vec!["NOPE".to_string()],
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
     }
 }

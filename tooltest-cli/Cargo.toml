@@ -14,7 +14,6 @@ cli-test-server = []
 [[bin]]
 name = "tooltest_cli_test_server"
 path = "src/bin/tooltest_cli_test_server.rs"
-required-features = ["cli-test-server"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

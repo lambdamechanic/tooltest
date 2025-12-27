@@ -1053,7 +1053,7 @@ fn schema_value_strategy(
 fn pattern_generation_error(tool: &Tool, err: proptest::string::Error) -> InvocationError {
     InvocationError::UnsupportedSchema {
         tool: tool.name.to_string(),
-        reason: format!("pattern must be a valid regex: {err}"),
+        reason: format!("pattern must be a valid ECMAScript regex: {err}"),
     }
 }
 
@@ -2336,7 +2336,7 @@ mod tests {
         assert!(matches!(
             error,
             InvocationError::UnsupportedSchema { reason, .. }
-                if reason.contains("pattern must be a valid regex")
+                if reason.contains("pattern must be a valid ECMAScript regex")
                     && reason.contains("Cannot have repetition of exactly u32::MAX")
         ));
     }
@@ -2472,6 +2472,13 @@ mod tests {
     #[test]
     fn parse_ecma_pattern_for_generation_handles_negated_digit_class() {
         let hir = parse_ecma_pattern_for_generation(r"\D").expect("negated");
+        let sample = sample_string_regex(&hir);
+        assert!(!sample.chars().all(|ch| ch.is_ascii_digit()));
+    }
+
+    #[test]
+    fn parse_ecma_pattern_for_generation_handles_negated_class_with_escape() {
+        let hir = parse_ecma_pattern_for_generation(r"[^\d]").expect("negated class");
         let sample = sample_string_regex(&hir);
         assert!(!sample.chars().all(|ch| ch.is_ascii_digit()));
     }
@@ -2666,7 +2673,7 @@ mod tests {
         let error = pattern_generation_error(&tool, err);
         let (tool, reason) = unwrap_unsupported_schema(error);
         assert_eq!(tool, "bad");
-        assert!(reason.contains("pattern must be a valid regex"));
+        assert!(reason.contains("pattern must be a valid ECMAScript regex"));
     }
 
     #[test]

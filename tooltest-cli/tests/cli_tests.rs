@@ -12,6 +12,17 @@ fn run_tooltest(args: &[&str]) -> Output {
         .expect("run tooltest")
 }
 
+fn run_tooltest_json(args: &[&str]) -> serde_json::Value {
+    let output = run_tooltest(args);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).expect("json output")
+}
+
 fn test_server() -> Option<&'static str> {
     let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
     if std::path::Path::new(server).exists() {
@@ -238,6 +249,69 @@ fn stdio_command_accepts_lenient_sourcing_flag() {
 }
 
 #[test]
+fn cli_can_disable_lenient_sourcing_via_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--state-machine-config",
+        r#"{"lenient_sourcing":true}"#,
+        "--no-lenient-sourcing",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    let warnings = payload["coverage"]["warnings"]
+        .as_array()
+        .expect("coverage warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning["reason"] == "missing_string"),
+        "warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn cli_can_enable_lenient_sourcing_via_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--state-machine-config",
+        r#"{"lenient_sourcing":false}"#,
+        "--lenient-sourcing",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    let warnings = payload["coverage"]["warnings"]
+        .as_array()
+        .expect("coverage warnings");
+    assert!(warnings.is_empty(), "warnings: {warnings:?}");
+}
+
+#[test]
 fn test_server_exits_on_expectation_failure() {
     let Some(server) = test_server() else {
         return;
@@ -452,6 +526,7 @@ async fn run_http_failure_returns_exit_code_1() {
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::StateMachine,
         lenient_sourcing: false,
+        no_lenient_sourcing: false,
         json: false,
         state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
         command: TooltestCommand::Http {
@@ -472,6 +547,7 @@ async fn run_invalid_sequence_len_returns_exit_code_2() {
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
         lenient_sourcing: false,
+        no_lenient_sourcing: false,
         json: false,
         state_machine_config: None,
         command: TooltestCommand::Http {
@@ -492,6 +568,7 @@ async fn run_invalid_state_machine_config_returns_exit_code_2() {
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
         lenient_sourcing: false,
+        no_lenient_sourcing: false,
         json: false,
         state_machine_config: Some("not-json".to_string()),
         command: TooltestCommand::Http {
@@ -512,6 +589,7 @@ async fn run_missing_state_machine_config_file_returns_exit_code_2() {
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
         lenient_sourcing: false,
+        no_lenient_sourcing: false,
         json: false,
         state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
         command: TooltestCommand::Http {
@@ -535,6 +613,7 @@ async fn run_stdio_success_returns_exit_code_0() {
         max_sequence_len: 1,
         generator_mode: GeneratorModeArg::Legacy,
         lenient_sourcing: false,
+        no_lenient_sourcing: false,
         json: false,
         state_machine_config: None,
         command: TooltestCommand::Stdio {

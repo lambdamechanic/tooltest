@@ -81,6 +81,25 @@ cargo run -p tooltest-cli --bin tooltest -- \
   stdio --command ./target/debug/my-mcp-server
 ```
 
+### State-machine sourcing
+
+State-machine mode is strict by default: it only uses values mined from the corpus when satisfying required schema fields. If your server needs schema-based generation (for example, on the very first call), enable lenient sourcing.
+
+You can set this in the JSON config:
+
+```bash
+--state-machine-config '{"lenient_sourcing":true}'
+```
+
+Or override it on the CLI:
+
+```bash
+--lenient-sourcing
+--no-lenient-sourcing
+```
+
+CLI flags take precedence over the JSON config.
+
 ---
 
 ## Hosted MCP integration tests

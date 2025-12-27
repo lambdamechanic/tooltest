@@ -66,6 +66,17 @@ fn validate_expectations() -> Result<(), String> {
         }
     }
 
+    if let Ok(value_type) = env::var("TOOLTEST_VALUE_TYPE") {
+        match value_type.as_str() {
+            "string" | "integer" | "number" | "object" => {}
+            _ => {
+                return Err(format!(
+                    "invalid TOOLTEST_VALUE_TYPE '{value_type}', expected string, integer, number, or object"
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -407,6 +418,22 @@ mod tests {
         let _guard = EnvGuard::set("EXPECT_CWD", "unused".to_string());
         let result = validate_expectations();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_expectations_rejects_invalid_value_type() {
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "nope".to_string());
+        let result = validate_expectations();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_expectations_accepts_valid_value_type() {
+        let _lock = ENV_LOCK.lock().expect("lock env");
+        let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "number".to_string());
+        let result = validate_expectations();
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -28,6 +28,9 @@ pub struct Cli {
     /// Allow schema-based generation when corpus lacks required values.
     #[arg(long)]
     pub lenient_sourcing: bool,
+    /// Disable schema-based generation when corpus lacks required values.
+    #[arg(long, conflicts_with = "lenient_sourcing")]
+    pub no_lenient_sourcing: bool,
     /// State-machine config as inline JSON or @path to a JSON file.
     #[arg(long, value_name = "JSON|@PATH")]
     pub state_machine_config: Option<String>,
@@ -129,6 +132,8 @@ pub async fn run(cli: Cli) -> ExitCode {
     };
     if cli.lenient_sourcing {
         state_machine.lenient_sourcing = true;
+    } else if cli.no_lenient_sourcing {
+        state_machine.lenient_sourcing = false;
     }
     let run_config = RunConfig::new()
         .with_generator_mode(cli.generator_mode.into())
@@ -382,6 +387,7 @@ mod tests {
         ]);
         assert_eq!(cli.generator_mode, GeneratorModeArg::StateMachine);
         assert!(!cli.lenient_sourcing);
+        assert!(!cli.no_lenient_sourcing);
         assert_eq!(
             cli.command,
             Command::Stdio {
@@ -403,6 +409,20 @@ mod tests {
             "http://example.test/mcp",
         ]);
         assert!(cli.lenient_sourcing);
+        assert!(!cli.no_lenient_sourcing);
+    }
+
+    #[test]
+    fn cli_parses_no_lenient_sourcing_flag() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--no-lenient-sourcing",
+            "http",
+            "--url",
+            "http://example.test/mcp",
+        ]);
+        assert!(!cli.lenient_sourcing);
+        assert!(cli.no_lenient_sourcing);
     }
 
     #[test]
@@ -590,6 +610,7 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
+            no_lenient_sourcing: false,
             state_machine_config: Some("{bad json}".to_string()),
             json: false,
             command: Command::Http {
@@ -610,6 +631,7 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::StateMachine,
             lenient_sourcing: true,
+            no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,
             command: Command::Http {

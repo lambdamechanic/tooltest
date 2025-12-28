@@ -92,6 +92,16 @@ mod tests {
     };
     use std::io::Write;
 
+    fn is_initialize_response(response: &ServerJsonRpcMessage) -> bool {
+        matches!(
+            response,
+            ServerJsonRpcMessage::Response(JsonRpcResponse {
+                result: ServerResult::InitializeResult(_),
+                ..
+            })
+        )
+    }
+
     fn unwrap_call_tool_result(message: ServerJsonRpcMessage) -> CallToolResult {
         let (result, _) = message.into_response().expect("expected response message");
         match result {
@@ -172,14 +182,8 @@ mod tests {
             )),
             NumberOrString::Number(1),
         );
-        let response = handle_message(request).expect("response");
-        assert!(matches!(
-            response,
-            ServerJsonRpcMessage::Response(JsonRpcResponse {
-                result: ServerResult::InitializeResult(_),
-                ..
-            })
-        ));
+        let response = std::hint::black_box(handle_message(request).expect("response"));
+        assert!(is_initialize_response(&response));
     }
 
     #[test]
@@ -236,6 +240,12 @@ mod tests {
             NumberOrString::Number(9),
         );
         assert!(handle_message(error).is_none());
+    }
+
+    #[test]
+    fn is_initialize_response_rejects_non_initialize_response() {
+        let response = list_tools_response(NumberOrString::Number(2), vec![]);
+        assert!(!is_initialize_response(&response));
     }
 
     #[test]

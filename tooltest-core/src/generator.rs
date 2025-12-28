@@ -581,76 +581,15 @@ fn property_strategy_from_corpus(
     tool: &Tool,
     lenient_sourcing: bool,
 ) -> PropertyOutcome {
-    if schema_allows_inline_generation(schema) {
-        match schema_value_strategy(schema, root, tool) {
-            Ok(strategy) => return PropertyOutcome::Include(strategy),
-            Err(_) => {
-                return if required {
-                    PropertyOutcome::MissingRequired
-                } else {
-                    PropertyOutcome::Omit
-                }
+    match schema_value_strategy_from_corpus(schema, root, corpus, tool, lenient_sourcing) {
+        Ok(Some(strategy)) => PropertyOutcome::Include(strategy),
+        Ok(None) => {
+            if required {
+                PropertyOutcome::MissingRequired
+            } else {
+                PropertyOutcome::Omit
             }
         }
-    }
-    match schema_type_hint(schema) {
-        Some(SchemaType::String) => {
-            let values = corpus
-                .strings()
-                .iter()
-                .map(|value| JsonValue::String(value.clone()))
-                .filter(|value| schema_violations(schema, root, value).is_empty())
-                .collect::<Vec<_>>();
-            if values.is_empty() {
-                return fallback_property_strategy(schema, root, required, tool, lenient_sourcing);
-            }
-            PropertyOutcome::Include(proptest::sample::select(values).boxed())
-        }
-        Some(SchemaType::Integer) => {
-            let values = corpus
-                .integers()
-                .iter()
-                .map(|value| JsonValue::Number(Number::from(*value)))
-                .filter(|value| schema_violations(schema, root, value).is_empty())
-                .collect::<Vec<_>>();
-            if values.is_empty() {
-                return fallback_property_strategy(schema, root, required, tool, lenient_sourcing);
-            }
-            PropertyOutcome::Include(proptest::sample::select(values).boxed())
-        }
-        Some(SchemaType::Number) => {
-            let values = corpus
-                .numbers()
-                .iter()
-                .map(|value| JsonValue::Number(value.clone()))
-                .filter(|value| schema_violations(schema, root, value).is_empty())
-                .collect::<Vec<_>>();
-            if values.is_empty() {
-                return fallback_property_strategy(schema, root, required, tool, lenient_sourcing);
-            }
-            PropertyOutcome::Include(proptest::sample::select(values).boxed())
-        }
-        _ => fallback_property_strategy(schema, root, required, tool, lenient_sourcing),
-    }
-}
-
-fn fallback_property_strategy(
-    schema: &JsonObject,
-    root: &JsonValue,
-    required: bool,
-    tool: &Tool,
-    lenient_sourcing: bool,
-) -> PropertyOutcome {
-    if !lenient_sourcing {
-        return if required {
-            PropertyOutcome::MissingRequired
-        } else {
-            PropertyOutcome::Omit
-        };
-    }
-
-    match schema_value_strategy(schema, root, tool) {
-        Ok(strategy) => PropertyOutcome::Include(strategy),
         Err(_) => {
             if required {
                 PropertyOutcome::MissingRequired
@@ -681,6 +620,431 @@ fn schema_allows_inline_generation(schema: &JsonObject) -> bool {
         schema.get("type").and_then(JsonValue::as_str),
         Some("boolean") | Some("null")
     )
+}
+
+fn schema_value_strategy_from_corpus(
+    schema: &JsonObject,
+    root: &JsonValue,
+    corpus: &ValueCorpus,
+    tool: &Tool,
+    lenient_sourcing: bool,
+) -> Result<Option<BoxedStrategy<JsonValue>>, InvocationError> {
+    let schema =
+        resolve_schema(schema, root).map_err(|reason| InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason,
+        })?;
+
+    if let Some(JsonValue::Array(all_of)) = schema.get("allOf") {
+        if !all_of.is_empty() {
+            let mut strategies = Vec::with_capacity(all_of.len() + 1);
+            let base = schema_without_allof(schema.as_ref());
+            if schema_can_generate(&base) {
+                let base_strategy =
+                    schema_value_strategy_from_corpus(&base, root, corpus, tool, lenient_sourcing)?;
+                if let Some(strategy) = base_strategy {
+                    strategies.push(strategy);
+                }
+            }
+            for (idx, value) in all_of.iter().enumerate() {
+                let schema_object =
+                    value
+                        .as_object()
+                        .ok_or_else(|| InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: format!("allOf[{idx}] schema must be an object"),
+                        })?;
+                let resolved = resolve_schema(schema_object, root).map_err(|reason| {
+                    InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason,
+                    }
+                })?;
+                let strategy = schema_value_strategy_from_corpus(
+                    &resolved,
+                    root,
+                    corpus,
+                    tool,
+                    lenient_sourcing,
+                )?;
+                if let Some(strategy) = strategy {
+                    strategies.push(strategy);
+                }
+            }
+            if strategies.is_empty() {
+                return if lenient_sourcing {
+                    Ok(Some(schema_value_strategy(schema.as_ref(), root, tool)?))
+                } else {
+                    Ok(None)
+                };
+            }
+            let schema_for_filter = schema.as_ref().clone();
+            let root = root.clone();
+            return Ok(Some(
+                proptest::strategy::Union::new(strategies)
+                    .boxed()
+                    .prop_filter("allOf must satisfy schema", move |value| {
+                        schema_violations(&schema_for_filter, &root, value).is_empty()
+                    })
+                    .boxed(),
+            ));
+        }
+    }
+
+    if let Some(value) = schema.get("const") {
+        return Ok(Some(Just(value.clone()).boxed()));
+    }
+
+    if let Some(JsonValue::Array(values)) = schema.get("enum") {
+        if values.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "enum must include at least one value".to_string(),
+            });
+        }
+        return Ok(Some(
+            proptest::sample::select(values.clone())
+                .prop_map(|value| value)
+                .boxed(),
+        ));
+    }
+
+    if let Some(branches) = schema_union_branches_for_generation(schema.as_ref(), root, tool)? {
+        let mut strategies = Vec::with_capacity(branches.len());
+        for branch in branches {
+            if let Some(strategy) =
+                schema_value_strategy_from_corpus(&branch, root, corpus, tool, lenient_sourcing)?
+            {
+                strategies.push(strategy);
+            }
+        }
+        if strategies.is_empty() {
+            return if lenient_sourcing {
+                Ok(Some(schema_value_strategy(schema.as_ref(), root, tool)?))
+            } else {
+                Ok(None)
+            };
+        }
+        let union = proptest::strategy::Union::new(strategies).boxed();
+        let schema_for_filter = schema.as_ref().clone();
+        let root = root.clone();
+        return Ok(Some(
+            union
+                .prop_filter("anyOf union must satisfy schema", move |value| {
+                    schema_violations(&schema_for_filter, &root, value).is_empty()
+                })
+                .boxed(),
+        ));
+    }
+
+    let Some(schema_type) = schema.get("type").and_then(JsonValue::as_str) else {
+        return Err(InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: "schema type must be a string or array of strings".to_string(),
+        });
+    };
+
+    match schema_type {
+        "string" => {
+            let values = corpus
+                .strings()
+                .iter()
+                .map(|value| JsonValue::String(value.clone()))
+                .filter(|value| schema_violations(schema.as_ref(), root, value).is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return if lenient_sourcing {
+                    Ok(Some(schema_value_strategy(schema.as_ref(), root, tool)?))
+                } else {
+                    Ok(None)
+                };
+            }
+            Ok(Some(proptest::sample::select(values).boxed()))
+        }
+        "number" => {
+            let values = corpus
+                .numbers()
+                .iter()
+                .map(|value| JsonValue::Number(value.clone()))
+                .filter(|value| schema_violations(schema.as_ref(), root, value).is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return if lenient_sourcing {
+                    Ok(Some(schema_value_strategy(schema.as_ref(), root, tool)?))
+                } else {
+                    Ok(None)
+                };
+            }
+            Ok(Some(proptest::sample::select(values).boxed()))
+        }
+        "integer" => {
+            let values = corpus
+                .integers()
+                .iter()
+                .map(|value| JsonValue::Number(Number::from(*value)))
+                .filter(|value| schema_violations(schema.as_ref(), root, value).is_empty())
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                return if lenient_sourcing {
+                    Ok(Some(schema_value_strategy(schema.as_ref(), root, tool)?))
+                } else {
+                    Ok(None)
+                };
+            }
+            Ok(Some(proptest::sample::select(values).boxed()))
+        }
+        "boolean" => Ok(Some(any::<bool>().prop_map(JsonValue::from).boxed())),
+        "null" => Ok(Some(Just(JsonValue::Null).boxed())),
+        "array" => {
+            let min_items = schema
+                .get("minItems")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0) as usize;
+            let max_items = schema
+                .get("maxItems")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(4) as usize;
+            if max_items < min_items {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "maxItems must be >= minItems".to_string(),
+                });
+            }
+            let item_schema = schema
+                .get("items")
+                .and_then(JsonValue::as_object)
+                .ok_or_else(|| InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "array schema must include object-valued items".to_string(),
+                })?;
+            let item_strategy = schema_value_strategy_from_corpus(
+                item_schema,
+                root,
+                corpus,
+                tool,
+                lenient_sourcing,
+            )?;
+            let Some(item_strategy) = item_strategy else {
+                return if min_items == 0 {
+                    Ok(Some(Just(JsonValue::Array(Vec::new())).boxed()))
+                } else if lenient_sourcing {
+                    Ok(Some(schema_value_strategy(schema.as_ref(), root, tool)?))
+                } else {
+                    Ok(None)
+                };
+            };
+            Ok(Some(
+                proptest::collection::vec(item_strategy, min_items..=max_items)
+                    .prop_map(JsonValue::from)
+                    .boxed(),
+            ))
+        }
+        "object" => {
+            object_value_strategy_from_corpus(schema.as_ref(), root, corpus, tool, lenient_sourcing)
+        }
+        other => Err(InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: format!("unsupported schema type '{other}'"),
+        }),
+    }
+}
+
+fn object_value_strategy_from_corpus(
+    schema: &JsonObject,
+    root: &JsonValue,
+    corpus: &ValueCorpus,
+    tool: &Tool,
+    lenient_sourcing: bool,
+) -> Result<Option<BoxedStrategy<JsonValue>>, InvocationError> {
+    if schema.contains_key("properties")
+        && !matches!(schema.get("properties"), Some(JsonValue::Object(_)))
+    {
+        return Err(InvocationError::UnsupportedSchema {
+            tool: tool.name.to_string(),
+            reason: "properties must be an object".to_string(),
+        });
+    }
+
+    if let Some(properties) = schema.get("properties").and_then(JsonValue::as_object) {
+        if let Some(JsonValue::Array(required)) = schema.get("required") {
+            let required_keys = required
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .collect::<Vec<_>>();
+            if !required_keys
+                .iter()
+                .all(|key| properties.contains_key(*key))
+            {
+                return Err(InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason: "required must reference known properties".to_string(),
+                });
+            }
+        }
+
+        let required_keys = schema
+            .get("required")
+            .and_then(JsonValue::as_array)
+            .map(|required| {
+                required
+                    .iter()
+                    .filter_map(JsonValue::as_str)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut property_strategies = Vec::with_capacity(properties.len());
+        for (name, schema_value) in properties {
+            let schema_object =
+                schema_value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("property '{name}' schema must be an object"),
+                    })?;
+            let required = required_keys.contains(name.as_str());
+            match property_strategy_from_corpus(
+                schema_object,
+                root,
+                required,
+                corpus,
+                tool,
+                lenient_sourcing,
+            ) {
+                PropertyOutcome::Include(strategy) => {
+                    property_strategies.push((name.clone(), strategy));
+                }
+                PropertyOutcome::Omit => {}
+                PropertyOutcome::MissingRequired => return Ok(None),
+            }
+        }
+
+        let mut strategy: BoxedStrategy<Vec<(String, JsonValue)>> = Just(Vec::new()).boxed();
+        for (name, value_strategy) in property_strategies {
+            strategy = strategy
+                .prop_flat_map(move |entries| {
+                    let name = name.clone();
+                    let value_strategy = value_strategy.clone();
+                    value_strategy.prop_map(move |value| {
+                        let mut next = entries.clone();
+                        next.push((name.clone(), value));
+                        next
+                    })
+                })
+                .boxed();
+        }
+
+        return Ok(Some(
+            strategy
+                .prop_map(|entries| {
+                    let mut map = JsonObject::new();
+                    for (name, value) in entries {
+                        map.insert(name, value);
+                    }
+                    JsonValue::Object(map)
+                })
+                .boxed(),
+        ));
+    }
+
+    let additional_schema = schema
+        .get("additionalProperties")
+        .and_then(JsonValue::as_object);
+    if let Some(additional_schema) = additional_schema {
+        let min_properties = schema
+            .get("minProperties")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0) as usize;
+        let max_properties = schema
+            .get("maxProperties")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(4) as usize;
+        if max_properties < min_properties {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "maxProperties must be >= minProperties".to_string(),
+            });
+        }
+
+        let keys = corpus.strings().to_vec();
+        if keys.is_empty() {
+            return if min_properties == 0 {
+                Ok(Some(Just(JsonValue::Object(JsonObject::new())).boxed()))
+            } else if lenient_sourcing {
+                Ok(Some(schema_value_strategy(schema, root, tool)?))
+            } else {
+                Ok(None)
+            };
+        }
+
+        let value_strategy_result = schema_value_strategy_from_corpus(
+            additional_schema,
+            root,
+            corpus,
+            tool,
+            lenient_sourcing,
+        );
+        let Some(value_strategy) = value_strategy_result? else {
+            return if min_properties == 0 {
+                Ok(Some(Just(JsonValue::Object(JsonObject::new())).boxed()))
+            } else if lenient_sourcing {
+                Ok(Some(schema_value_strategy(schema, root, tool)?))
+            } else {
+                Ok(None)
+            };
+        };
+
+        let key_strategy = proptest::collection::hash_set(
+            proptest::sample::select(keys),
+            min_properties..=max_properties,
+        )
+        .prop_map(|set| set.into_iter().collect::<Vec<_>>());
+
+        let strategy = key_strategy
+            .prop_flat_map(move |keys| {
+                let mut strategy: BoxedStrategy<Vec<(String, JsonValue)>> =
+                    Just(Vec::new()).boxed();
+                for key in keys {
+                    let value_strategy = value_strategy.clone();
+                    let key = key.clone();
+                    strategy = strategy
+                        .prop_flat_map(move |entries| {
+                            let value_strategy = value_strategy.clone();
+                            let key = key.clone();
+                            value_strategy.prop_map(move |value| {
+                                let mut next = entries.clone();
+                                next.push((key.clone(), value));
+                                next
+                            })
+                        })
+                        .boxed();
+                }
+                strategy
+            })
+            .prop_map(|entries| {
+                let mut map = JsonObject::new();
+                for (name, value) in entries {
+                    map.insert(name, value);
+                }
+                JsonValue::Object(map)
+            })
+            .boxed();
+
+        return Ok(Some(strategy));
+    }
+
+    if let Some(JsonValue::Array(required)) = schema.get("required") {
+        if !required.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "required must be empty when no properties exist".to_string(),
+            });
+        }
+    } else {
+        let _ = ();
+    }
+
+    Ok(Some(Just(JsonValue::Object(JsonObject::new())).boxed()))
 }
 
 pub(crate) fn uncallable_reason(
@@ -723,73 +1087,25 @@ pub(crate) fn uncallable_reason(
         let Some(schema_object) = schema_value.as_object() else {
             return Some(UncallableReason::RequiredValue);
         };
-        if schema_allows_inline_generation(schema_object) {
-            if schema_value_strategy(schema_object, &root, tool).is_err() {
-                return Some(UncallableReason::RequiredValue);
+        match schema_value_strategy_from_corpus(
+            schema_object,
+            &root,
+            corpus,
+            tool,
+            lenient_sourcing,
+        ) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {
+                let reason = match schema_type_hint(schema_object) {
+                    Some(SchemaType::String) => Some(UncallableReason::String),
+                    Some(SchemaType::Integer) => Some(UncallableReason::Integer),
+                    Some(SchemaType::Number) => Some(UncallableReason::Number),
+                    None => Some(UncallableReason::RequiredValue),
+                };
+                debug_assert!(reason.is_some());
+                return Some(reason.unwrap_or(UncallableReason::RequiredValue));
             }
-            continue;
-        }
-        let reason = match schema_type_hint(schema_object) {
-            Some(SchemaType::String) => {
-                let has_match = corpus
-                    .strings()
-                    .iter()
-                    .map(|value| JsonValue::String(value.clone()))
-                    .any(|value| schema_violations(schema_object, &root, &value).is_empty());
-                if has_match {
-                    None
-                } else if lenient_sourcing {
-                    schema_value_strategy(schema_object, &root, tool)
-                        .err()
-                        .map(|_| UncallableReason::RequiredValue)
-                } else {
-                    Some(UncallableReason::String)
-                }
-            }
-            Some(SchemaType::Integer) => {
-                let has_match = corpus
-                    .integers()
-                    .iter()
-                    .map(|value| JsonValue::Number(Number::from(*value)))
-                    .any(|value| schema_violations(schema_object, &root, &value).is_empty());
-                if has_match {
-                    None
-                } else if lenient_sourcing {
-                    schema_value_strategy(schema_object, &root, tool)
-                        .err()
-                        .map(|_| UncallableReason::RequiredValue)
-                } else {
-                    Some(UncallableReason::Integer)
-                }
-            }
-            Some(SchemaType::Number) => {
-                let has_match = corpus
-                    .numbers()
-                    .iter()
-                    .map(|value| JsonValue::Number(value.clone()))
-                    .any(|value| schema_violations(schema_object, &root, &value).is_empty());
-                if has_match {
-                    None
-                } else if lenient_sourcing {
-                    schema_value_strategy(schema_object, &root, tool)
-                        .err()
-                        .map(|_| UncallableReason::RequiredValue)
-                } else {
-                    Some(UncallableReason::Number)
-                }
-            }
-            None => {
-                if lenient_sourcing {
-                    schema_value_strategy(schema_object, &root, tool)
-                        .err()
-                        .map(|_| UncallableReason::RequiredValue)
-                } else {
-                    Some(UncallableReason::RequiredValue)
-                }
-            }
-        };
-        if let Some(reason) = reason {
-            return Some(reason);
+            Err(_) => return Some(UncallableReason::RequiredValue),
         }
     }
 
@@ -1079,6 +1395,7 @@ fn schema_can_generate(schema: &JsonObject) -> bool {
         || schema.contains_key("enum")
         || schema.contains_key("type")
         || schema.contains_key("anyOf")
+        || schema.contains_key("oneOf")
 }
 
 fn schema_without_ref(schema: &JsonObject) -> JsonObject {
@@ -1456,6 +1773,33 @@ fn schema_union_branches_for_generation(
         return Ok(Some(branches));
     }
 
+    if let Some(JsonValue::Array(one_of)) = schema.get("oneOf") {
+        if one_of.is_empty() {
+            return Err(InvocationError::UnsupportedSchema {
+                tool: tool.name.to_string(),
+                reason: "oneOf must include at least one schema object".to_string(),
+            });
+        }
+        let mut branches = Vec::with_capacity(one_of.len());
+        for (idx, value) in one_of.iter().enumerate() {
+            let schema_object =
+                value
+                    .as_object()
+                    .ok_or_else(|| InvocationError::UnsupportedSchema {
+                        tool: tool.name.to_string(),
+                        reason: format!("oneOf[{idx}] schema must be an object"),
+                    })?;
+            let resolved = resolve_schema(schema_object, root).map_err(|reason| {
+                InvocationError::UnsupportedSchema {
+                    tool: tool.name.to_string(),
+                    reason,
+                }
+            })?;
+            branches.push(resolved.into_owned());
+        }
+        return Ok(Some(branches));
+    }
+
     if let Some(JsonValue::Array(types)) = schema.get("type") {
         if types.is_empty() {
             return Err(InvocationError::UnsupportedSchema {
@@ -1601,6 +1945,16 @@ fn collect_constraints_inner(
         return Ok(());
     }
 
+    if let Some(one_of) = schema_oneof_branches(schema.as_ref(), root)? {
+        let base = schema_without_oneof(schema.as_ref());
+        collect_constraints_inner(&base, root, value, path, constraints)?;
+        let index = best_union_branch(&one_of, root, value)
+            .expect("oneOf branch selection should always succeed for non-empty schemas");
+        collect_constraints_inner(&one_of[index], root, value, path, constraints)
+            .expect("invalid schema while collecting constraints");
+        return Ok(());
+    }
+
     if let Some(any_of) = schema_anyof_branches(schema.as_ref(), root)? {
         let base = schema_without_anyof(schema.as_ref());
         collect_constraints_inner(&base, root, value, path, constraints)?;
@@ -1721,13 +2075,14 @@ fn collect_constraints_inner(
                 if let Some(property_value) = map.get(name) {
                     if let Some(property_schema) = property_schema.as_object() {
                         path.push(PathSegment::Key(name.clone()));
-                        collect_constraints_inner(
+                        let constraint_result = collect_constraints_inner(
                             property_schema,
                             root,
                             property_value,
                             path,
                             constraints,
-                        )?;
+                        );
+                        constraint_result?;
                         path.pop();
                     }
                 }
@@ -1781,6 +2136,35 @@ fn collect_violations_inner(
             });
             collect_violations_inner(schema_object, root, value, path, violations);
         }
+        return;
+    }
+
+    if let Some(one_of) = schema_oneof_branches(schema.as_ref(), root).unwrap_or_else(|error| {
+        panic!("invalid schema while collecting violations: {error}");
+    }) {
+        let base = schema_without_oneof(schema.as_ref());
+        let mut base_violations = schema_violations_inner(&base, root, value);
+        if !base_violations.is_empty() {
+            violations.append(&mut base_violations);
+            return;
+        }
+        let mut best: Option<Vec<Constraint>> = None;
+        for branch in &one_of {
+            let branch_violations = schema_violations_inner(branch, root, value);
+            if branch_violations.is_empty() {
+                return;
+            }
+            let is_better = best
+                .as_ref()
+                .map(|current| branch_violations.len() < current.len())
+                .unwrap_or(true);
+            if is_better {
+                best = Some(branch_violations);
+            }
+        }
+        let mut best =
+            best.expect("best oneOf violation selection should exist for non-empty schemas");
+        violations.append(&mut best);
         return;
     }
 
@@ -2004,6 +2388,27 @@ fn schema_anyof_branches(
     Ok(Some(branches))
 }
 
+fn schema_oneof_branches(
+    schema: &JsonObject,
+    root: &JsonValue,
+) -> Result<Option<Vec<JsonObject>>, String> {
+    let Some(JsonValue::Array(one_of)) = schema.get("oneOf") else {
+        return Ok(None);
+    };
+    if one_of.is_empty() {
+        return Err("oneOf must include at least one schema object".to_string());
+    }
+    let mut branches = Vec::with_capacity(one_of.len());
+    for value in one_of {
+        let schema_object = value
+            .as_object()
+            .ok_or_else(|| "oneOf schema must be an object".to_string())?;
+        let resolved = resolve_schema(schema_object, root)?;
+        branches.push(resolved.into_owned());
+    }
+    Ok(Some(branches))
+}
+
 fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
     let JsonValue::Array(types) = schema.get("type")? else {
         return None;
@@ -2027,6 +2432,12 @@ fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
 fn schema_without_anyof(schema: &JsonObject) -> JsonObject {
     let mut base = schema.clone();
     base.remove("anyOf");
+    base
+}
+
+fn schema_without_oneof(schema: &JsonObject) -> JsonObject {
+    let mut base = schema.clone();
+    base.remove("oneOf");
     base
 }
 
@@ -2143,11 +2554,12 @@ pub(crate) fn mutate_to_violate_constraint(
         }
         ConstraintKind::Pattern(pattern) => {
             let replacement = non_matching_string(pattern)?;
-            set_value_at_path(
+            let set_result = set_value_at_path(
                 &mut mutated,
                 &constraint.path,
                 JsonValue::String(replacement),
-            )?;
+            );
+            set_result?;
         }
         ConstraintKind::Minimum(minimum) => {
             let replacement = JsonValue::from(minimum - 1.0);
@@ -2912,6 +3324,1328 @@ mod tests {
     }
 
     #[test]
+    fn schema_value_strategy_from_corpus_recurses_arrays_and_objects() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": {
+                "type": "array",
+                "items": { "enum": ["Known", "Unknown"] }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["filters".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        let map = value.as_object().expect("object");
+        assert!(map.contains_key("filters"));
+        let array = map
+            .get("filters")
+            .and_then(JsonValue::as_array)
+            .expect("filters array");
+        for item in array {
+            let value = item.as_str().expect("string");
+            assert!(["Known", "Unknown"].contains(&value));
+        }
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_supports_allof_generation() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "string",
+            "allOf": [
+                { "type": "string", "minLength": 2 },
+                { "enum": ["alpha"] }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["alpha".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::String("alpha".to_string()));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_missing_ref() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "$ref": "#/$defs/missing" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("$ref must resolve")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_allof_requires_corpus_or_lenient() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "string",
+            "allOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "string", "minLength": 3 }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let missing = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy");
+        assert!(missing.is_none());
+
+        let lenient =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect("strategy")
+                .expect("value strategy");
+        let value = sample(lenient);
+        assert!(value.is_string());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_allof_non_object() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "allOf": [5] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("allOf[0] schema must be an object")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_allof_unresolved_ref() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "allOf": [
+                { "$ref": "#/$defs/missing" }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("$ref must resolve")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_allof_base_propagates_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "items": 5,
+            "allOf": [
+                { "type": "array", "items": { "type": "string" } }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("array schema must include object-valued items")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_allof_subschema_propagates_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "allOf": [
+                { "type": "array", "items": 5 }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("array schema must include object-valued items")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_allof_lenient_fallbacks_when_subschemas_unusable() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "string", "pattern": "(?<=bad)" }
+                    },
+                    "required": ["value"]
+                }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("lookbehind")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_allof_empty_ignores_allof() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "allOf": [],
+            "type": "string"
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["alpha".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::String("alpha".to_string()));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_anyof_requires_corpus_or_lenient() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "string", "minLength": 3 }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let missing = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy");
+        assert!(missing.is_none());
+
+        let lenient =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect("strategy")
+                .expect("value strategy");
+        let value = sample(lenient);
+        assert!(value.is_string());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_anyof_rejects_empty_schema_list() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "anyOf": [] }).as_object().cloned().expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("anyOf must include at least one schema object")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_anyof_propagates_branch_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                { "type": "array", "items": 5 }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("array schema must include object-valued items")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_supports_boolean_type() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "boolean" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert!(value.is_boolean());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_supports_null_type() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "null" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert!(value.is_null());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_anyof_selects_branch_from_corpus() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                { "enum": ["alpha"] },
+                { "enum": ["beta"] }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert!(matches!(
+            value,
+            JsonValue::String(value) if value == "alpha" || value == "beta"
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_anyof_lenient_fallbacks_when_subschemas_unusable() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "string", "pattern": "(?<=bad)" }
+                    },
+                    "required": ["value"]
+                }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("lookbehind")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_array_max_lt_min() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 1,
+            "items": { "type": "string" }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("maxItems must be >=")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_array_missing_items() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "array" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("array schema must include object-valued items")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_array_item_schema_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "items": { "type": "array", "items": 5 }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("array schema must include object-valued items")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_returns_empty_array_when_items_unavailable() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "items": { "type": "string" }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::Array(Vec::new()));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_includes_array_items_from_corpus() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["alpha".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        let array = value.as_array().expect("array");
+        assert!(array
+            .iter()
+            .any(|value| matches!(value, JsonValue::String(item) if item == "alpha")));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_array_lenient_fallbacks_without_items() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect("strategy")
+                .expect("value strategy");
+        let value = sample(strategy);
+        let array = value.as_array().expect("array");
+        assert!(!array.is_empty());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_array_lenient_fallbacks_when_items_unusable() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string", "pattern": "(?<=bad)" }
+                },
+                "required": ["value"]
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("lookbehind")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_unknown_type() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "funky" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("unsupported schema type")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_object_properties_non_object() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "object", "properties": "nope" })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("properties must be an object")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_object_required_unknown_property() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["missing"]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("required must reference known properties")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_object_property_schema_non_object() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "properties": { "value": 5 }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("property 'value' schema must be an object")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_returns_none_for_missing_required_property() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["value"]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy");
+        assert!(strategy.is_none());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_builds_objects_from_properties() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "count": { "type": "integer" }
+            },
+            "required": ["name"]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["alpha".to_string()]);
+        corpus.seed_numbers([Number::from(7)]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        let map = value.as_object().expect("object");
+        assert_eq!(
+            map.get("name"),
+            Some(&JsonValue::String("alpha".to_string()))
+        );
+        assert_eq!(map.get("count"), Some(&JsonValue::Number(Number::from(7))));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_omits_optional_properties_without_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::Object(JsonObject::new()));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_additional_properties_max_lt_min() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "minProperties": 2,
+            "maxProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("maxProperties must be >=")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_returns_empty_object_without_keys() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::Object(JsonObject::new()));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_returns_none_without_keys_and_min() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "minProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy");
+        assert!(strategy.is_none());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_lenient_additional_properties_without_keys() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "minProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect("strategy")
+                .expect("value strategy");
+        let value = sample(strategy);
+        assert!(value.is_object());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_lenient_additional_properties_propagates_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "minProperties": 1,
+            "required": ["name"]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("required must be empty when no properties exist")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_additional_properties_schema_error() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "array", "items": 5 }
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("array schema must include object-valued items")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_lenient_additional_properties_missing_values_propagates_error(
+    ) {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "value": { "type": "array", "items": 5 }
+                },
+                "required": ["value"]
+            },
+            "minProperties": 1,
+            "required": ["name"]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let error =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("required must be empty when no properties exist")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_handles_additional_properties_without_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "number" },
+            "minProperties": 0
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::Object(JsonObject::new()));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_includes_additional_properties_with_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "minProperties": 1,
+            "maxProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        let map = value.as_object().expect("object");
+        assert!(map.contains_key("key"));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_lenient_additional_properties_without_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "number" },
+            "minProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let strategy =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect("strategy")
+                .expect("value strategy");
+        let value = sample(strategy);
+        assert!(value.is_object());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_lenient_additional_properties_fallbacks_without_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string", "pattern": "(?<=bad)" }
+                },
+                "required": ["value"]
+            },
+            "minProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let strategy =
+            schema_value_strategy_from_corpus(&schema, &schema_root(&schema), &corpus, &tool, true)
+                .expect("strategy")
+                .expect("value strategy");
+        let value = sample(strategy);
+        assert!(value.is_object());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_returns_none_for_additional_properties_without_values() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "number" },
+            "minProperties": 1
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let mut corpus = ValueCorpus::default();
+        corpus.seed_strings(["key".to_string()]);
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy");
+        assert!(strategy.is_none());
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_rejects_required_without_properties() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "object", "required": ["value"] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let error = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("required must be empty")
+        ));
+    }
+
+    #[test]
+    fn schema_value_strategy_from_corpus_accepts_empty_required_without_properties() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "type": "object", "required": [] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let corpus = ValueCorpus::default();
+        let strategy = schema_value_strategy_from_corpus(
+            &schema,
+            &schema_root(&schema),
+            &corpus,
+            &tool,
+            false,
+        )
+        .expect("strategy")
+        .expect("value strategy");
+        let value = sample(strategy);
+        assert_eq!(value, JsonValue::Object(JsonObject::new()));
+    }
+
+    #[test]
+    fn uncallable_reason_reports_required_value_for_array_without_items() {
+        let tool = tool_with_schema(
+            "array",
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus, false),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn schema_union_branches_for_generation_supports_oneof() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "oneOf": [
+                { "type": "string" },
+                { "type": "number" }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let root = schema_root(&schema);
+        let branches =
+            schema_union_branches_for_generation(&schema, &root, &tool).expect("branches");
+        assert_eq!(branches.expect("branches").len(), 2);
+    }
+
+    #[test]
+    fn schema_union_branches_for_generation_rejects_empty_oneof() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "oneOf": [] }).as_object().cloned().expect("schema");
+        let root = schema_root(&schema);
+        let error = schema_union_branches_for_generation(&schema, &root, &tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("oneOf must include at least one schema object")
+        ));
+    }
+
+    #[test]
+    fn schema_union_branches_for_generation_rejects_oneof_non_object() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({ "oneOf": [5] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let root = schema_root(&schema);
+        let error = schema_union_branches_for_generation(&schema, &root, &tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("oneOf[0] schema must be an object")
+        ));
+    }
+
+    #[test]
+    fn schema_union_branches_for_generation_rejects_oneof_unresolved_ref() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let schema = json!({
+            "oneOf": [{ "$ref": "#/$defs/missing" }]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let root = schema_root(&schema);
+        let error = schema_union_branches_for_generation(&schema, &root, &tool).expect_err("error");
+        assert!(matches!(
+            error,
+            InvocationError::UnsupportedSchema { reason, .. }
+                if reason.contains("$ref must resolve")
+        ));
+    }
+
+    #[test]
+    fn applicable_constraints_selects_oneof_branch() {
+        let schema = json!({
+            "type": "string",
+            "oneOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "string", "minLength": 5 }
+            ]
+        });
+        let value = json!("ok");
+        let schema_object = schema.as_object().expect("schema object");
+        let constraints =
+            applicable_constraints(schema_object, &schema_root(schema_object), &value)
+                .expect("constraints");
+        assert!(constraints
+            .iter()
+            .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn schema_violations_selects_oneof_branch() {
+        let schema = json!({
+            "type": "string",
+            "oneOf": [
+                { "type": "string", "minLength": 2 },
+                { "type": "string", "minLength": 5 }
+            ]
+        });
+        let value = json!("a");
+        let schema_object = schema.as_object().expect("schema object");
+        let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn schema_violations_reports_oneof_base_violations() {
+        let schema = json!({
+            "type": "string",
+            "oneOf": [
+                { "const": "alpha" },
+                { "const": "beta" }
+            ]
+        });
+        let value = json!(5);
+        let schema_object = schema.as_object().expect("schema object");
+        let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
+        assert!(violations
+            .iter()
+            .any(|violation| matches!(violation.kind, ConstraintKind::Type(_))));
+    }
+
+    #[test]
+    fn schema_violations_short_circuits_for_oneof_match() {
+        let schema = json!({
+            "type": "string",
+            "oneOf": [
+                { "const": "alpha" },
+                { "const": "beta" }
+            ]
+        });
+        let value = json!("alpha");
+        let schema_object = schema.as_object().expect("schema object");
+        let violations = schema_violations(schema_object, &schema_root(schema_object), &value);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
     fn schema_type_hint_returns_none_for_unknown_type_or_const_enum() {
         let schema = json!({ "type": "object" })
             .as_object()
@@ -3110,6 +4844,23 @@ mod tests {
         assert_eq!(
             uncallable_reason(&number_tool, &corpus, false),
             Some(UncallableReason::Number)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_reports_missing_string_value() {
+        let tool = tool_with_schema(
+            "stringy",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+        assert_eq!(
+            uncallable_reason(&tool, &corpus, false),
+            Some(UncallableReason::String)
         );
     }
 
@@ -3405,6 +5156,45 @@ mod tests {
         assert!(constraints
             .iter()
             .any(|constraint| matches!(constraint.kind, ConstraintKind::MinLength(2))));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_oneof_error() {
+        let schema = json!({ "oneOf": [] });
+        let value = json!("ok");
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("oneOf must include"));
+    }
+
+    #[test]
+    fn collect_constraints_inner_reports_oneof_base_error() {
+        let schema = json!({
+            "oneOf": [{ "type": "string" }],
+            "anyOf": []
+        });
+        let value = json!("ok");
+        let mut path = Vec::new();
+        let mut constraints = Vec::new();
+        let schema_object = schema.as_object().expect("schema object");
+        let error = collect_constraints_inner(
+            schema_object,
+            &schema_root(schema_object),
+            &value,
+            &mut path,
+            &mut constraints,
+        )
+        .expect_err("error");
+        assert!(error.contains("anyOf must include"));
     }
 
     #[test]
@@ -4185,6 +5975,17 @@ mod tests {
     }
 
     #[test]
+    fn schema_violations_panics_on_empty_oneof() {
+        let _ = std::panic::catch_unwind(|| {
+            let schema = json!({ "oneOf": [] });
+            let value = json!("ok");
+            let schema_object = schema.as_object().expect("schema object");
+            let _ = schema_violations(schema_object, &schema_root(schema_object), &value);
+        })
+        .expect_err("oneOf with empty array should panic");
+    }
+
+    #[test]
     fn schema_violations_panics_on_ref_cycle() {
         let _ = std::panic::catch_unwind(|| {
             let schema = json!({ "$ref": "#" });
@@ -4210,6 +6011,38 @@ mod tests {
     }
 
     #[test]
+    fn schema_oneof_branches_rejects_empty() {
+        let schema = json!({ "oneOf": [] }).as_object().cloned().expect("schema");
+        let error = schema_oneof_branches(&schema, &schema_root(&schema)).expect_err("error");
+        assert!(error.contains("oneOf must include"));
+    }
+
+    #[test]
+    fn schema_oneof_branches_rejects_non_object_entries() {
+        let schema = json!({ "oneOf": ["nope"] })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let error = schema_oneof_branches(&schema, &schema_root(&schema)).expect_err("error");
+        assert!(error.contains("oneOf schema must be an object"));
+    }
+
+    #[test]
+    fn schema_oneof_branches_reports_ref_error() {
+        let schema = json!({
+            "$defs": {
+                "bad": { "$ref": "#/$defs/missing" }
+            },
+            "oneOf": [{ "$ref": "#/$defs/bad" }]
+        })
+        .as_object()
+        .cloned()
+        .expect("schema");
+        let error = schema_oneof_branches(&schema, &schema_root(&schema)).expect_err("error");
+        assert!(error.contains("$ref must resolve"));
+    }
+
+    #[test]
     fn resolve_json_pointer_handles_root_and_invalid_targets() {
         let root = json!({ "items": [1, 2] });
         let pointer = resolve_json_pointer(&root, "#");
@@ -4231,5 +6064,33 @@ mod tests {
     fn mismatched_type_value_handles_null() {
         let value = mismatched_type_value("null");
         assert!(matches!(value, JsonValue::Bool(true)));
+    }
+
+    #[test]
+    fn object_value_strategy_accepts_empty_required_list() {
+        let schema = json!({ "type": "object", "required": [] });
+        let schema_object = schema.as_object().expect("schema object");
+        let root = JsonValue::Object(schema_object.clone());
+        let tool = tool_with_schema("example", schema.clone());
+        let corpus = ValueCorpus::default();
+        let strategy =
+            object_value_strategy_from_corpus(schema_object, &root, &corpus, &tool, false)
+                .expect("strategy");
+        let value = sample(strategy.expect("strategy"));
+        assert_eq!(value, json!({}));
+    }
+
+    #[test]
+    fn object_value_strategy_accepts_missing_required_list() {
+        let schema = json!({ "type": "object" });
+        let schema_object = schema.as_object().expect("schema object");
+        let root = JsonValue::Object(schema_object.clone());
+        let tool = tool_with_schema("example", schema.clone());
+        let corpus = ValueCorpus::default();
+        let strategy =
+            object_value_strategy_from_corpus(schema_object, &root, &corpus, &tool, false)
+                .expect("strategy");
+        let value = sample(strategy.expect("strategy"));
+        assert_eq!(value, json!({}));
     }
 }

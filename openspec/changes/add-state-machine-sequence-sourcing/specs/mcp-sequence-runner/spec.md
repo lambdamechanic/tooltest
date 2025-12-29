@@ -1,3 +1,23 @@
+## RENAMED Requirements
+- FROM: `### Requirement: Proptest-Based Invocation Generation`
+- TO: `### Requirement: State-Machine Invocation Generation`
+
+## MODIFIED Requirements
+### Requirement: State-Machine Invocation Generation
+The system SHALL generate tool invocation sequences using the state-machine generator derived from MCP tool schemas and a configurable sequence length range. The system SHALL NOT expose a legacy generator mode for sequence generation.
+
+#### Scenario: Sequence length respects configuration
+- **WHEN** a run is configured with a sequence length range
+- **THEN** generated sequences contain a number of invocations within that range
+
+#### Scenario: Tool predicate filters invocations
+- **WHEN** a tool predicate is supplied
+- **THEN** only tools accepted by the predicate are eligible for sequence generation
+
+#### Scenario: Legacy generator mode is unavailable
+- **WHEN** a caller configures a run
+- **THEN** the system uses the state-machine generator without exposing a legacy mode toggle
+
 ## ADDED Requirements
 ### Requirement: State-Machine Sequence Generation
 The system SHALL support a proptest-state-machine generator that produces sequences of MCP tool calls against a configured MCP session.

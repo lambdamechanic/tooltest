@@ -45,6 +45,8 @@ pub enum SchemaVersion {
 }
 
 /// Configuration for state-machine generator behavior.
+///
+/// State-machine generation is always used for sequence runs; there is no legacy mode.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct StateMachineConfig {
     /// Seed numbers added to the corpus before generation.
@@ -264,6 +266,9 @@ pub struct RunConfig {
 
 impl RunConfig {
     /// Creates a run configuration with defaults for schema and assertions.
+    ///
+    /// The state-machine generator is always used, and it is strict by default
+    /// (required values must come from the corpus unless lenient sourcing is enabled).
     pub fn new() -> Self {
         Self {
             schema: SchemaConfig::default(),

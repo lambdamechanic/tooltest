@@ -1,5 +1,5 @@
 ## Context
-Tooltest currently generates tool invocations using proptest strategies derived from MCP schemas. This proposal adds a state-machine generator that reuses values observed from MCP responses, with a single test entry point selecting the generator mode.
+Tooltest currently generates tool invocations using proptest strategies derived from MCP schemas. This proposal adds a state-machine generator that reuses values observed from MCP responses and makes it the only supported generator at the public entry point.
 
 ## Goals / Non-Goals
 - Goals:
@@ -7,7 +7,7 @@ Tooltest currently generates tool invocations using proptest strategies derived 
   - Maintain a shared corpus of numbers and strings, seeded by the caller and expanded from response `structured_content`.
   - Ensure numbers/strings used in generated inputs come only from the corpus.
   - Generate booleans, nulls, and enums directly from schema constraints without mining.
-  - Offer a single public entry point that selects generator mode.
+  - Offer a single public entry point that uses the state-machine generator.
   - Report tool coverage (call counts) and validate coverage expectations for the state-machine generator.
 - Non-Goals:
   - Mining values from raw output payloads or errors.
@@ -24,8 +24,8 @@ Tooltest currently generates tool invocations using proptest strategies derived 
   - Rationale: Matches the expectation that all discoverable strings/numbers are available for future calls.
 - Decision: Select values uniformly from the deduped corpus using proptest strategy selection.
   - Rationale: Keeps selection unbiased while relying on proptest's standard distribution.
-- Decision: Keep the existing generator intact and add a generator mode selector at the run entry point.
-  - Rationale: Provides backwards compatibility while enabling opt-in state-machine generation.
+- Decision: Remove the legacy generator and generator mode selection so the run entry point always uses the state-machine generator.
+  - Rationale: Eliminates split behavior and improves coherency by enforcing a single generator.
 - Decision: Provide optional coverage validation hooks only for the state-machine generator mode, with coverage counts based on successful tool responses and exclude tools outside allowlists/inside blocklists.
   - Rationale: Coverage is tied to the state-driven corpus behavior and should not alter existing generator behavior.
 - Decision: Define tool callability based on required inputs being satisfiable by corpus values for numbers/strings and existing schema generators for other types, with lenient fallback when configured.
@@ -38,8 +38,8 @@ Tooltest currently generates tool invocations using proptest strategies derived 
 - Failing when minimum sequence length is unattainable may increase failures in sparse toolsets; this is intentional to surface insufficient state coverage.
 
 ## Migration Plan
-- Add a generator mode option with a default matching current behavior.
-- Keep existing generator API paths so callers can opt in without breaking changes.
+- Remove `GeneratorMode` and any generator mode selection fields/flags so existing callers fail to compile.
+- Update public API/CLI documentation and examples to reflect state-machine-only generation.
 
 ## Open Questions
 - None.

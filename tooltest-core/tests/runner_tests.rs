@@ -13,9 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
 use tooltest_core::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule, ErrorCode,
-    HttpConfig, ResponseAssertion, RunConfig, RunOutcome, RunnerOptions,
-    SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
+    CoverageWarningReason, ErrorCode, HttpConfig, ResponseAssertion, RunConfig, RunOutcome,
+    RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
 };
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -276,7 +276,12 @@ async fn run_with_session_emits_uncallable_tool_warning() {
 
     assert!(matches!(result.outcome, RunOutcome::Success));
     let coverage = result.coverage.expect("coverage");
-    assert!(coverage.warnings.is_empty());
+    assert_eq!(coverage.warnings.len(), 1);
+    assert_eq!(coverage.warnings[0].tool, "echo");
+    assert_eq!(
+        coverage.warnings[0].reason,
+        CoverageWarningReason::MissingString
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -323,7 +328,12 @@ async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
     .await;
 
     let coverage = result.coverage.expect("coverage");
-    assert!(coverage.warnings.is_empty());
+    assert_eq!(coverage.warnings.len(), 1);
+    assert_eq!(coverage.warnings[0].tool, "alpha");
+    assert_eq!(
+        coverage.warnings[0].reason,
+        CoverageWarningReason::MissingString
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -437,12 +447,7 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
     )
     .await;
 
-    match result.outcome {
-        RunOutcome::Failure(failure) => {
-            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
-        }
-        _ => panic!("expected failure"),
-    }
+    assert!(matches!(result.outcome, RunOutcome::Success));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -529,6 +534,33 @@ async fn run_with_session_reports_invalid_tool_schema() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_invalid_input_schema() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object", "properties": { "bad": { "type": 5 } } }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    let RunOutcome::Failure(failure) = &result.outcome else {
+        panic!("expected failure");
+    };
+    assert!(failure.reason.contains("unsupported schema for tool"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

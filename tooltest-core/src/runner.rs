@@ -152,8 +152,6 @@ pub async fn run_with_session(
         }
     };
 
-    let min_len = *options.sequence_len.start();
-
     let run_result = runner.run(&strategy, {
         let assertions = assertions.clone();
         let last_trace = last_trace.clone();
@@ -169,6 +167,11 @@ pub async fn run_with_session(
                     let last_corpus = last_corpus.clone();
                     handle.block_on(async {
                         let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
+                        let min_len = if config.state_machine.coverage_rules.is_empty() {
+                            Some(*options.sequence_len.start())
+                        } else {
+                            None
+                        };
                         let result = execute_state_machine_sequence(
                             session,
                             &validators,
@@ -737,7 +740,7 @@ async fn execute_state_machine_sequence(
     assertions: &AssertionSet,
     sequence: &StateMachineSequence,
     tracker: &mut CoverageTracker<'_>,
-    min_len: usize,
+    min_len: Option<usize>,
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
@@ -804,16 +807,19 @@ async fn execute_state_machine_sequence(
         }
     }
 
-    if invocation_count < min_len {
-        let reason =
-            format!("state-machine generator failed to reach minimum sequence length ({min_len})");
-        attach_failure_reason(&mut trace, reason.clone());
-        return Err(FailureContext {
-            failure: RunFailure::new(reason),
-            trace,
-            coverage: None,
-            corpus: None,
-        });
+    if let Some(min_len) = min_len {
+        if invocation_count < min_len {
+            let reason = format!(
+                "state-machine generator failed to reach minimum sequence length ({min_len})"
+            );
+            attach_failure_reason(&mut trace, reason.clone());
+            return Err(FailureContext {
+                failure: RunFailure::new(reason),
+                trace,
+                coverage: None,
+                corpus: None,
+            });
+        }
     }
 
     if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
@@ -2210,7 +2216,7 @@ mod tests {
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let trace = result.expect("expected success");
@@ -2242,7 +2248,7 @@ mod tests {
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");
@@ -2282,7 +2288,7 @@ mod tests {
             &assertions,
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");
@@ -2321,7 +2327,7 @@ mod tests {
             &assertions,
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");
@@ -2355,7 +2361,7 @@ mod tests {
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");

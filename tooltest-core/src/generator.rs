@@ -451,9 +451,9 @@ pub(crate) fn state_machine_sequence_strategy(
     let mut corpus = ValueCorpus::default();
     corpus.seed_numbers(config.seed_numbers.clone());
     corpus.seed_strings(config.seed_strings.clone());
-    if invocation_strategy_from_corpus(tools, predicate, &corpus, config.lenient_sourcing)?
-        .is_none()
-    {
+    let has_callable =
+        invocation_strategy_from_corpus(tools, predicate, &corpus, config.lenient_sourcing)?;
+    if has_callable.is_none() {
         return Ok(Just(StateMachineSequence::empty()).boxed());
     }
 
@@ -466,7 +466,19 @@ pub(crate) fn state_machine_sequence_strategy(
     };
     set_state_machine_context(context);
 
-    let strategy = StateMachineModel::sequential_strategy(len_range)
+    let strategy: BoxedStrategy<_> = StateMachineModel::sequential_strategy(len_range).boxed();
+    let strategy = if has_callable.is_some() {
+        strategy
+            .prop_filter("no invocations", |(_, transitions, _)| {
+                transitions
+                    .iter()
+                    .any(|transition| matches!(transition, StateMachineTransition::Invoke(_)))
+            })
+            .boxed()
+    } else {
+        strategy
+    };
+    let strategy = strategy
         .prop_map(|(_, transitions, seen_counter)| StateMachineSequence {
             transitions,
             seen_counter,
@@ -705,8 +717,14 @@ fn invocation_from_corpus_for_schema(
     for (name, schema_value) in properties {
         let schema_object = schema_value.as_object()?;
         let required = required_keys.contains(name);
-        match property_strategy_from_corpus(schema_object, required, corpus, tool, lenient_sourcing)
-        {
+        let allow_schema_fallback = lenient_sourcing || omit_optional;
+        match property_strategy_from_corpus(
+            schema_object,
+            required,
+            corpus,
+            tool,
+            allow_schema_fallback,
+        ) {
             PropertyOutcome::Include(strategy) => {
                 let strategy = if omit_optional && !required {
                     prop_oneof![Just(None), strategy.prop_map(Some)].boxed()
@@ -946,6 +964,8 @@ pub(crate) fn uncallable_reason(
                     schema_value_strategy(schema_object, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
+                } else if schema_value_strategy(schema_object, tool).is_err() {
+                    Some(UncallableReason::RequiredValue)
                 } else {
                     Some(UncallableReason::String)
                 }
@@ -962,6 +982,8 @@ pub(crate) fn uncallable_reason(
                     schema_value_strategy(schema_object, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
+                } else if schema_value_strategy(schema_object, tool).is_err() {
+                    Some(UncallableReason::RequiredValue)
                 } else {
                     Some(UncallableReason::Integer)
                 }
@@ -978,19 +1000,15 @@ pub(crate) fn uncallable_reason(
                     schema_value_strategy(schema_object, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
+                } else if schema_value_strategy(schema_object, tool).is_err() {
+                    Some(UncallableReason::RequiredValue)
                 } else {
                     Some(UncallableReason::Number)
                 }
             }
-            None => {
-                if lenient_sourcing {
-                    schema_value_strategy(schema_object, tool)
-                        .err()
-                        .map(|_| UncallableReason::RequiredValue)
-                } else {
-                    Some(UncallableReason::RequiredValue)
-                }
-            }
+            None => schema_value_strategy(schema_object, tool)
+                .err()
+                .map(|_| UncallableReason::RequiredValue),
         };
         if let Some(reason) = reason {
             return Some(reason);
@@ -2374,6 +2392,7 @@ mod tests {
             predicate: Some(predicate),
             seed_numbers: Vec::new(),
             seed_strings: Vec::new(),
+            lenient_sourcing: false,
         });
         let transition = sample(StateMachineModel::transitions(&ValueCorpus::default()));
         assert!(matches!(
@@ -2391,6 +2410,7 @@ mod tests {
             predicate: None,
             seed_numbers: Vec::new(),
             seed_strings: Vec::new(),
+            lenient_sourcing: false,
         });
         let transition = sample(StateMachineModel::transitions(&ValueCorpus::default()));
         assert!(matches!(
@@ -2409,6 +2429,7 @@ mod tests {
             predicate: None,
             seed_numbers: Vec::new(),
             seed_strings: Vec::new(),
+            lenient_sourcing: false,
         });
         let transition = sample(StateMachineModel::transitions(&ValueCorpus::default()));
         assert!(transition_is_skip(&transition));
@@ -2430,6 +2451,7 @@ mod tests {
             predicate: Some(predicate),
             seed_numbers: Vec::new(),
             seed_strings: Vec::new(),
+            lenient_sourcing: false,
         });
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);

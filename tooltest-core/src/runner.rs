@@ -204,13 +204,18 @@ pub async fn run_with_session(
                             handle.block_on(async {
                                 let mut tracker =
                                     CoverageTracker::new(&tools, &config.state_machine);
+                                let min_len = if config.state_machine.coverage_rules.is_empty() {
+                                    Some(*options.sequence_len.start())
+                                } else {
+                                    None
+                                };
                                 let result = execute_state_machine_sequence(
                                     session,
                                     &validators,
                                     &assertions,
                                     &sequence,
                                     &mut tracker,
-                                    *options.sequence_len.start(),
+                                    min_len,
                                 )
                                 .await;
                                 match result {
@@ -658,7 +663,7 @@ async fn execute_state_machine_sequence(
     assertions: &AssertionSet,
     sequence: &StateMachineSequence,
     tracker: &mut CoverageTracker<'_>,
-    min_len: usize,
+    min_len: Option<usize>,
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
@@ -722,15 +727,18 @@ async fn execute_state_machine_sequence(
         }
     }
 
-    if invocation_count < min_len {
-        let reason =
-            format!("state-machine generator failed to reach minimum sequence length ({min_len})");
-        attach_failure_reason(&mut trace, reason.clone());
-        return Err(FailureContext {
-            failure: RunFailure::new(reason),
-            trace,
-            coverage: None,
-        });
+    if let Some(min_len) = min_len {
+        if invocation_count < min_len {
+            let reason = format!(
+                "state-machine generator failed to reach minimum sequence length ({min_len})"
+            );
+            attach_failure_reason(&mut trace, reason.clone());
+            return Err(FailureContext {
+                failure: RunFailure::new(reason),
+                trace,
+                coverage: None,
+            });
+        }
     }
 
     if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
@@ -2049,7 +2057,7 @@ mod tests {
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let trace = result.expect("expected success");
@@ -2081,7 +2089,7 @@ mod tests {
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");
@@ -2121,7 +2129,7 @@ mod tests {
             &assertions,
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");
@@ -2160,7 +2168,7 @@ mod tests {
             &assertions,
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");
@@ -2194,7 +2202,7 @@ mod tests {
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
-            1,
+            Some(1),
         )
         .await;
         let failure = result.expect_err("expected failure");

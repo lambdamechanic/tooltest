@@ -158,3 +158,34 @@ fn state_machine_generator_supports_kev_schema_without_seeds() {
     let args = invocation.arguments.as_ref().expect("arguments");
     assert!(args.contains_key("vendor") || args.contains_key("product"));
 }
+
+#[test]
+fn corpus_mines_text_tokens_into_numbers_and_strings() {
+    let mut corpus = ValueCorpus::default();
+
+    corpus.mine_text("alpha 1 -2 3.5 +4");
+
+    assert_eq!(corpus.strings(), &["alpha".to_string()]);
+    assert_eq!(
+        corpus.numbers(),
+        &[
+            Number::from(1),
+            Number::from(-2),
+            number(3.5),
+            Number::from(4)
+        ]
+    );
+    assert_eq!(corpus.integers(), &[1, -2, 4]);
+}
+
+#[test]
+fn corpus_mines_text_tokens_from_arrays() {
+    let mut corpus = ValueCorpus::default();
+
+    corpus.mine_text_from_value(&json!(["alpha 1", {"nested": "beta 2"}]));
+
+    assert!(corpus.strings().contains(&"alpha".to_string()));
+    assert!(corpus.strings().contains(&"beta".to_string()));
+    assert!(corpus.numbers().contains(&Number::from(1)));
+    assert!(corpus.numbers().contains(&Number::from(2)));
+}

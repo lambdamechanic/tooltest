@@ -119,6 +119,26 @@ async fn run_with_session_returns_minimized_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_legacy_reports_dumped_corpus() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::structured(json!({ "text": "alpha" }));
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let config =
+        RunConfig::new().with_state_machine(StateMachineConfig::default().with_dump_corpus(true));
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+    let result = tooltest_core::run_with_session(&driver, &config, options).await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+    let corpus = result.corpus.expect("corpus");
+    assert!(corpus.strings.contains(&"text".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_accepts_json_dsl_assertions() {
     let tool = tool_with_schemas(
         "echo",
@@ -429,6 +449,7 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
 
     let state_machine = StateMachineConfig::default()
         .with_seed_numbers(vec![Number::from(1)])
+        .with_dump_corpus(true)
         .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
     let config = RunConfig::new()
         .with_generator_mode(GeneratorMode::StateMachine)
@@ -451,6 +472,7 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
         }
         _ => panic!("expected failure"),
     }
+    assert!(result.corpus.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]

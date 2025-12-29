@@ -167,6 +167,29 @@ impl ValueCorpus {
         self.walk_value(value);
     }
 
+    pub(crate) fn mine_text(&mut self, text: &str) {
+        for token in text.split_whitespace() {
+            if let Some(number) = number_from_token(token) {
+                self.insert_number(number);
+            } else {
+                self.insert_string(token.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn mine_text_from_value(&mut self, value: &JsonValue) {
+        self.walk_text(value);
+    }
+
+    pub(crate) fn merge_from(&mut self, other: &ValueCorpus) {
+        for number in other.numbers() {
+            self.insert_number(number.clone());
+        }
+        for value in other.strings() {
+            self.insert_string(value.clone());
+        }
+    }
+
     pub(crate) fn integers(&self) -> &[i64] {
         &self.integers
     }
@@ -217,6 +240,27 @@ impl ValueCorpus {
             }
         }
     }
+
+    fn walk_text(&mut self, value: &JsonValue) {
+        match value {
+            JsonValue::String(value) => self.mine_text(value),
+            JsonValue::Array(values) => {
+                for value in values {
+                    self.walk_text(value);
+                }
+            }
+            JsonValue::Object(map) => {
+                let mut keys: Vec<_> = map.keys().collect();
+                keys.sort();
+                for key in keys {
+                    self.mine_text(key);
+                    let value = map.get(key).expect("key from map");
+                    self.walk_text(value);
+                }
+            }
+            JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
+        }
+    }
 }
 
 fn number_to_i64(value: &Number) -> Option<i64> {
@@ -234,6 +278,14 @@ fn number_to_i64(value: &Number) -> Option<i64> {
         return None;
     }
     Some(value as i64)
+}
+
+fn number_from_token(token: &str) -> Option<Number> {
+    if let Ok(value) = token.parse::<i64>() {
+        return Some(Number::from(value));
+    }
+    let value = token.parse::<f64>().ok()?;
+    Number::from_f64(value)
 }
 
 /// Builds a proptest strategy that yields tool invocations from MCP tool schemas.

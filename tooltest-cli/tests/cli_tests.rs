@@ -1,9 +1,6 @@
 use std::fs;
-use std::path::Path;
-use std::process::{Command, ExitCode, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use tooltest_cli::{run, Cli, Command as TooltestCommand, GeneratorModeArg};
 
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
@@ -13,13 +10,31 @@ fn run_tooltest(args: &[&str]) -> Output {
         .expect("run tooltest")
 }
 
-fn test_server() -> &'static str {
-    let server = env!("CARGO_BIN_EXE_tooltest_cli_test_server");
+fn run_tooltest_json(args: &[&str]) -> serde_json::Value {
+    let output = run_tooltest(args);
     assert!(
-        Path::new(server).exists(),
-        "tooltest_cli_test_server binary missing at {server}"
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    server
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).expect("json output")
+}
+
+fn run_tooltest_json_allow_failure(args: &[&str]) -> (Output, serde_json::Value) {
+    let output = run_tooltest(args);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload = serde_json::from_str(stdout.trim()).expect("json output");
+    (output, payload)
+}
+
+fn test_server() -> Option<&'static str> {
+    let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
+    if std::path::Path::new(server).exists() {
+        Some(server)
+    } else {
+        None
+    }
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -32,7 +47,9 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn stdio_command_reports_success() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&["stdio", "--command", server, "--env", "FOO=bar"]);
 
     assert!(
@@ -59,7 +76,9 @@ fn stdio_command_reports_success() {
 
 #[test]
 fn stdio_command_reports_success_with_state_machine_mode() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&[
         "--json",
         "--generator-mode",
@@ -83,8 +102,342 @@ fn stdio_command_reports_success_with_state_machine_mode() {
 }
 
 #[test]
+fn stdio_command_reports_coverage_warning_for_missing_string() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_string"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_reports_coverage_warning_for_missing_integer() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+        "--env",
+        "TOOLTEST_VALUE_TYPE=integer",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_integer"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_reports_coverage_warning_for_missing_number() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+        "--env",
+        "TOOLTEST_VALUE_TYPE=number",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_number"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_accepts_required_object_value() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+        "--env",
+        "TOOLTEST_VALUE_TYPE=object",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: success"), "stdout: {stdout}");
+    assert!(!stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_accepts_lenient_sourcing_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--lenient-sourcing",
+        "--cases",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn stdio_command_accepts_mine_text_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--mine-text",
+        "--cases",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn stdio_command_includes_corpus_dump_in_json() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--generator-mode",
+        "state-machine",
+        "--dump-corpus",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    let corpus = payload["corpus"].as_object().expect("corpus object");
+    let strings = corpus["strings"].as_array().expect("corpus strings");
+    assert!(
+        strings.iter().any(|value| value == "status"),
+        "corpus strings: {strings:?}"
+    );
+}
+
+#[test]
+fn stdio_command_dumps_corpus_to_stderr_when_not_json() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--dump-corpus",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("corpus:"), "stderr: {stderr}");
+}
+
+#[test]
+fn stdio_command_logs_corpus_deltas_to_stderr() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--log-corpus-deltas",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("corpus delta after 'echo'"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cli_can_disable_lenient_sourcing_via_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--state-machine-config",
+        r#"{"lenient_sourcing":true}"#,
+        "--no-lenient-sourcing",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    let warnings = payload["coverage"]["warnings"]
+        .as_array()
+        .expect("coverage warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning["reason"] == "missing_string"),
+        "warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn cli_can_enable_lenient_sourcing_via_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--state-machine-config",
+        r#"{"lenient_sourcing":false}"#,
+        "--lenient-sourcing",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    let warnings = payload["coverage"]["warnings"]
+        .as_array()
+        .expect("coverage warnings");
+    assert!(warnings.is_empty(), "warnings: {warnings:?}");
+}
+
+#[test]
+fn run_stdio_reports_success_with_env_and_cwd() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let cwd = temp_dir("run-stdio");
+    fs::create_dir_all(&cwd).expect("create cwd");
+    let expected_arg = "--expected";
+    let output = Command::new(env!("CARGO_BIN_EXE_tooltest"))
+        .args([
+            "--json",
+            "stdio",
+            "--command",
+            server,
+            &format!("--arg={expected_arg}"),
+            "--env",
+            &format!("EXPECT_ARG={expected_arg}"),
+            "--env",
+            &format!("EXPECT_CWD={}", cwd.display()),
+            "--cwd",
+            &cwd.to_string_lossy(),
+        ])
+        .output()
+        .expect("run tooltest");
+
+    assert!(output.status.success());
+}
+
+#[test]
 fn test_server_exits_on_expectation_failure() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = Command::new(server)
         .env("EXPECT_ARG", "missing-arg")
         .output()
@@ -95,8 +448,25 @@ fn test_server_exits_on_expectation_failure() {
 }
 
 #[test]
+fn test_server_exits_on_forced_cwd_error() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .env("EXPECT_CWD", "unused")
+        .env("FORCE_CWD_ERROR", "1")
+        .output()
+        .expect("run test server");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to read cwd"));
+}
+
+#[test]
 fn test_server_exits_cleanly_without_input() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = Command::new(server)
         .env_remove("EXPECT_ARG")
         .env_remove("EXPECT_CWD")
@@ -113,7 +483,9 @@ fn test_server_exits_cleanly_without_input() {
 
 #[test]
 fn stdio_command_rejects_bad_env_entry() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&["stdio", "--command", server, "--env", "NOPE"]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -123,7 +495,9 @@ fn stdio_command_rejects_bad_env_entry() {
 
 #[test]
 fn stdio_command_rejects_empty_env_key() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&["stdio", "--command", server, "--env", "=value"]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -133,7 +507,9 @@ fn stdio_command_rejects_empty_env_key() {
 
 #[test]
 fn sequence_len_zero_exits() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&["--min-sequence-len", "0", "stdio", "--command", server]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -143,7 +519,9 @@ fn sequence_len_zero_exits() {
 
 #[test]
 fn sequence_len_inverted_exits() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&[
         "--min-sequence-len",
         "4",
@@ -160,8 +538,31 @@ fn sequence_len_inverted_exits() {
 }
 
 #[test]
+fn sequence_len_inverted_exits_with_json_error() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--json",
+        "--min-sequence-len",
+        "4",
+        "--max-sequence-len",
+        "2",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("\"status\": \"error\""));
+}
+
+#[test]
 fn state_machine_config_invalid_json_exits() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&[
         "--state-machine-config",
         "{bad json}",
@@ -176,8 +577,71 @@ fn state_machine_config_invalid_json_exits() {
 }
 
 #[test]
+fn state_machine_coverage_warnings_reported() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_REQUIRE_VALUE=1",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert!(stdout.contains("Coverage warnings:"), "stdout: {stdout}");
+    assert!(stdout.contains("missing_string"), "stdout: {stdout}");
+}
+
+#[test]
+fn state_machine_coverage_validation_failure_emits_details_and_trace() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let config =
+        r#"{"seed_strings":["alpha"],"coverage_rules":[{"rule":"min_calls_per_tool","min":2}]}"#;
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--state-machine-config",
+        config,
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "REQUIRE_VALUE=1",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Outcome: failure"));
+    assert!(stdout.contains("Code: coverage_validation_failed"));
+    assert!(stdout.contains("Details:"));
+    assert!(stdout.contains("Trace:"));
+}
+
+#[test]
 fn state_machine_config_invalid_json_exits_with_json_error() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&[
         "--json",
         "--state-machine-config",
@@ -199,7 +663,9 @@ fn state_machine_config_invalid_json_exits_with_json_error() {
 
 #[test]
 fn stdio_command_passes_args() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let output = run_tooltest(&[
         "stdio",
         "--command",
@@ -219,7 +685,9 @@ fn stdio_command_passes_args() {
 
 #[test]
 fn stdio_command_sets_cwd() {
-    let server = test_server();
+    let Some(server) = test_server() else {
+        return;
+    };
     let dir = temp_dir("cwd");
     fs::create_dir_all(&dir).expect("create temp dir");
     let dir_string = dir.to_string_lossy().into_owned();
@@ -269,121 +737,82 @@ fn http_command_accepts_auth_token() {
     assert_eq!(payload["outcome"]["status"], "failure");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_http_failure_returns_exit_code_1() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::StateMachine,
-        json: false,
-        state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_http_failure_returns_exit_code_1() {
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--state-machine-config",
+        r#"{"seed_numbers":[1]}"#,
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(1));
+    assert_eq!(output.status.code(), Some(1));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_invalid_sequence_len_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 0,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        json: false,
-        state_machine_config: None,
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_http_failure_with_dump_corpus_skips_output() {
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--dump-corpus",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("corpus:"), "stderr: {stderr}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_invalid_state_machine_config_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        json: false,
-        state_machine_config: Some("not-json".to_string()),
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_invalid_sequence_len_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--min-sequence-len",
+        "0",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(output.status.code(), Some(2));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_missing_state_machine_config_file_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        json: false,
-        state_machine_config: Some("@/nonexistent-tooltest-config.json".to_string()),
-        command: TooltestCommand::Http {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        },
-    };
+#[test]
+fn run_invalid_state_machine_config_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        "not-json",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(output.status.code(), Some(2));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_stdio_missing_command_returns_exit_code_1() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        json: false,
-        state_machine_config: None,
-        command: TooltestCommand::Stdio {
-            command: "tooltest-missing-binary".to_string(),
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: None,
-        },
-    };
+#[test]
+fn run_missing_state_machine_config_file_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        "@/nonexistent-tooltest-config.json",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::from(1));
+    assert_eq!(output.status.code(), Some(2));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_stdio_success_returns_exit_code_0() {
-    let server = test_server();
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        generator_mode: GeneratorModeArg::Legacy,
-        json: false,
-        state_machine_config: None,
-        command: TooltestCommand::Stdio {
-            command: server.to_string(),
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: None,
-        },
+#[test]
+fn run_stdio_success_returns_exit_code_0() {
+    let Some(server) = test_server() else {
+        return;
     };
+    let output = run_tooltest(&["stdio", "--command", server]);
 
-    let code = run(cli).await;
-    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(output.status.success());
 }

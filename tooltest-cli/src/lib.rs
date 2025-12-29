@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
-    CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult,
-    RunnerOptions, StateMachineConfig, StdioConfig,
+    CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
+    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
 };
 
 #[derive(Parser)]
@@ -25,6 +25,21 @@ pub struct Cli {
     /// Generator mode for sequence synthesis.
     #[arg(long, value_enum, default_value_t = GeneratorModeArg::Legacy)]
     pub generator_mode: GeneratorModeArg,
+    /// Allow schema-based generation when corpus lacks required values.
+    #[arg(long)]
+    pub lenient_sourcing: bool,
+    /// Mine whitespace-delimited text tokens into the state corpus.
+    #[arg(long)]
+    pub mine_text: bool,
+    /// Dump the final state-machine corpus after the run completes.
+    #[arg(long)]
+    pub dump_corpus: bool,
+    /// Log newly mined corpus values after each tool response.
+    #[arg(long)]
+    pub log_corpus_deltas: bool,
+    /// Disable schema-based generation when corpus lacks required values.
+    #[arg(long, conflicts_with = "lenient_sourcing")]
+    pub no_lenient_sourcing: bool,
     /// State-machine config as inline JSON or @path to a JSON file.
     #[arg(long, value_name = "JSON|@PATH")]
     pub state_machine_config: Option<String>,
@@ -57,6 +72,14 @@ struct StateMachineConfigInput {
     #[serde(default)]
     seed_strings: Vec<String>,
     #[serde(default)]
+    mine_text: bool,
+    #[serde(default)]
+    dump_corpus: bool,
+    #[serde(default)]
+    log_corpus_deltas: bool,
+    #[serde(default)]
+    lenient_sourcing: bool,
+    #[serde(default)]
     coverage_allowlist: Option<Vec<String>>,
     #[serde(default)]
     coverage_blocklist: Option<Vec<String>>,
@@ -69,6 +92,10 @@ impl From<StateMachineConfigInput> for StateMachineConfig {
         StateMachineConfig {
             seed_numbers: input.seed_numbers,
             seed_strings: input.seed_strings,
+            mine_text: input.mine_text,
+            dump_corpus: input.dump_corpus,
+            log_corpus_deltas: input.log_corpus_deltas,
+            lenient_sourcing: input.lenient_sourcing,
             coverage_allowlist: input.coverage_allowlist,
             coverage_blocklist: input.coverage_blocklist,
             coverage_rules: input.coverage_rules,
@@ -114,13 +141,28 @@ pub async fn run(cli: Cli) -> ExitCode {
         cases: cli.cases,
         sequence_len,
     };
-    let state_machine = match cli.state_machine_config.as_deref() {
+    let mut state_machine = match cli.state_machine_config.as_deref() {
         Some(raw) => match parse_state_machine_config(raw) {
             Ok(config) => config,
             Err(message) => return error_exit(&message, cli.json),
         },
         None => StateMachineConfig::default(),
     };
+    if cli.lenient_sourcing {
+        state_machine.lenient_sourcing = true;
+    } else if cli.no_lenient_sourcing {
+        state_machine.lenient_sourcing = false;
+    }
+    if cli.mine_text {
+        state_machine.mine_text = true;
+    }
+    if cli.dump_corpus {
+        state_machine.dump_corpus = true;
+    }
+    if cli.log_corpus_deltas {
+        state_machine.log_corpus_deltas = true;
+    }
+    let dump_corpus = state_machine.dump_corpus;
     let run_config = RunConfig::new()
         .with_generator_mode(cli.generator_mode.into())
         .with_state_machine(state_machine);
@@ -156,6 +198,14 @@ pub async fn run(cli: Cli) -> ExitCode {
         format_run_result_human(&result)
     };
     print!("{output}");
+    if dump_corpus && !cli.json {
+        if let Some(corpus) = &result.corpus {
+            let payload = serde_json::to_string_pretty(corpus).expect("serialize corpus");
+            eprintln!("corpus:\n{payload}");
+        } else {
+            let _ = ();
+        }
+    }
 
     exit_code_for_result(&result)
 }
@@ -217,7 +267,7 @@ fn error_exit(message: &str, json: bool) -> ExitCode {
 }
 
 fn exit_code_for_result(result: &RunResult) -> ExitCode {
-    match result.outcome {
+    match &result.outcome {
         RunOutcome::Success => ExitCode::SUCCESS,
         RunOutcome::Failure(_) => ExitCode::from(1),
     }
@@ -258,6 +308,17 @@ fn format_run_result_human(result: &RunResult) -> String {
         }
     }
 
+    if !result.warnings.is_empty() {
+        output.push_str("Warnings:\n");
+        for warning in &result.warnings {
+            output.push_str(&format!(
+                "- {}: {}\n",
+                format_run_warning_code(&warning.code),
+                format_run_warning_message(warning)
+            ));
+        }
+    }
+
     if !result.trace.is_empty() {
         let trace = serde_json::to_string_pretty(&result.trace).expect("serialize trace");
         output.push_str("Trace:\n");
@@ -277,6 +338,20 @@ fn format_coverage_warning_reason(reason: &CoverageWarningReason) -> &'static st
     }
 }
 
+fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
+    match code {
+        RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
+    }
+}
+
+fn format_run_warning_message(warning: &RunWarning) -> String {
+    if let Some(tool) = &warning.tool {
+        format!("{} ({tool})", warning.message)
+    } else {
+        warning.message.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,7 +359,10 @@ mod tests {
 
     use clap::CommandFactory;
     use rmcp::model::{CallToolResult, Content};
-    use tooltest_core::{CoverageReport, CoverageWarning, RunFailure, ToolInvocation, TraceEntry};
+    use tooltest_core::{
+        CoverageReport, CoverageWarning, RunFailure, RunWarning, RunWarningCode, ToolInvocation,
+        TraceEntry,
+    };
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -325,10 +403,13 @@ mod tests {
 
     #[test]
     fn parse_state_machine_config_reads_inline_json() {
-        let config = parse_state_machine_config(r#"{"seed_numbers":[1],"seed_strings":["alpha"]}"#)
-            .expect("config");
+        let config = parse_state_machine_config(
+            r#"{"seed_numbers":[1],"seed_strings":["alpha"],"lenient_sourcing":true}"#,
+        )
+        .expect("config");
         assert_eq!(config.seed_numbers.len(), 1);
         assert_eq!(config.seed_strings.len(), 1);
+        assert!(config.lenient_sourcing);
     }
 
     #[test]
@@ -357,6 +438,35 @@ mod tests {
     }
 
     #[test]
+    fn error_exit_formats_json_payload() {
+        let exit = error_exit("bad", true);
+        assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[test]
+    fn exit_code_for_result_handles_success_and_failure() {
+        let success = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: None,
+        };
+        assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
+
+        let failure = RunResult {
+            outcome: RunOutcome::Failure(RunFailure::new("nope")),
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: None,
+        };
+        assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
+    }
+
+    #[test]
     fn cli_parses_generator_mode_and_stdio() {
         let cli = Cli::parse_from([
             "tooltest",
@@ -367,6 +477,8 @@ mod tests {
             "server",
         ]);
         assert_eq!(cli.generator_mode, GeneratorModeArg::StateMachine);
+        assert!(!cli.lenient_sourcing);
+        assert!(!cli.no_lenient_sourcing);
         assert_eq!(
             cli.command,
             Command::Stdio {
@@ -376,6 +488,32 @@ mod tests {
                 cwd: None,
             }
         );
+    }
+
+    #[test]
+    fn cli_parses_lenient_sourcing_flag() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--lenient-sourcing",
+            "http",
+            "--url",
+            "http://example.test/mcp",
+        ]);
+        assert!(cli.lenient_sourcing);
+        assert!(!cli.no_lenient_sourcing);
+    }
+
+    #[test]
+    fn cli_parses_no_lenient_sourcing_flag() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--no-lenient-sourcing",
+            "http",
+            "--url",
+            "http://example.test/mcp",
+        ]);
+        assert!(!cli.lenient_sourcing);
+        assert!(cli.no_lenient_sourcing);
     }
 
     #[test]
@@ -449,7 +587,9 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -467,7 +607,9 @@ mod tests {
             outcome: RunOutcome::Failure(failure),
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -505,7 +647,9 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: Some(coverage),
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -514,6 +658,48 @@ mod tests {
         assert!(output.contains("- beta: missing_integer"));
         assert!(output.contains("- gamma: missing_number"));
         assert!(output.contains("- delta: missing_required_value"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_warnings() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::SchemaUnsupportedKeyword,
+                message: "schema warning".to_string(),
+                tool: Some("echo".to_string()),
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Warnings:"));
+        assert!(output.contains("schema_unsupported_keyword"));
+        assert!(output.contains("schema warning"));
+        assert!(output.contains("echo"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_warning_without_tool() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::SchemaUnsupportedKeyword,
+                message: "standalone warning".to_string(),
+                tool: None,
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("standalone warning"));
+        assert!(!output.contains("standalone warning ("));
     }
 
     #[test]
@@ -535,7 +721,9 @@ mod tests {
             outcome: RunOutcome::Failure(RunFailure::new("failed")),
             trace,
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -554,7 +742,9 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: Some(coverage),
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -640,11 +830,116 @@ mod tests {
             min_sequence_len: 1,
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
             state_machine_config: Some("{bad json}".to_string()),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[tokio::test]
+    async fn run_allows_lenient_sourcing_flag() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::StateMachine,
+            lenient_sourcing: true,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_state_machine_mode_returns_failure_for_unreachable_http() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::StateMachine,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_stdio_returns_failure_when_command_missing() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Stdio {
+                command: "tooltest-missing-command".to_string(),
+                args: Vec::new(),
+                env: vec!["FOO=bar".to_string()],
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_stdio_exits_on_invalid_env_entry() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Stdio {
+                command: "tooltest-missing-command".to_string(),
+                args: Vec::new(),
+                env: vec!["NOPE".to_string()],
+                cwd: None,
             },
         };
 

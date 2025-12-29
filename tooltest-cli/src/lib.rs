@@ -567,12 +567,14 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
         let failure = RunResult {
             outcome: RunOutcome::Failure(RunFailure::new("nope")),
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
         assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
@@ -592,6 +594,8 @@ mod tests {
             min_sequence_len: 1,
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,
             command: Command::Stdio {
@@ -613,6 +617,8 @@ mod tests {
             min_sequence_len: 1,
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
+            lenient_sourcing: false,
+            no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,
             command: Command::Stdio {

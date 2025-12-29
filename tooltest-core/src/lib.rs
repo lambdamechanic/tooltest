@@ -62,6 +62,12 @@ pub struct StateMachineConfig {
     pub seed_numbers: Vec<Number>,
     /// Seed strings added to the corpus before generation.
     pub seed_strings: Vec<String>,
+    /// Mine whitespace-delimited text tokens into the corpus.
+    pub mine_text: bool,
+    /// Dump the final state-machine corpus after the run completes.
+    pub dump_corpus: bool,
+    /// Log newly mined corpus values after each tool response.
+    pub log_corpus_deltas: bool,
     /// Allow schema-based generation when corpus lacks required values.
     pub lenient_sourcing: bool,
     /// Optional allowlist for coverage warnings and validation.
@@ -82,6 +88,24 @@ impl StateMachineConfig {
     /// Sets the seed strings for the state-machine corpus.
     pub fn with_seed_strings(mut self, seed_strings: Vec<String>) -> Self {
         self.seed_strings = seed_strings;
+        self
+    }
+
+    /// Enables mining of whitespace-delimited text tokens into the corpus.
+    pub fn with_mine_text(mut self, mine_text: bool) -> Self {
+        self.mine_text = mine_text;
+        self
+    }
+
+    /// Enables dumping the final state-machine corpus after the run completes.
+    pub fn with_dump_corpus(mut self, dump_corpus: bool) -> Self {
+        self.dump_corpus = dump_corpus;
+        self
+    }
+
+    /// Enables logging newly mined corpus values after each tool response.
+    pub fn with_log_corpus_deltas(mut self, log_corpus_deltas: bool) -> Self {
+        self.log_corpus_deltas = log_corpus_deltas;
         self
     }
 
@@ -470,6 +494,17 @@ pub struct CoverageReport {
     pub warnings: Vec<CoverageWarning>,
 }
 
+/// Snapshot of the state-machine corpus.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CorpusReport {
+    /// Numbers observed in the corpus.
+    pub numbers: Vec<Number>,
+    /// Integers observed in the corpus.
+    pub integers: Vec<i64>,
+    /// Strings observed in the corpus.
+    pub strings: Vec<String>,
+}
+
 /// Coverage validation rules for state-machine runs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "rule", rename_all = "snake_case")]
@@ -512,4 +547,7 @@ pub struct RunResult {
     pub warnings: Vec<RunWarning>,
     /// Coverage report for state-machine runs, when enabled.
     pub coverage: Option<CoverageReport>,
+    /// Corpus snapshot for state-machine runs, when enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corpus: Option<CorpusReport>,
 }

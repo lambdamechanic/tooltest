@@ -100,6 +100,34 @@ Or override it on the CLI:
 
 CLI flags take precedence over the JSON config.
 
+### Text mining
+
+If your MCP server only emits textual content, you can mine whitespace-delimited tokens into the corpus:
+
+```bash
+--state-machine-config '{"mine_text":true}'
+```
+
+Or override it on the CLI:
+
+```bash
+--mine-text
+```
+
+### Corpus debugging
+
+Dump the final corpus as JSON (stderr in human mode, inline in --json mode):
+
+```bash
+--dump-corpus
+```
+
+Log newly mined corpus values after each tool response (stderr):
+
+```bash
+--log-corpus-deltas
+```
+
 ---
 
 ## Hosted MCP integration tests

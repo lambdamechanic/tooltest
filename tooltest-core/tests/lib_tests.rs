@@ -85,6 +85,18 @@ fn state_machine_config_sets_lenient_sourcing() {
 }
 
 #[test]
+fn state_machine_config_sets_dump_corpus() {
+    let config = StateMachineConfig::default().with_dump_corpus(true);
+    assert!(config.dump_corpus);
+}
+
+#[test]
+fn state_machine_config_sets_log_corpus_deltas() {
+    let config = StateMachineConfig::default().with_log_corpus_deltas(true);
+    assert!(config.log_corpus_deltas);
+}
+
+#[test]
 fn coverage_rule_no_uncalled_tools_builder() {
     let rule = CoverageRule::no_uncalled_tools();
     assert!(matches!(rule, CoverageRule::NoUncalledTools));

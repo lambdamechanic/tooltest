@@ -103,7 +103,7 @@ fn state_machine_generator_uses_integer_corpus_values() {
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(7)]);
     let mut corpus = ValueCorpus::default();
     corpus.seed_numbers(config.seed_numbers.clone());
-    let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus)
+    let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus, false)
         .expect("strategy")
         .expect("callable");
     let invocation = sample(strategy);

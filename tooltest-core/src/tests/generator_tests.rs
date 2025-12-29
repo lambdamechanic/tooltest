@@ -224,7 +224,7 @@ fn state_machine_invocation_strategy_respects_oneof_required_properties() {
     config.seed_strings = vec!["acme".to_string(), "widget".to_string()];
     let mut corpus = ValueCorpus::default();
     corpus.seed_strings(config.seed_strings.clone());
-    let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus)
+    let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus, false)
         .expect("strategy")
         .expect("callable");
     let invocation = sample(strategy);

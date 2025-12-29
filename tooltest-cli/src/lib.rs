@@ -705,80 +705,80 @@ mod tests {
     #[test]
     fn exit_code_for_result_reports_success_and_failure() {
         let success = RunResult {
-        outcome: RunOutcome::Success,
-        trace: Vec::new(),
-        minimized: None,
-        warnings: Vec::new(),
-        coverage: None,
-        corpus: None,
-    };
-    let failure = RunResult {
-        outcome: RunOutcome::Failure(RunFailure::new("nope")),
-        trace: Vec::new(),
-        minimized: None,
-        warnings: Vec::new(),
-        coverage: None,
-        corpus: None,
-    };
-    assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
-    assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
-}
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: None,
+        };
+        let failure = RunResult {
+            outcome: RunOutcome::Failure(RunFailure::new("nope")),
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: None,
+        };
+        assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
+        assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
+    }
 
-#[test]
-fn error_exit_emits_json_payload() {
-    let code = error_exit("oops", true);
-    assert_eq!(code, ExitCode::from(2));
-}
+    #[test]
+    fn error_exit_emits_json_payload() {
+        let code = error_exit("oops", true);
+        assert_eq!(code, ExitCode::from(2));
+    }
 
-#[tokio::test]
-async fn run_stdio_missing_command_returns_exit_code_1() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        lenient_sourcing: false,
-        mine_text: false,
-        dump_corpus: false,
-        log_corpus_deltas: false,
-        no_lenient_sourcing: false,
-        state_machine_config: None,
-        json: false,
-        command: Command::Stdio {
-            command: "tooltest-missing-binary".to_string(),
-            args: Vec::new(),
-            env: Vec::new(),
-            cwd: None,
-        },
-    };
+    #[tokio::test]
+    async fn run_stdio_missing_command_returns_exit_code_1() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            },
+        };
 
-    let exit = run(cli).await;
-    assert_eq!(exit, ExitCode::from(1));
-}
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
 
-#[tokio::test]
-async fn run_stdio_invalid_env_returns_exit_code_2() {
-    let cli = Cli {
-        cases: 1,
-        min_sequence_len: 1,
-        max_sequence_len: 1,
-        lenient_sourcing: false,
-        mine_text: false,
-        dump_corpus: false,
-        log_corpus_deltas: false,
-        no_lenient_sourcing: false,
-        state_machine_config: None,
-        json: false,
-        command: Command::Stdio {
-            command: "tooltest-missing-binary".to_string(),
-            args: Vec::new(),
-            env: vec!["NOPE".to_string()],
-            cwd: None,
-        },
-    };
+    #[tokio::test]
+    async fn run_stdio_invalid_env_returns_exit_code_2() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: vec!["NOPE".to_string()],
+                cwd: None,
+            },
+        };
 
-    let exit = run(cli).await;
-    assert_eq!(exit, ExitCode::from(2));
-}
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+    }
     #[tokio::test]
     async fn run_exits_on_invalid_state_machine_config() {
         let cli = Cli {

@@ -3,9 +3,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::generator::{
-    decode_pointer_segment, invocation_sequence_strategy, invocation_strategy,
-    invocation_strategy_from_corpus, path_from_pointer, schema_violations, ConstraintKind,
-    InvocationError, PathSegment, ValueCorpus,
+    applicable_constraints, decode_pointer_segment, invalid_invocation_strategy,
+    invocation_strategy, invocation_strategy_from_corpus, mutate_to_violate_constraint,
+    path_from_pointer, schema_violations, Constraint, ConstraintKind, InvocationError, PathSegment,
+    ValueCorpus,
 };
 use crate::{JsonObject, StateMachineConfig, ToolPredicate};
 use jsonschema::draft202012;
@@ -1028,26 +1029,6 @@ fn invocation_strategy_allows_empty_required_without_properties() {
     let invocation = sample(strategy);
     let args = invocation.arguments.expect("arguments");
     assert!(args.is_empty());
-}
-
-#[test]
-fn invocation_sequence_strategy_generates_in_range() {
-    let tool = tool_with_schema_value(
-        "echo",
-        json!({
-            "type": "object",
-            "properties": { "value": { "const": "ok" } }
-        }),
-    );
-    let strategy = invocation_sequence_strategy(&[tool], None, 1..=3).expect("strategy");
-    let sequence = sample(strategy);
-    assert!((1..=3).contains(&sequence.len()));
-}
-
-#[test]
-fn invocation_sequence_strategy_errors_on_empty_tools() {
-    let error = invocation_sequence_strategy(&[], None, 1..=1).expect_err("error");
-    assert!(matches!(error, InvocationError::NoEligibleTools));
 }
 
 #[test]

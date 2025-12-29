@@ -3,10 +3,10 @@ use std::fs;
 use std::ops::RangeInclusive;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
-    CoverageWarningReason, GeneratorMode, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
+    CoverageWarningReason, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
 };
 
@@ -22,9 +22,6 @@ pub struct Cli {
     /// Maximum sequence length per generated run.
     #[arg(long, default_value_t = 3)]
     pub max_sequence_len: usize,
-    /// Generator mode for sequence synthesis.
-    #[arg(long, value_enum, default_value_t = GeneratorModeArg::Legacy)]
-    pub generator_mode: GeneratorModeArg,
     /// Allow schema-based generation when corpus lacks required values.
     #[arg(long)]
     pub lenient_sourcing: bool,
@@ -48,21 +45,6 @@ pub struct Cli {
     pub json: bool,
     #[command(subcommand)]
     pub command: Command,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum GeneratorModeArg {
-    Legacy,
-    StateMachine,
-}
-
-impl From<GeneratorModeArg> for GeneratorMode {
-    fn from(mode: GeneratorModeArg) -> Self {
-        match mode {
-            GeneratorModeArg::Legacy => GeneratorMode::Legacy,
-            GeneratorModeArg::StateMachine => GeneratorMode::StateMachine,
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -163,9 +145,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         state_machine.log_corpus_deltas = true;
     }
     let dump_corpus = state_machine.dump_corpus;
-    let run_config = RunConfig::new()
-        .with_generator_mode(cli.generator_mode.into())
-        .with_state_machine(state_machine);
+    let run_config = RunConfig::new().with_state_machine(state_machine);
 
     let result = match cli.command {
         Command::Stdio {
@@ -467,16 +447,8 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_generator_mode_and_stdio() {
-        let cli = Cli::parse_from([
-            "tooltest",
-            "--generator-mode",
-            "state-machine",
-            "stdio",
-            "--command",
-            "server",
-        ]);
-        assert_eq!(cli.generator_mode, GeneratorModeArg::StateMachine);
+    fn cli_parses_stdio_command() {
+        let cli = Cli::parse_from(["tooltest", "stdio", "--command", "server"]);
         assert!(!cli.lenient_sourcing);
         assert!(!cli.no_lenient_sourcing);
         assert_eq!(
@@ -514,27 +486,6 @@ mod tests {
         ]);
         assert!(!cli.lenient_sourcing);
         assert!(cli.no_lenient_sourcing);
-    }
-
-    #[test]
-    fn generator_mode_arg_equality_covers_variants() {
-        assert_eq!(GeneratorModeArg::Legacy, GeneratorModeArg::Legacy);
-        assert_ne!(GeneratorModeArg::Legacy, GeneratorModeArg::StateMachine);
-    }
-
-    #[test]
-    fn generator_mode_arg_value_enum_variants() {
-        let variants = GeneratorModeArg::value_variants();
-        assert!(variants.contains(&GeneratorModeArg::Legacy));
-        assert!(variants.contains(&GeneratorModeArg::StateMachine));
-        assert!(GeneratorModeArg::Legacy.to_possible_value().is_some());
-        assert!(GeneratorModeArg::StateMachine.to_possible_value().is_some());
-    }
-
-    #[test]
-    fn generator_mode_arg_converts_state_machine() {
-        let mode: GeneratorMode = GeneratorModeArg::StateMachine.into();
-        assert_eq!(mode, GeneratorMode::StateMachine);
     }
 
     #[test]
@@ -829,7 +780,6 @@ mod tests {
             cases: 1,
             min_sequence_len: 1,
             max_sequence_len: 1,
-            generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
             mine_text: false,
             dump_corpus: false,
@@ -853,7 +803,6 @@ mod tests {
             cases: 1,
             min_sequence_len: 1,
             max_sequence_len: 1,
-            generator_mode: GeneratorModeArg::StateMachine,
             lenient_sourcing: true,
             mine_text: false,
             dump_corpus: false,
@@ -877,7 +826,6 @@ mod tests {
             cases: 1,
             min_sequence_len: 1,
             max_sequence_len: 1,
-            generator_mode: GeneratorModeArg::StateMachine,
             lenient_sourcing: false,
             mine_text: false,
             dump_corpus: false,
@@ -901,7 +849,6 @@ mod tests {
             cases: 1,
             min_sequence_len: 1,
             max_sequence_len: 1,
-            generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
             mine_text: false,
             dump_corpus: false,
@@ -927,7 +874,6 @@ mod tests {
             cases: 1,
             min_sequence_len: 1,
             max_sequence_len: 1,
-            generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
             mine_text: false,
             dump_corpus: false,

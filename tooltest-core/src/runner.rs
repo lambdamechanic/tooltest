@@ -11,13 +11,13 @@ use rmcp::model::{CallToolResult, ListToolsResult, Tool};
 use serde_json::{json, Number, Value as JsonValue};
 
 use crate::generator::{
-    invocation_from_seed, invocation_sequence_strategy, state_machine_sequence_strategy,
-    uncallable_reason, StateMachineSeed, UncallableReason, ValueCorpus,
+    invocation_from_seed, state_machine_sequence_strategy, uncallable_reason, StateMachineSeed,
+    UncallableReason, ValueCorpus,
 };
 use crate::schema::parse_list_tools;
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CorpusReport, CoverageReport,
-    CoverageRule, CoverageWarning, CoverageWarningReason, GeneratorMode, HttpConfig, JsonObject,
+    CoverageRule, CoverageWarning, CoverageWarningReason, HttpConfig, JsonObject,
     MinimizedSequence, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
     SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
 };
@@ -147,201 +147,103 @@ pub async fn run_with_session(
         ..ProptestConfig::default()
     });
 
-    let run_result = match config.generator_mode {
-        GeneratorMode::Legacy => {
-            let strategy = match invocation_sequence_strategy(
-                &tools,
-                config.predicate.as_ref(),
-                options.sequence_len.clone(),
-            ) {
-                Ok(strategy) => strategy,
-                Err(error) => {
-                    return failure_result(
-                        RunFailure::new(error.to_string()),
-                        prelude_trace.as_ref().clone(),
-                        None,
-                        warnings.as_ref().clone(),
-                        None,
-                        None,
-                    )
-                }
-            };
-            let run_result = runner.run(&strategy, {
-                let assertions = assertions.clone();
-                let last_trace = last_trace.clone();
-                let last_coverage = last_coverage.clone();
-                let last_corpus = last_corpus.clone();
-                let last_failure = last_failure.clone();
-                let output_validators = output_validators.clone();
-                let input_validators = input_validators.clone();
-                let aggregate_tracker = aggregate_tracker.clone();
-                move |sequence| {
-                    let execution: Result<Vec<TraceEntry>, FailureContext> =
-                        tokio::task::block_in_place(|| {
-                            let last_coverage = last_coverage.clone();
-                            let last_corpus = last_corpus.clone();
-                            handle.block_on(async {
-                                let mut tracker =
-                                    CoverageTracker::new(&tools, &config.state_machine);
-                                let result = execute_sequence_with_coverage(
-                                    session,
-                                    &input_validators,
-                                    &output_validators,
-                                    &assertions,
-                                    &sequence,
-                                    &mut tracker,
-                                )
-                                .await;
-                                let (report, corpus_report) = {
-                                    let mut aggregate = aggregate_tracker.borrow_mut();
-                                    aggregate.merge_from(&tracker);
-                                    let report = aggregate.report();
-                                    let corpus_report = if config.state_machine.dump_corpus {
-                                        Some(aggregate.corpus_report())
-                                    } else {
-                                        None
-                                    };
-                                    (report, corpus_report)
-                                };
-                                last_coverage.replace(Some(report.clone()));
-                                last_corpus.replace(corpus_report.clone());
-                                match result {
-                                    Ok(trace) => Ok(trace),
-                                    Err(mut failure) => {
-                                        failure.coverage = Some(report);
-                                        failure.corpus = corpus_report;
-                                        Err(failure)
-                                    }
-                                }
-                            })
-                        });
-                    match execution {
-                        Ok(trace) => {
-                            let mut full_trace = prelude_trace.as_ref().clone();
-                            full_trace.extend(trace);
-                            last_trace.replace(full_trace);
-                            Ok(())
-                        }
-                        Err(mut failure) => {
-                            let mut full_trace = prelude_trace.as_ref().clone();
-                            full_trace.extend(failure.trace);
-                            failure.trace = full_trace;
-                            last_failure.replace(failure.clone());
-                            Err(TestCaseError::fail(failure.failure.reason.clone()))
-                        }
-                    }
-                }
-            });
-            finalize_run_result(
-                run_result,
-                &last_trace,
-                &last_failure,
-                &last_coverage,
-                &last_corpus,
-                warnings.as_ref(),
-            )
-        }
-        GeneratorMode::StateMachine => {
-            let strategy = match state_machine_sequence_strategy(
-                &tools,
-                config.predicate.as_ref(),
-                &config.state_machine,
-                options.sequence_len.clone(),
-            ) {
-                Ok(strategy) => strategy,
-                Err(error) => {
-                    return failure_result(
-                        RunFailure::new(error.to_string()),
-                        prelude_trace.as_ref().clone(),
-                        None,
-                        warnings.as_ref().clone(),
-                        None,
-                        None,
-                    )
-                }
-            };
-            let run_result = runner.run(&strategy, {
-                let assertions = assertions.clone();
-                let last_trace = last_trace.clone();
-                let last_coverage = last_coverage.clone();
-                let last_corpus = last_corpus.clone();
-                let last_failure = last_failure.clone();
-                let output_validators = output_validators.clone();
-                let input_validators = input_validators.clone();
-                let predicate = config.predicate.clone();
-                let min_len = *options.sequence_len.start();
-                let aggregate_tracker = aggregate_tracker.clone();
-                move |seeds| {
-                    let execution: Result<StateMachineExecution, FailureContext> =
-                        tokio::task::block_in_place(|| {
-                            let last_coverage = last_coverage.clone();
-                            let last_corpus = last_corpus.clone();
-                            handle.block_on(async {
-                                let mut tracker =
-                                    CoverageTracker::new(&tools, &config.state_machine);
-                                let result = execute_state_machine_sequence_with_coverage(
-                                    session,
-                                    &input_validators,
-                                    &output_validators,
-                                    &assertions,
-                                    &seeds,
-                                    &tools,
-                                    predicate.as_ref(),
-                                    &mut tracker,
-                                    config.state_machine.lenient_sourcing,
-                                    min_len,
-                                )
-                                .await;
-                                let (report, corpus_report) = {
-                                    let mut aggregate = aggregate_tracker.borrow_mut();
-                                    aggregate.merge_from(&tracker);
-                                    let report = aggregate.report();
-                                    let corpus_report = if config.state_machine.dump_corpus {
-                                        Some(aggregate.corpus_report())
-                                    } else {
-                                        None
-                                    };
-                                    (report, corpus_report)
-                                };
-                                last_coverage.replace(Some(report.clone()));
-                                last_corpus.replace(corpus_report.clone());
-                                match result {
-                                    Ok(execution) => Ok(execution),
-                                    Err(mut failure) => {
-                                        failure.coverage = Some(report);
-                                        failure.corpus = corpus_report;
-                                        Err(failure)
-                                    }
-                                }
-                            })
-                        });
-                    match execution {
-                        Ok(execution) => {
-                            let mut full_trace = prelude_trace.as_ref().clone();
-                            full_trace.extend(execution.trace);
-                            last_trace.replace(full_trace);
-                            Ok(())
-                        }
-                        Err(mut failure) => {
-                            let mut full_trace = prelude_trace.as_ref().clone();
-                            full_trace.extend(failure.trace);
-                            failure.trace = full_trace;
-                            last_failure.replace(failure.clone());
-                            Err(TestCaseError::fail(failure.failure.reason.clone()))
-                        }
-                    }
-                }
-            });
-            finalize_run_result(
-                run_result,
-                &last_trace,
-                &last_failure,
-                &last_coverage,
-                &last_corpus,
-                warnings.as_ref(),
+    let strategy = match state_machine_sequence_strategy(
+        &tools,
+        config.predicate.as_ref(),
+        &config.state_machine,
+        options.sequence_len.clone(),
+    ) {
+        Ok(strategy) => strategy,
+        Err(error) => {
+            return failure_result(
+                RunFailure::new(error.to_string()),
+                prelude_trace.as_ref().clone(),
+                None,
+                warnings.as_ref().clone(),
+                None,
+                None,
             )
         }
     };
+    let run_result = runner.run(&strategy, {
+        let assertions = assertions.clone();
+        let last_trace = last_trace.clone();
+        let last_coverage = last_coverage.clone();
+        let last_corpus = last_corpus.clone();
+        let last_failure = last_failure.clone();
+        let output_validators = output_validators.clone();
+        let input_validators = input_validators.clone();
+        let predicate = config.predicate.clone();
+        let min_len = *options.sequence_len.start();
+        let aggregate_tracker = aggregate_tracker.clone();
+        move |seeds| {
+            let execution: Result<StateMachineExecution, FailureContext> =
+                tokio::task::block_in_place(|| {
+                    let last_coverage = last_coverage.clone();
+                    let last_corpus = last_corpus.clone();
+                    handle.block_on(async {
+                        let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
+                        let result = execute_state_machine_sequence_with_coverage(
+                            session,
+                            &input_validators,
+                            &output_validators,
+                            &assertions,
+                            &seeds,
+                            &tools,
+                            predicate.as_ref(),
+                            &mut tracker,
+                            config.state_machine.lenient_sourcing,
+                            min_len,
+                        )
+                        .await;
+                        let (report, corpus_report) = {
+                            let mut aggregate = aggregate_tracker.borrow_mut();
+                            aggregate.merge_from(&tracker);
+                            let report = aggregate.report();
+                            let corpus_report = if config.state_machine.dump_corpus {
+                                Some(aggregate.corpus_report())
+                            } else {
+                                None
+                            };
+                            (report, corpus_report)
+                        };
+                        last_coverage.replace(Some(report.clone()));
+                        last_corpus.replace(corpus_report.clone());
+                        match result {
+                            Ok(execution) => Ok(execution),
+                            Err(mut failure) => {
+                                failure.coverage = Some(report);
+                                failure.corpus = corpus_report;
+                                Err(failure)
+                            }
+                        }
+                    })
+                });
+            match execution {
+                Ok(execution) => {
+                    let mut full_trace = prelude_trace.as_ref().clone();
+                    full_trace.extend(execution.trace);
+                    last_trace.replace(full_trace);
+                    Ok(())
+                }
+                Err(mut failure) => {
+                    let mut full_trace = prelude_trace.as_ref().clone();
+                    full_trace.extend(failure.trace);
+                    failure.trace = full_trace;
+                    last_failure.replace(failure.clone());
+                    Err(TestCaseError::fail(failure.failure.reason.clone()))
+                }
+            }
+        }
+    });
+    let run_result = finalize_run_result(
+        run_result,
+        &last_trace,
+        &last_failure,
+        &last_coverage,
+        &last_corpus,
+        warnings.as_ref(),
+    );
     if matches!(run_result.outcome, RunOutcome::Success) {
         if let Err(failure) = aggregate_tracker
             .borrow()
@@ -409,77 +311,6 @@ struct FailureContext {
     invocations: Vec<ToolInvocation>,
     coverage: Option<CoverageReport>,
     corpus: Option<CorpusReport>,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-async fn execute_sequence(
-    session: &SessionDriver,
-    input_validators: &BTreeMap<String, jsonschema::Validator>,
-    output_validators: &BTreeMap<String, jsonschema::Validator>,
-    assertions: &AssertionSet,
-    sequence: &[ToolInvocation],
-) -> Result<Vec<TraceEntry>, FailureContext> {
-    let mut trace = Vec::new();
-    let mut full_trace = Vec::new();
-    let invocations = sequence.to_vec();
-    for invocation in sequence {
-        validate_invocation_inputs(invocation, input_validators);
-        trace.push(TraceEntry::tool_call(invocation.clone()));
-        let entry = match session.send_tool_call(invocation.clone()).await {
-            Ok(entry) => entry,
-            Err(error) => {
-                attach_failure_reason(&mut trace, format!("session error: {error:?}"));
-                return Err(FailureContext {
-                    failure: RunFailure::new(format!("session error: {error:?}")),
-                    trace,
-                    invocations,
-                    coverage: None,
-                    corpus: None,
-                });
-            }
-        };
-        let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
-        let invocation = invocation.clone();
-        let response = response.expect("tool call response").clone();
-        full_trace.push(entry);
-
-        if let Some(reason) = apply_default_assertions(&invocation, &response, output_validators) {
-            attach_response(&mut trace, response.clone());
-            attach_failure_reason(&mut trace, reason.clone());
-            return Err(FailureContext {
-                failure: RunFailure::new(reason),
-                trace,
-                invocations,
-                coverage: None,
-                corpus: None,
-            });
-        }
-
-        if let Some(reason) = apply_response_assertions(assertions, &invocation, &response) {
-            attach_response(&mut trace, response.clone());
-            attach_failure_reason(&mut trace, reason.clone());
-            return Err(FailureContext {
-                failure: RunFailure::new(reason),
-                trace,
-                invocations,
-                coverage: None,
-                corpus: None,
-            });
-        }
-    }
-
-    if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
-        attach_failure_reason(&mut trace, reason.clone());
-        return Err(FailureContext {
-            failure: RunFailure::new(reason),
-            trace,
-            invocations,
-            coverage: None,
-            corpus: None,
-        });
-    }
-
-    Ok(trace)
 }
 
 struct CoverageTracker<'a> {
@@ -1573,13 +1404,11 @@ mod tests {
         >(transport)
         .await
         .expect("connect");
-        let config = RunConfig::new()
-            .with_generator_mode(GeneratorMode::StateMachine)
-            .with_state_machine(
-                StateMachineConfig::default()
-                    .with_lenient_sourcing(false)
-                    .with_dump_corpus(true),
-            );
+        let config = RunConfig::new().with_state_machine(
+            StateMachineConfig::default()
+                .with_lenient_sourcing(false)
+                .with_dump_corpus(true),
+        );
         let result = run_with_session(
             &session,
             &config,
@@ -2202,31 +2031,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn execute_sequence_reports_session_error() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response).with_call_tool_error(
-            ErrorData::new(ErrorCode::INTERNAL_ERROR, "call failed", None),
-        );
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let input_validators = build_input_validators(&[tool]).expect("validators");
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let result = execute_sequence(
-            &session,
-            &input_validators,
-            &BTreeMap::new(),
-            &AssertionSet::default(),
-            &[invocation],
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure.failure.reason.contains("session error"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn execute_state_machine_sequence_mines_structured_output() {
         let seed_tool = tool_with_schemas("seed", json!({ "type": "object" }), None);
         let use_tool = tool_with_schemas(
@@ -2314,151 +2118,6 @@ mod tests {
 
         let failure = result.expect_err("expected failure");
         assert!(failure.failure.reason.contains("minimum sequence length"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_sequence_reports_default_assertion_failure() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::error(vec![Content::text("boom")]);
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let input_validators = build_input_validators(&[tool]).expect("validators");
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let result = execute_sequence(
-            &session,
-            &input_validators,
-            &BTreeMap::new(),
-            &AssertionSet::default(),
-            &[invocation],
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure
-            .failure
-            .reason
-            .contains("returned an error response"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_sequence_reports_response_assertion_failure() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let input_validators = build_input_validators(&[tool]).expect("validators");
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let assertions = AssertionSet {
-            rules: vec![AssertionRule::Response(ResponseAssertion {
-                tool: None,
-                checks: vec![AssertionCheck {
-                    target: AssertionTarget::Input,
-                    pointer: "/missing".to_string(),
-                    expected: json!(true),
-                }],
-            })],
-        };
-        let result = execute_sequence(
-            &session,
-            &input_validators,
-            &BTreeMap::new(),
-            &assertions,
-            &[invocation],
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure.failure.reason.contains("assertion pointer"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_sequence_reports_sequence_assertion_failure() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let input_validators = build_input_validators(&[tool]).expect("validators");
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let assertions = AssertionSet {
-            rules: vec![AssertionRule::Sequence(SequenceAssertion {
-                checks: vec![AssertionCheck {
-                    target: AssertionTarget::Sequence,
-                    pointer: "/missing".to_string(),
-                    expected: json!(true),
-                }],
-            })],
-        };
-        let result = execute_sequence(
-            &session,
-            &input_validators,
-            &BTreeMap::new(),
-            &assertions,
-            &[invocation],
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure.failure.reason.contains("assertion pointer"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_sequence_succeeds_with_valid_response() {
-        let tool = tool_with_schemas(
-            "echo",
-            json!({ "type": "object" }),
-            Some(json!({
-                "type": "object",
-                "properties": { "status": { "type": "string", "const": "ok" } },
-                "required": ["status"]
-            })),
-        );
-        let response = CallToolResult::structured(json!({ "status": "ok" }));
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let input_validators = build_input_validators(&[tool.clone()]).expect("validators");
-        let output_validators = build_output_validators(&[tool]).expect("validators");
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: Some(JsonObject::new()),
-        };
-
-        let result = execute_sequence(
-            &session,
-            &input_validators,
-            &output_validators,
-            &AssertionSet::default(),
-            &[invocation],
-        )
-        .await;
-
-        let trace = result.expect("expected success");
-        assert_eq!(trace.len(), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_sequence_succeeds_with_empty_sequence() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool, response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-
-        let result = execute_sequence(
-            &session,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &AssertionSet::default(),
-            &[],
-        )
-        .await;
-
-        let trace = result.expect("expected success");
-        assert!(trace.is_empty());
     }
 
     #[test]

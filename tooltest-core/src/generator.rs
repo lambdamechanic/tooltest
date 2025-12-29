@@ -330,17 +330,20 @@ pub(crate) fn invocation_strategy(
     Ok(union)
 }
 
-/// Builds a strategy that yields sequences of tool invocations.
-pub(crate) fn invocation_sequence_strategy(
+pub(crate) fn state_machine_sequence_strategy(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
+    config: &StateMachineConfig,
     len_range: std::ops::RangeInclusive<usize>,
-) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
-    let invocation = invocation_strategy(tools, predicate)?;
-    Ok(proptest::collection::vec(invocation, len_range).boxed())
+) -> Result<BoxedStrategy<Vec<StateMachineSeed>>, InvocationError> {
+    validate_state_machine_tools(tools)?;
+    let _ = (predicate, config);
+    Ok(SeedStateMachine::sequential_strategy(len_range)
+        .prop_map(|(_, transitions, _)| transitions)
+        .boxed())
 }
 
-pub(crate) fn invocation_strategy_from_corpus(
+pub(crate) fn invocation_from_seed(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,

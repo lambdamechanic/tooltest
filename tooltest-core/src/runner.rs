@@ -1646,6 +1646,7 @@ mod tests {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
+            warnings: Vec::new(),
             coverage: None,
         };
         assert_success(&result);

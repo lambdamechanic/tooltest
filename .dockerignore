@@ -1,0 +1,13 @@
+target
+**/target
+.git
+.beads
+.github
+coverage.json
+*.log
+node_modules
+history
+.docker-cache
+*.tmp
+*.swp
+*.swo

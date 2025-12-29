@@ -129,6 +129,7 @@ struct StateMachineContext {
     predicate: Option<ToolPredicate>,
     seed_numbers: Vec<Number>,
     seed_strings: Vec<String>,
+    lenient_sourcing: bool,
 }
 
 fn set_state_machine_context(context: StateMachineContext) {
@@ -291,10 +292,11 @@ pub(crate) fn invocation_strategy_from_corpus(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,
+    lenient_sourcing: bool,
 ) -> Result<Option<BoxedStrategy<ToolInvocation>>, InvocationError> {
     let mut strategies = Vec::new();
     for tool in tools {
-        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus) {
+        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus, lenient_sourcing) {
             strategies.push(strategy.boxed());
         }
     }
@@ -329,7 +331,9 @@ impl ReferenceStateMachine for StateMachineModel {
         let context = get_state_machine_context();
         let mut strategies = Vec::new();
         for tool in context.tools.iter() {
-            let Some(strategy) = invocation_from_corpus_unfiltered(tool, state) else {
+            let Some(strategy) =
+                invocation_from_corpus_unfiltered(tool, state, context.lenient_sourcing)
+            else {
                 continue;
             };
             let predicate = context.predicate.clone();
@@ -395,7 +399,9 @@ pub(crate) fn state_machine_sequence_strategy(
     let mut corpus = ValueCorpus::default();
     corpus.seed_numbers(config.seed_numbers.clone());
     corpus.seed_strings(config.seed_strings.clone());
-    if invocation_strategy_from_corpus(tools, predicate, &corpus)?.is_none() {
+    if invocation_strategy_from_corpus(tools, predicate, &corpus, config.lenient_sourcing)?
+        .is_none()
+    {
         return Ok(Just(StateMachineSequence::empty()).boxed());
     }
 
@@ -404,6 +410,7 @@ pub(crate) fn state_machine_sequence_strategy(
         predicate: predicate.cloned(),
         seed_numbers: config.seed_numbers.clone(),
         seed_strings: config.seed_strings.clone(),
+        lenient_sourcing: config.lenient_sourcing,
     };
     set_state_machine_context(context);
 
@@ -521,8 +528,9 @@ fn invocation_from_corpus(
     tool: &Tool,
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,
+    lenient_sourcing: bool,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
-    let strategy = invocation_from_corpus_unfiltered(tool, corpus)?;
+    let strategy = invocation_from_corpus_unfiltered(tool, corpus, lenient_sourcing)?;
     let predicate = predicate.cloned();
     let tool_name = tool.name.clone();
     if predicate.is_none() {
@@ -556,6 +564,7 @@ fn invocation_from_corpus(
 fn invocation_from_corpus_unfiltered(
     tool: &Tool,
     corpus: &ValueCorpus,
+    lenient_sourcing: bool,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
     let schema = tool.input_schema.as_ref();
     match schema_object_union_branches(schema, tool) {
@@ -577,6 +586,7 @@ fn invocation_from_corpus_unfiltered(
                     corpus,
                     omit_optional,
                     &forbidden,
+                    lenient_sourcing,
                 ) {
                     strategies.push(strategy);
                 }
@@ -592,7 +602,7 @@ fn invocation_from_corpus_unfiltered(
     }
 
     let omit_keys = HashSet::new();
-    invocation_from_corpus_for_schema(tool, schema, corpus, false, &omit_keys)
+    invocation_from_corpus_for_schema(tool, schema, corpus, false, &omit_keys, lenient_sourcing)
 }
 
 fn invocation_from_corpus_for_schema(
@@ -601,6 +611,7 @@ fn invocation_from_corpus_for_schema(
     corpus: &ValueCorpus,
     omit_optional: bool,
     omit_keys: &HashSet<String>,
+    lenient_sourcing: bool,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
     if schema.get("$ref").is_some() || schema.get("allOf").is_some() {
         let resolved = resolve_object_schema(schema, tool).ok()?;
@@ -611,6 +622,7 @@ fn invocation_from_corpus_for_schema(
                 corpus,
                 omit_optional,
                 omit_keys,
+                lenient_sourcing,
             );
         }
     }
@@ -641,7 +653,8 @@ fn invocation_from_corpus_for_schema(
     for (name, schema_value) in properties {
         let schema_object = schema_value.as_object()?;
         let required = required_keys.contains(name);
-        match property_strategy_from_corpus(schema_object, required, corpus, tool) {
+        match property_strategy_from_corpus(schema_object, required, corpus, tool, lenient_sourcing)
+        {
             PropertyOutcome::Include(strategy) => {
                 let strategy = if omit_optional && !required {
                     prop_oneof![Just(None), strategy.prop_map(Some)].boxed()
@@ -718,6 +731,7 @@ fn property_strategy_from_corpus(
     required: bool,
     corpus: &ValueCorpus,
     tool: &Tool,
+    lenient_sourcing: bool,
 ) -> PropertyOutcome {
     match schema_type_hint(schema) {
         Some(SchemaType::String) => {
@@ -729,9 +743,13 @@ fn property_strategy_from_corpus(
                 .collect::<Vec<_>>();
             if values.is_empty() {
                 return if required {
-                    match schema_value_strategy(schema, tool) {
-                        Ok(strategy) => PropertyOutcome::Include(strategy),
-                        Err(_) => PropertyOutcome::MissingRequired,
+                    if lenient_sourcing {
+                        match schema_value_strategy(schema, tool) {
+                            Ok(strategy) => PropertyOutcome::Include(strategy),
+                            Err(_) => PropertyOutcome::MissingRequired,
+                        }
+                    } else {
+                        PropertyOutcome::MissingRequired
                     }
                 } else {
                     PropertyOutcome::Omit
@@ -748,9 +766,13 @@ fn property_strategy_from_corpus(
                 .collect::<Vec<_>>();
             if values.is_empty() {
                 return if required {
-                    match schema_value_strategy(schema, tool) {
-                        Ok(strategy) => PropertyOutcome::Include(strategy),
-                        Err(_) => PropertyOutcome::MissingRequired,
+                    if lenient_sourcing {
+                        match schema_value_strategy(schema, tool) {
+                            Ok(strategy) => PropertyOutcome::Include(strategy),
+                            Err(_) => PropertyOutcome::MissingRequired,
+                        }
+                    } else {
+                        PropertyOutcome::MissingRequired
                     }
                 } else {
                     PropertyOutcome::Omit
@@ -767,9 +789,13 @@ fn property_strategy_from_corpus(
                 .collect::<Vec<_>>();
             if values.is_empty() {
                 return if required {
-                    match schema_value_strategy(schema, tool) {
-                        Ok(strategy) => PropertyOutcome::Include(strategy),
-                        Err(_) => PropertyOutcome::MissingRequired,
+                    if lenient_sourcing {
+                        match schema_value_strategy(schema, tool) {
+                            Ok(strategy) => PropertyOutcome::Include(strategy),
+                            Err(_) => PropertyOutcome::MissingRequired,
+                        }
+                    } else {
+                        PropertyOutcome::MissingRequired
                     }
                 } else {
                     PropertyOutcome::Omit
@@ -816,7 +842,11 @@ fn schema_type_hint(schema: &JsonObject) -> Option<SchemaType> {
     None
 }
 
-pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<UncallableReason> {
+pub(crate) fn uncallable_reason(
+    tool: &Tool,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+) -> Option<UncallableReason> {
     let schema = tool.input_schema.as_ref();
     let properties = match schema.get("properties") {
         Some(JsonValue::Object(map)) => map,
@@ -860,10 +890,12 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
                     .any(|value| schema_violations(schema_object, &value).is_empty());
                 if has_match {
                     None
-                } else {
+                } else if lenient_sourcing {
                     schema_value_strategy(schema_object, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::String)
                 }
             }
             Some(SchemaType::Integer) => {
@@ -874,10 +906,12 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
                     .any(|value| schema_violations(schema_object, &value).is_empty());
                 if has_match {
                     None
-                } else {
+                } else if lenient_sourcing {
                     schema_value_strategy(schema_object, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::Integer)
                 }
             }
             Some(SchemaType::Number) => {
@@ -888,15 +922,23 @@ pub(crate) fn uncallable_reason(tool: &Tool, corpus: &ValueCorpus) -> Option<Unc
                     .any(|value| schema_violations(schema_object, &value).is_empty());
                 if has_match {
                     None
-                } else {
+                } else if lenient_sourcing {
                     schema_value_strategy(schema_object, tool)
                         .err()
                         .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::Number)
                 }
             }
-            None => schema_value_strategy(schema_object, tool)
-                .err()
-                .map(|_| UncallableReason::RequiredValue),
+            None => {
+                if lenient_sourcing {
+                    schema_value_strategy(schema_object, tool)
+                        .err()
+                        .map(|_| UncallableReason::RequiredValue)
+                } else {
+                    Some(UncallableReason::RequiredValue)
+                }
+            }
         };
         if let Some(reason) = reason {
             return Some(reason);
@@ -2389,13 +2431,13 @@ mod tests {
     fn invocation_from_corpus_handles_missing_properties() {
         let tool = tool_with_schema("alpha", json!({ "type": "object", "properties": "nope" }));
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
 
         let tool = tool_with_schema("beta", json!({ "type": "object", "required": ["missing"] }));
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
 
         let tool = tool_with_schema("gamma", json!({ "type": "object" }));
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         assert_eq!(invocation.name.as_ref(), "gamma");
         assert_eq!(invocation.arguments, Some(JsonObject::new()));
@@ -2411,7 +2453,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -2427,7 +2469,8 @@ mod tests {
         let predicate: ToolPredicate = Arc::new(|_name, _input| true);
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
-        let strategy = invocation_from_corpus(&tool, Some(&predicate), &corpus).expect("strategy");
+        let strategy =
+            invocation_from_corpus(&tool, Some(&predicate), &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert_eq!(args.get("text"), Some(&json!("alpha")));
@@ -2443,7 +2486,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -2456,7 +2499,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         assert_eq!(invocation.arguments, Some(JsonObject::new()));
     }
@@ -2472,7 +2515,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, true).expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert!(args.contains_key("text"));
@@ -2489,7 +2532,8 @@ mod tests {
         );
         let predicate: ToolPredicate = Arc::new(|_name, _input| false);
         let corpus = ValueCorpus::default();
-        let strategy = invocation_from_corpus(&tool, Some(&predicate), &corpus).expect("strategy");
+        let strategy =
+            invocation_from_corpus(&tool, Some(&predicate), &corpus, false).expect("strategy");
         let mut runner = proptest::test_runner::TestRunner::deterministic();
         assert!(strategy.new_tree(&mut runner).is_err());
     }
@@ -2604,11 +2648,11 @@ mod tests {
             .cloned()
             .expect("schema");
         let corpus = ValueCorpus::default();
-        let missing = property_strategy_from_corpus(&schema, true, &corpus, &tool);
+        let missing = property_strategy_from_corpus(&schema, true, &corpus, &tool, true);
         assert!(outcome_is_include(&missing));
         assert!(!outcome_is_missing_required(&missing));
 
-        let omitted = property_strategy_from_corpus(&schema, false, &corpus, &tool);
+        let omitted = property_strategy_from_corpus(&schema, false, &corpus, &tool, false);
         assert!(!outcome_is_missing_required(&omitted));
         assert!(outcome_is_omit(&omitted));
     }
@@ -2625,20 +2669,23 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let integer_required = property_strategy_from_corpus(&integer_schema, true, &corpus, &tool);
+        let integer_required =
+            property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, true);
         assert!(outcome_is_include(&integer_required));
         assert!(!outcome_is_missing_required(&integer_required));
 
         let integer_optional =
-            property_strategy_from_corpus(&integer_schema, false, &corpus, &tool);
+            property_strategy_from_corpus(&integer_schema, false, &corpus, &tool, false);
         assert!(!outcome_is_missing_required(&integer_optional));
         assert!(outcome_is_omit(&integer_optional));
 
-        let number_required = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        let number_required =
+            property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
         assert!(outcome_is_include(&number_required));
         assert!(!outcome_is_missing_required(&number_required));
 
-        let number_optional = property_strategy_from_corpus(&number_schema, false, &corpus, &tool);
+        let number_optional =
+            property_strategy_from_corpus(&number_schema, false, &corpus, &tool, false);
         assert!(!outcome_is_missing_required(&number_optional));
         assert!(outcome_is_omit(&number_optional));
     }
@@ -2652,7 +2699,7 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&string_schema, true, &corpus, &tool, false);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_omit(&outcome));
     }
@@ -2673,7 +2720,7 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_missing_required(&outcome));
     }
@@ -2683,7 +2730,7 @@ mod tests {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let corpus = ValueCorpus::default();
         let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
-        let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
@@ -2700,9 +2747,11 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let integer_outcome = property_strategy_from_corpus(&integer_schema, true, &corpus, &tool);
+        let integer_outcome =
+            property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&integer_outcome));
-        let number_outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool);
+        let number_outcome =
+            property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&number_outcome));
     }
 
@@ -2714,7 +2763,7 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&const_schema, true, &corpus, &tool, false);
         assert!(outcome_is_include(&outcome));
         assert!(!outcome_is_missing_required(&outcome));
 
@@ -2722,7 +2771,7 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        let outcome = property_strategy_from_corpus(&bad_schema, true, &corpus, &tool);
+        let outcome = property_strategy_from_corpus(&bad_schema, true, &corpus, &tool, false);
         assert!(outcome_is_missing_required(&outcome));
         assert!(!outcome_is_include(&outcome));
     }
@@ -2801,11 +2850,20 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert_eq!(uncallable_reason(&string_tool, &corpus), None);
-        assert_eq!(uncallable_reason(&integer_tool, &corpus), None);
-        assert_eq!(uncallable_reason(&number_tool, &corpus), None);
         assert_eq!(
-            uncallable_reason(&required_tool, &corpus),
+            uncallable_reason(&string_tool, &corpus, false),
+            Some(UncallableReason::String)
+        );
+        assert_eq!(
+            uncallable_reason(&integer_tool, &corpus, false),
+            Some(UncallableReason::Integer)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus, false),
+            Some(UncallableReason::Number)
+        );
+        assert_eq!(
+            uncallable_reason(&required_tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2827,7 +2885,7 @@ mod tests {
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
         corpus.seed_numbers([Number::from(7)]);
-        assert_eq!(uncallable_reason(&tool, &corpus), None);
+        assert_eq!(uncallable_reason(&tool, &corpus, false), None);
     }
 
     #[test]
@@ -2835,7 +2893,7 @@ mod tests {
         let tool = tool_with_schema("bad", json!({ "type": "object", "properties": "nope" }));
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2844,7 +2902,7 @@ mod tests {
     fn uncallable_reason_handles_empty_required_without_properties() {
         let tool = tool_with_schema("empty", json!({ "type": "object", "required": [] }));
         let corpus = ValueCorpus::default();
-        assert_eq!(uncallable_reason(&tool, &corpus), None);
+        assert_eq!(uncallable_reason(&tool, &corpus, false), None);
     }
 
     #[test]
@@ -2855,7 +2913,7 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2879,8 +2937,14 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert_eq!(uncallable_reason(&string_tool, &corpus), None);
-        assert_eq!(uncallable_reason(&number_tool, &corpus), None);
+        assert_eq!(
+            uncallable_reason(&string_tool, &corpus, false),
+            Some(UncallableReason::String)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus, false),
+            Some(UncallableReason::Number)
+        );
     }
 
     #[test]
@@ -2895,7 +2959,7 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }
@@ -2913,8 +2977,8 @@ mod tests {
         let predicate: ToolPredicate = Arc::new(|_name, _input| false);
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
-        let error =
-            invocation_strategy_from_corpus(&[tool], Some(&predicate), &corpus).expect_err("error");
+        let error = invocation_strategy_from_corpus(&[tool], Some(&predicate), &corpus, false)
+            .expect_err("error");
         #[cfg(coverage)]
         std::hint::black_box(&error);
         #[cfg(not(coverage))]
@@ -2933,8 +2997,8 @@ mod tests {
         );
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
-        let strategy =
-            invocation_strategy_from_corpus(&[invalid, valid], None, &corpus).expect("strategy");
+        let strategy = invocation_strategy_from_corpus(&[invalid, valid], None, &corpus, false)
+            .expect("strategy");
         assert!(strategy.is_some());
     }
 
@@ -2951,7 +3015,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_some());
+        assert!(invocation_from_corpus(&tool, None, &corpus, true).is_some());
     }
 
     #[test]
@@ -2967,7 +3031,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_some());
+        assert!(invocation_from_corpus(&tool, None, &corpus, true).is_some());
     }
 
     #[test]
@@ -2981,7 +3045,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -2997,7 +3061,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus_unfiltered(&tool, &corpus).is_none());
+        assert!(invocation_from_corpus_unfiltered(&tool, &corpus, false).is_none());
     }
 
     #[test]
@@ -3013,9 +3077,10 @@ mod tests {
         let corpus = ValueCorpus::default();
         let schema = tool.input_schema.as_ref();
         let omit_keys = HashSet::new();
-        assert!(
-            invocation_from_corpus_for_schema(&tool, schema, &corpus, false, &omit_keys).is_none()
-        );
+        assert!(invocation_from_corpus_for_schema(
+            &tool, schema, &corpus, false, &omit_keys, false
+        )
+        .is_none());
     }
 
     #[test]
@@ -3038,8 +3103,9 @@ mod tests {
         corpus.seed_strings(["hello".to_string()]);
         let schema = tool.input_schema.as_ref();
         let omit_keys = HashSet::new();
-        let strategy = invocation_from_corpus_for_schema(&tool, schema, &corpus, false, &omit_keys)
-            .expect("strategy");
+        let strategy =
+            invocation_from_corpus_for_schema(&tool, schema, &corpus, false, &omit_keys, false)
+                .expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert_eq!(args.get("text"), Some(&json!("hello")));
@@ -3055,7 +3121,7 @@ mod tests {
             }),
         );
         let corpus = ValueCorpus::default();
-        assert!(invocation_from_corpus(&tool, None, &corpus).is_none());
+        assert!(invocation_from_corpus(&tool, None, &corpus, false).is_none());
     }
 
     #[test]
@@ -3081,7 +3147,7 @@ mod tests {
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["hello".to_string()]);
         corpus.seed_numbers([Number::from(3)]);
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert!(args.contains_key("text"));
@@ -3102,8 +3168,9 @@ mod tests {
         let mut omit_keys = HashSet::new();
         omit_keys.insert("text".to_string());
         let schema = tool.input_schema.as_ref();
-        let strategy = invocation_from_corpus_for_schema(&tool, schema, &corpus, false, &omit_keys)
-            .expect("strategy");
+        let strategy =
+            invocation_from_corpus_for_schema(&tool, schema, &corpus, false, &omit_keys, false)
+                .expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert!(args.is_empty());
@@ -3718,7 +3785,7 @@ mod tests {
         );
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["acme".to_string()]);
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert!(args.contains_key("vendor") || args.contains_key("product"));
@@ -3740,7 +3807,7 @@ mod tests {
         );
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         clear_reject_context();
         let mut runner =
             proptest::test_runner::TestRunner::new(proptest::test_runner::Config::default());
@@ -3760,7 +3827,7 @@ mod tests {
         );
         let mut corpus = ValueCorpus::default();
         corpus.seed_strings(["alpha".to_string()]);
-        let strategy = invocation_from_corpus(&tool, None, &corpus).expect("strategy");
+        let strategy = invocation_from_corpus(&tool, None, &corpus, false).expect("strategy");
         let invocation = sample(strategy);
         let args = invocation.arguments.expect("arguments");
         assert_eq!(args.get("text"), Some(&json!("alpha")));
@@ -4107,7 +4174,7 @@ mod tests {
         );
         let corpus = ValueCorpus::default();
         assert_eq!(
-            uncallable_reason(&tool, &corpus),
+            uncallable_reason(&tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }

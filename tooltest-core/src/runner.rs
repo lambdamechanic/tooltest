@@ -370,6 +370,7 @@ struct CoverageTracker<'a> {
     counts: BTreeMap<String, u64>,
     allowlist: Option<Vec<String>>,
     blocklist: Option<Vec<String>>,
+    lenient_sourcing: bool,
 }
 
 const LIST_TOOLS_COUNT_LABEL: &str = "tools/list";
@@ -390,6 +391,7 @@ impl<'a> CoverageTracker<'a> {
             counts: BTreeMap::new(),
             allowlist: config.coverage_allowlist.clone(),
             blocklist: config.coverage_blocklist.clone(),
+            lenient_sourcing: config.lenient_sourcing,
         }
     }
 
@@ -438,7 +440,7 @@ impl<'a> CoverageTracker<'a> {
                 }
             }
 
-            if let Some(reason) = uncallable_reason(tool, &self.corpus) {
+            if let Some(reason) = uncallable_reason(tool, &self.corpus, self.lenient_sourcing) {
                 warnings.push(CoverageWarning {
                     tool: name,
                     reason: map_uncallable_reason(reason),
@@ -457,7 +459,7 @@ impl<'a> CoverageTracker<'a> {
         let eligible_tools = self.eligible_tools();
         let mut callable_tools = Vec::new();
         for tool in eligible_tools {
-            if uncallable_reason(tool, &self.corpus).is_none() {
+            if uncallable_reason(tool, &self.corpus, self.lenient_sourcing).is_none() {
                 callable_tools.push(tool.name.to_string());
             }
         }

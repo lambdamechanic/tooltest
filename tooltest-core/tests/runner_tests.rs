@@ -14,9 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
 use tooltest_core::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, GeneratorMode, HttpConfig, ResponseAssertion, RunConfig,
-    RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig,
-    TraceEntry,
+    CoverageWarningReason, ErrorCode, HttpConfig, ResponseAssertion, RunConfig, RunOutcome,
+    RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
 };
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -232,12 +231,6 @@ fn runner_options_default_matches_expected_values() {
     assert_eq!(options.sequence_len, 1..=3);
 }
 
-#[test]
-fn run_config_defaults_to_legacy_generator_mode() {
-    let config = RunConfig::new();
-    assert_eq!(config.generator_mode, GeneratorMode::Legacy);
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_supports_state_machine_generator() {
     let tool = tool_with_schemas(
@@ -256,9 +249,7 @@ async fn run_with_session_supports_state_machine_generator() {
     let driver = connect_runner_transport(transport).await.expect("connect");
 
     let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(5)]);
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_state_machine(state_machine);
+    let config = RunConfig::new().with_state_machine(state_machine);
     let result = tooltest_core::run_with_session(
         &driver,
         &config,
@@ -290,7 +281,7 @@ async fn run_with_session_reports_state_machine_strategy_error() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new().with_generator_mode(GeneratorMode::StateMachine);
+    let config = RunConfig::new();
     let result = tooltest_core::run_with_session(
         &driver,
         &config,
@@ -326,7 +317,7 @@ async fn run_with_session_emits_uncallable_tool_warning() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new().with_generator_mode(GeneratorMode::StateMachine);
+    let config = RunConfig::new();
     let result = tooltest_core::run_with_session(
         &driver,
         &config,
@@ -378,9 +369,7 @@ async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
     let state_machine = StateMachineConfig::default()
         .with_coverage_allowlist(vec!["alpha".to_string()])
         .with_coverage_blocklist(vec!["beta".to_string()]);
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_state_machine(state_machine);
+    let config = RunConfig::new().with_state_machine(state_machine);
 
     let result = tooltest_core::run_with_session(
         &driver,
@@ -409,9 +398,7 @@ async fn run_with_session_executes_allowlist_and_blocklist_filters() {
         .with_coverage_allowlist(vec!["alpha".to_string()])
         .with_coverage_blocklist(vec!["alpha".to_string()])
         .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]);
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_state_machine(state_machine);
+    let config = RunConfig::new().with_state_machine(state_machine);
 
     let result = tooltest_core::run_with_session(
         &driver,
@@ -447,9 +434,7 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
         .with_seed_numbers(vec![Number::from(1)])
         .with_dump_corpus(true)
         .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_state_machine(state_machine);
+    let config = RunConfig::new().with_state_machine(state_machine);
 
     let result = tooltest_core::run_with_session(
         &driver,
@@ -502,9 +487,7 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
     let state_machine = StateMachineConfig::default()
         .with_seed_numbers(vec![Number::from(1)])
         .with_coverage_rules(vec![CoverageRule::percent_called(100.0)]);
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_state_machine(state_machine);
+    let config = RunConfig::new().with_state_machine(state_machine);
 
     let result = tooltest_core::run_with_session(
         &driver,
@@ -537,9 +520,7 @@ async fn run_with_session_excludes_error_responses_from_coverage() {
     let driver = connect_runner_transport(transport).await.expect("connect");
 
     let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(3)]);
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_state_machine(state_machine);
+    let config = RunConfig::new().with_state_machine(state_machine);
 
     let result = tooltest_core::run_with_session(
         &driver,
@@ -567,7 +548,7 @@ async fn run_with_session_reports_state_machine_session_error() {
     ));
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new().with_generator_mode(GeneratorMode::StateMachine);
+    let config = RunConfig::new();
     let result = tooltest_core::run_with_session(
         &driver,
         &config,
@@ -866,9 +847,7 @@ async fn run_with_session_reports_state_machine_response_assertion_failure() {
         })],
     };
 
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_assertions(assertions);
+    let config = RunConfig::new().with_assertions(assertions);
     let result = tooltest_core::run_with_session(
         &driver,
         &config,
@@ -930,9 +909,7 @@ async fn run_with_session_reports_state_machine_sequence_assertion_failure() {
         })],
     };
 
-    let config = RunConfig::new()
-        .with_generator_mode(GeneratorMode::StateMachine)
-        .with_assertions(assertions);
+    let config = RunConfig::new().with_assertions(assertions);
     let result = tooltest_core::run_with_session(
         &driver,
         &config,
@@ -976,9 +953,10 @@ async fn run_http_succeeds_with_streamable_server() {
         url: format!("http://{addr}/mcp"),
         auth_token: None,
     };
+    let state_machine = StateMachineConfig::default().with_lenient_sourcing(true);
     let result = tooltest_core::run_http(
         &config,
-        &RunConfig::new(),
+        &RunConfig::new().with_state_machine(state_machine),
         RunnerOptions {
             cases: 1,
             sequence_len: 1..=1,

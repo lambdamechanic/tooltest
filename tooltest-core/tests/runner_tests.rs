@@ -191,7 +191,7 @@ async fn run_with_session_rejects_current_thread_runtime() {
         &RunConfig::new(),
         RunnerOptions {
             cases: 1,
-            sequence_len: 1..=1,
+            sequence_len: 0..=0,
         },
     )
     .await;
@@ -274,7 +274,7 @@ async fn run_with_session_emits_uncallable_tool_warning() {
     )
     .await;
 
-    assert!(matches!(result.outcome, RunOutcome::Success));
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     let coverage = result.coverage.expect("coverage");
     assert_eq!(coverage.warnings.len(), 1);
     assert_eq!(coverage.warnings[0].tool, "echo");
@@ -402,6 +402,43 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
         }
         _ => panic!("expected failure"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_coverage_failure_includes_corpus_dump() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" }
+            },
+            "required": ["text"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let state_machine = StateMachineConfig::default()
+        .with_seed_strings(vec!["alpha".to_string()])
+        .with_dump_corpus(true)
+        .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
+    let config = RunConfig::new().with_state_machine(state_machine);
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(result.corpus.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -808,9 +845,10 @@ async fn run_http_succeeds_with_streamable_server() {
         url: format!("http://{addr}/mcp"),
         auth_token: None,
     };
+    let state_machine = StateMachineConfig::default().with_lenient_sourcing(true);
     let result = tooltest_core::run_http(
         &config,
-        &RunConfig::new(),
+        &RunConfig::new().with_state_machine(state_machine),
         RunnerOptions {
             cases: 1,
             sequence_len: 1..=1,

@@ -161,8 +161,8 @@ pub async fn run_with_session(
         let validators = validators.clone();
         let aggregate_tracker = aggregate_tracker.clone();
         move |sequence| {
-            let execution: Result<Vec<TraceEntry>, FailureContext> = tokio::task::block_in_place(
-                || {
+            let execution: Result<Vec<TraceEntry>, FailureContext> =
+                tokio::task::block_in_place(|| {
                     let last_coverage = last_coverage.clone();
                     let last_corpus = last_corpus.clone();
                     handle.block_on(async {
@@ -203,8 +203,7 @@ pub async fn run_with_session(
                             }
                         }
                     })
-                },
-            );
+                });
             match execution {
                 Ok(trace) => {
                     let mut full_trace = prelude_trace.as_ref().clone();
@@ -477,7 +476,8 @@ impl<'a> CoverageTracker<'a> {
             for content in &response.content {
                 if let Some(text) = content.as_text() {
                     self.corpus.mine_text(&text.text);
-                } else if let Some(resource) = content.as_resource() {
+                }
+                if let Some(resource) = content.as_resource() {
                     match &resource.resource {
                         rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
                             self.corpus.mine_text(text);
@@ -494,10 +494,6 @@ impl<'a> CoverageTracker<'a> {
                 delta.numbers, delta.integers, delta.strings
             );
         }
-    }
-
-    fn finalize(self) -> CoverageReport {
-        self.report()
     }
 
     fn build_warnings(&self) -> Vec<CoverageWarning> {
@@ -1234,15 +1230,22 @@ mod tests {
     };
     use crate::{
         AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-        CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, SchemaConfig,
-        SequenceAssertion, SessionError, StateMachineConfig, ToolPredicate,
+        CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, RunWarningCode,
+        SchemaConfig, SequenceAssertion, SessionError, StateMachineConfig, ToolPredicate,
     };
-    use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content};
+    use rmcp::model::{
+        CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents,
+    };
     use rmcp::transport::Transport;
     use serde_json::{json, Number};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use tooltest_test_support::{tool_with_schemas, RunnerTransport};
+
+    fn outcome_is_success(outcome: &RunOutcome) -> bool {
+        matches!(outcome, RunOutcome::Success)
+    }
 
     fn trace_entry_with(
         name: &str,
@@ -1347,6 +1350,55 @@ mod tests {
         assert!(matches!(result.outcome, RunOutcome::Failure(_)));
         assert_eq!(result.trace.len(), 1);
         assert!(result.minimized.is_none());
+    }
+
+    #[test]
+    fn finalize_run_result_success_includes_coverage_and_corpus() {
+        let last_trace = Rc::new(RefCell::new(Vec::new()));
+        let last_failure = Rc::new(RefCell::new(FailureContext {
+            failure: RunFailure::new(String::new()),
+            trace: Vec::new(),
+            coverage: None,
+            corpus: None,
+        }));
+        let mut counts = BTreeMap::new();
+        counts.insert("echo".to_string(), 1u64);
+        let coverage = CoverageReport {
+            counts,
+            warnings: Vec::new(),
+        };
+        let corpus = CorpusReport {
+            numbers: vec![Number::from(1)],
+            integers: vec![1],
+            strings: vec!["alpha".to_string()],
+        };
+        let result = finalize_run_result(
+            Ok(()),
+            &last_trace,
+            &last_failure,
+            &Rc::new(RefCell::new(Some(coverage.clone()))),
+            &Rc::new(RefCell::new(Some(corpus.clone()))),
+            &[],
+        );
+
+        assert!(outcome_is_success(&result.outcome));
+        assert!(result.trace.is_empty());
+        let coverage_report = result.coverage.expect("coverage");
+        assert_eq!(coverage_report.counts.get("echo").copied(), Some(1));
+        assert!(coverage_report.warnings.is_empty());
+
+        let corpus_report = result.corpus.expect("corpus");
+        assert_eq!(corpus_report.numbers, corpus.numbers);
+        assert_eq!(corpus_report.integers, corpus.integers);
+        assert_eq!(corpus_report.strings, corpus.strings);
+    }
+
+    #[test]
+    fn outcome_is_success_reports_success_and_failure() {
+        assert!(outcome_is_success(&RunOutcome::Success));
+        assert!(!outcome_is_success(&RunOutcome::Failure(RunFailure::new(
+            "nope"
+        ))));
     }
 
     #[test]
@@ -2592,6 +2644,86 @@ mod tests {
     }
 
     #[test]
+    fn collect_schema_keyword_warnings_reports_draft_defs() {
+        let tools = vec![
+            tool_with_schemas(
+                "draft07",
+                json!({
+                    "type": "object",
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "$defs": { "payload": { "type": "string" } }
+                }),
+                None,
+            ),
+            tool_with_schemas(
+                "draft06",
+                json!({
+                    "type": "object",
+                    "$schema": "http://json-schema.org/draft-06/schema#",
+                    "$defs": { "payload": { "type": "string" } }
+                }),
+                None,
+            ),
+            tool_with_schemas(
+                "draft04",
+                json!({
+                    "type": "object",
+                    "$schema": "http://json-schema.org/draft-04/schema#",
+                    "$defs": { "payload": { "type": "string" } }
+                }),
+                None,
+            ),
+        ];
+        let warnings = collect_schema_warnings(&tools);
+        assert_eq!(warnings.len(), 3);
+        assert!(warnings
+            .iter()
+            .all(|warning| warning.code == RunWarningCode::SchemaUnsupportedKeyword));
+    }
+
+    #[test]
+    fn collect_schema_keyword_warnings_reports_direct_draft_defs() {
+        let tool = tool_with_schemas(
+            "draft07",
+            json!({
+                "type": "object",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$defs": { "payload": { "type": "string" } }
+            }),
+            None,
+        );
+        let mut warnings = Vec::new();
+        collect_schema_keyword_warnings(
+            &tool,
+            "input schema",
+            tool.input_schema.as_ref(),
+            &mut warnings,
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn collect_schema_keyword_warnings_ignores_modern_defs() {
+        let tool = tool_with_schemas(
+            "draft2020",
+            json!({
+                "type": "object",
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$defs": { "payload": { "type": "string" } }
+            }),
+            None,
+        );
+        let mut warnings = Vec::new();
+        collect_schema_keyword_warnings(
+            &tool,
+            "input schema",
+            tool.input_schema.as_ref(),
+            &mut warnings,
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
     fn validate_tools_rejects_invalid_schema() {
         let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
         let error = validate_tools(vec![tool], &SchemaConfig::default()).expect_err("error");
@@ -2642,6 +2774,45 @@ mod tests {
     }
 
     #[test]
+    fn coverage_tracker_skips_error_responses() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::error(vec![Content::text("oops")]);
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().is_empty());
+        assert!(tracker.corpus.numbers().is_empty());
+    }
+
+    #[test]
+    fn coverage_tracker_mines_resource_text() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::success(vec![
+            Content::resource(ResourceContents::TextResourceContents {
+                uri: "file://alpha".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: "alpha beta".to_string(),
+                meta: None,
+            }),
+            Content::resource(ResourceContents::BlobResourceContents {
+                uri: "file://blob".to_string(),
+                mime_type: Some("application/octet-stream".to_string()),
+                blob: "AAAA".to_string(),
+                meta: None,
+            }),
+        ]);
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().contains(&"alpha".to_string()));
+        assert!(tracker.corpus.strings().contains(&"beta".to_string()));
+    }
+
+    #[test]
     fn coverage_tracker_finalize_reports_warnings() {
         let tools = vec![tool_with_schemas(
             "echo",
@@ -2654,7 +2825,7 @@ mod tests {
         )];
         let config = StateMachineConfig::default();
         let tracker = CoverageTracker::new(&tools, &config);
-        let report = tracker.finalize();
+        let report = tracker.report();
         assert!(!report.warnings.is_empty());
     }
 

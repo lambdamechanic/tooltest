@@ -89,6 +89,16 @@ fn corpus_only_adds_integral_numbers_to_integer_set() {
 }
 
 #[test]
+fn corpus_mine_text_from_value_ignores_non_text_scalars() {
+    let mut corpus = ValueCorpus::default();
+
+    corpus.mine_text_from_value(&json!([null, true, 5]));
+
+    assert!(corpus.strings().is_empty());
+    assert!(corpus.numbers().is_empty());
+}
+
+#[test]
 fn state_machine_generator_uses_integer_corpus_values() {
     let tool = tool_with_schema(
         "count",

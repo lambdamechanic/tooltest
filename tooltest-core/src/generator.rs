@@ -466,18 +466,13 @@ pub(crate) fn state_machine_sequence_strategy(
     };
     set_state_machine_context(context);
 
-    let strategy: BoxedStrategy<_> = StateMachineModel::sequential_strategy(len_range).boxed();
-    let strategy = if has_callable.is_some() {
-        strategy
-            .prop_filter("no invocations", |(_, transitions, _)| {
-                transitions
-                    .iter()
-                    .any(|transition| matches!(transition, StateMachineTransition::Invoke(_)))
-            })
-            .boxed()
-    } else {
-        strategy
-    };
+    let strategy: BoxedStrategy<_> = StateMachineModel::sequential_strategy(len_range)
+        .prop_filter("no invocations", |(_, transitions, _)| {
+            transitions
+                .iter()
+                .any(|transition| matches!(transition, StateMachineTransition::Invoke(_)))
+        })
+        .boxed();
     let strategy = strategy
         .prop_map(|(_, transitions, seen_counter)| StateMachineSequence {
             transitions,
@@ -2830,6 +2825,28 @@ mod tests {
     }
 
     #[test]
+    fn property_strategy_from_corpus_lenient_invalid_numeric_schema_reports_missing_required() {
+        let tool = tool_with_schema("echo", json!({ "type": "object" }));
+        let corpus = ValueCorpus::default();
+        let integer_schema = json!({ "type": "integer", "minimum": 5, "maximum": 3 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+        let number_schema = json!({ "type": "number", "minimum": 5.0, "maximum": 3.0 })
+            .as_object()
+            .cloned()
+            .expect("schema");
+
+        let integer_outcome =
+            property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, true);
+        assert!(outcome_is_missing_required(&integer_outcome));
+
+        let number_outcome =
+            property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
+        assert!(outcome_is_missing_required(&number_outcome));
+    }
+
+    #[test]
     fn property_strategy_from_corpus_handles_schema_value_strategy_results() {
         let tool = tool_with_schema("echo", json!({ "type": "object" }));
         let corpus = ValueCorpus::default();
@@ -2938,6 +2955,78 @@ mod tests {
         );
         assert_eq!(
             uncallable_reason(&required_tool, &corpus, false),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_lenient_schema_error_reports_required_value() {
+        let string_tool = tool_with_schema(
+            "stringy",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string", "pattern": "(" } },
+                "required": ["text"]
+            }),
+        );
+        let integer_tool = tool_with_schema(
+            "inty",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "integer", "minimum": 5, "maximum": 3 } },
+                "required": ["value"]
+            }),
+        );
+        let number_tool = tool_with_schema(
+            "numbery",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "number", "minimum": 5.0, "maximum": 3.0 } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+
+        assert_eq!(
+            uncallable_reason(&string_tool, &corpus, true),
+            Some(UncallableReason::RequiredValue)
+        );
+        assert_eq!(
+            uncallable_reason(&integer_tool, &corpus, true),
+            Some(UncallableReason::RequiredValue)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus, true),
+            Some(UncallableReason::RequiredValue)
+        );
+    }
+
+    #[test]
+    fn uncallable_reason_strict_invalid_numeric_schema_reports_required_value() {
+        let integer_tool = tool_with_schema(
+            "inty",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "integer", "minimum": 5, "maximum": 3 } },
+                "required": ["value"]
+            }),
+        );
+        let number_tool = tool_with_schema(
+            "numbery",
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "number", "minimum": 5.0, "maximum": 3.0 } },
+                "required": ["value"]
+            }),
+        );
+        let corpus = ValueCorpus::default();
+
+        assert_eq!(
+            uncallable_reason(&integer_tool, &corpus, false),
+            Some(UncallableReason::RequiredValue)
+        );
+        assert_eq!(
+            uncallable_reason(&number_tool, &corpus, false),
             Some(UncallableReason::RequiredValue)
         );
     }

@@ -28,7 +28,7 @@ group "default" {
 
 target "dev-base" {
   context    = "."
-  dockerfile = "docker/base/Dockerfile"
+  dockerfile = "Dockerfile"
   tags       = ["${base_tag}"]
   platforms  = ["linux/amd64"]
 }

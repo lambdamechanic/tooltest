@@ -63,11 +63,18 @@ tooltest stdio --command ./target/release/my-mcp-server
 
 ## CLI examples
 
+### Migration note (legacy generator removal)
+
+Tooltest now runs only the state-machine generator. The `--generator-mode` flag and
+`GeneratorMode` API are removed. If you previously relied on legacy random generation,
+expect stricter input sourcing by default. To allow schema-based generation for required
+fields when the corpus is empty, set `--lenient-sourcing` or provide
+`--state-machine-config '{"lenient_sourcing":true}'`.
+
 Simple run against a hosted MCP endpoint:
 
 ```bash
 cargo run -p tooltest-cli --bin tooltest -- \
-  --generator-mode state-machine \
   --cases 100 \
   http --url https://pymcp.app.lambdamechanic.com/kev/mcp
 ```
@@ -76,7 +83,6 @@ Simple run against a local stdio MCP server:
 
 ```bash
 cargo run -p tooltest-cli --bin tooltest -- \
-  --generator-mode state-machine \
   --cases 100 \
   stdio --command ./target/debug/my-mcp-server
 ```
@@ -84,6 +90,8 @@ cargo run -p tooltest-cli --bin tooltest -- \
 ### State-machine sourcing
 
 State-machine mode is strict by default: it only uses values mined from the corpus when satisfying required schema fields. If your server needs schema-based generation (for example, on the very first call), enable lenient sourcing.
+
+State-machine runs always track a corpus and coverage counts; this adds overhead compared to the legacy generator and can grow with response size.
 
 You can set this in the JSON config:
 

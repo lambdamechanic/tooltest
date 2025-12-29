@@ -44,18 +44,9 @@ pub enum SchemaVersion {
     Other(String),
 }
 
-/// Generator mode selection for MCP sequence runs.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GeneratorMode {
-    /// Use the legacy proptest-based generator.
-    #[default]
-    Legacy,
-    /// Use the state-machine generator.
-    StateMachine,
-}
-
 /// Configuration for state-machine generator behavior.
+///
+/// State-machine generation is always used for sequence runs; there is no legacy mode.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct StateMachineConfig {
     /// Seed numbers added to the corpus before generation.
@@ -269,20 +260,20 @@ pub struct RunConfig {
     pub predicate: Option<ToolPredicate>,
     /// Assertion rules to evaluate during the run.
     pub assertions: AssertionSet,
-    /// Generator mode selection for sequence generation.
-    pub generator_mode: GeneratorMode,
     /// State-machine generator configuration.
     pub state_machine: StateMachineConfig,
 }
 
 impl RunConfig {
     /// Creates a run configuration with defaults for schema and assertions.
+    ///
+    /// The state-machine generator is always used, and it is strict by default
+    /// (required values must come from the corpus unless lenient sourcing is enabled).
     pub fn new() -> Self {
         Self {
             schema: SchemaConfig::default(),
             predicate: None,
             assertions: AssertionSet::default(),
-            generator_mode: GeneratorMode::default(),
             state_machine: StateMachineConfig::default(),
         }
     }
@@ -305,12 +296,6 @@ impl RunConfig {
         self
     }
 
-    /// Sets the generator mode for the run.
-    pub fn with_generator_mode(mut self, generator_mode: GeneratorMode) -> Self {
-        self.generator_mode = generator_mode;
-        self
-    }
-
     /// Sets the state-machine generator configuration.
     pub fn with_state_machine(mut self, state_machine: StateMachineConfig) -> Self {
         self.state_machine = state_machine;
@@ -330,7 +315,6 @@ impl fmt::Debug for RunConfig {
             .field("schema", &self.schema)
             .field("predicate", &self.predicate.is_some())
             .field("assertions", &self.assertions)
-            .field("generator_mode", &self.generator_mode)
             .field("state_machine", &self.state_machine)
             .finish()
     }

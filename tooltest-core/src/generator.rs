@@ -264,16 +264,6 @@ pub(crate) fn invocation_strategy(
     Ok(union)
 }
 
-/// Builds a strategy that yields sequences of tool invocations.
-pub(crate) fn invocation_sequence_strategy(
-    tools: &[Tool],
-    predicate: Option<&ToolPredicate>,
-    len_range: std::ops::RangeInclusive<usize>,
-) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
-    let invocation = invocation_strategy(tools, predicate)?;
-    Ok(proptest::collection::vec(invocation, len_range).boxed())
-}
-
 pub(crate) fn state_machine_sequence_strategy(
     tools: &[Tool],
     predicate: Option<&ToolPredicate>,

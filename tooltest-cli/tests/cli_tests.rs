@@ -81,8 +81,6 @@ fn stdio_command_reports_success_with_state_machine_mode() {
     };
     let output = run_tooltest(&[
         "--json",
-        "--generator-mode",
-        "state-machine",
         "--state-machine-config",
         r#"{"seed_numbers":[1],"seed_strings":["hello"]}"#,
         "stdio",
@@ -107,8 +105,6 @@ fn stdio_command_reports_coverage_warning_for_missing_string() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--max-sequence-len",
@@ -133,8 +129,6 @@ fn stdio_command_reports_coverage_warning_for_missing_integer() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--max-sequence-len",
@@ -161,8 +155,6 @@ fn stdio_command_reports_coverage_warning_for_missing_number() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--max-sequence-len",
@@ -189,8 +181,6 @@ fn stdio_command_accepts_required_object_value() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--max-sequence-len",
@@ -216,8 +206,6 @@ fn stdio_command_accepts_lenient_sourcing_flag() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--lenient-sourcing",
         "--cases",
         "1",
@@ -238,16 +226,7 @@ fn stdio_command_accepts_mine_text_flag() {
     let Some(server) = test_server() else {
         return;
     };
-    let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
-        "--mine-text",
-        "--cases",
-        "1",
-        "stdio",
-        "--command",
-        server,
-    ]);
+    let output = run_tooltest(&["--mine-text", "--cases", "1", "stdio", "--command", server]);
 
     assert!(
         output.status.success(),
@@ -263,8 +242,6 @@ fn stdio_command_includes_corpus_dump_in_json() {
     };
     let payload = run_tooltest_json(&[
         "--json",
-        "--generator-mode",
-        "state-machine",
         "--dump-corpus",
         "--cases",
         "1",
@@ -289,8 +266,6 @@ fn stdio_command_dumps_corpus_to_stderr_when_not_json() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--dump-corpus",
         "--cases",
         "1",
@@ -316,8 +291,6 @@ fn stdio_command_logs_corpus_deltas_to_stderr() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--log-corpus-deltas",
         "--cases",
         "1",
@@ -347,8 +320,6 @@ fn cli_can_disable_lenient_sourcing_via_flag() {
     };
     let (output, payload) = run_tooltest_json_allow_failure(&[
         "--json",
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--max-sequence-len",
@@ -383,8 +354,6 @@ fn cli_can_enable_lenient_sourcing_via_flag() {
     };
     let payload = run_tooltest_json(&[
         "--json",
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--max-sequence-len",
@@ -582,8 +551,6 @@ fn state_machine_coverage_warnings_reported() {
         return;
     };
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--min-sequence-len",
@@ -612,8 +579,6 @@ fn state_machine_coverage_validation_failure_emits_details_and_trace() {
     let config =
         r#"{"seed_strings":["alpha"],"coverage_rules":[{"rule":"min_calls_per_tool","min":2}]}"#;
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--cases",
         "1",
         "--min-sequence-len",
@@ -740,8 +705,6 @@ fn http_command_accepts_auth_token() {
 #[test]
 fn run_http_failure_returns_exit_code_1() {
     let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
         "--state-machine-config",
         r#"{"seed_numbers":[1]}"#,
         "http",
@@ -754,14 +717,7 @@ fn run_http_failure_returns_exit_code_1() {
 
 #[test]
 fn run_http_failure_with_dump_corpus_skips_output() {
-    let output = run_tooltest(&[
-        "--generator-mode",
-        "state-machine",
-        "--dump-corpus",
-        "http",
-        "--url",
-        "http://127.0.0.1:0/mcp",
-    ]);
+    let output = run_tooltest(&["--dump-corpus", "http", "--url", "http://127.0.0.1:0/mcp"]);
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);

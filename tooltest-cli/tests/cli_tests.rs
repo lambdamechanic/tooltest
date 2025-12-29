@@ -234,6 +234,113 @@ fn stdio_command_accepts_lenient_sourcing_flag() {
 }
 
 #[test]
+fn stdio_command_accepts_mine_text_flag() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--mine-text",
+        "--cases",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn stdio_command_includes_corpus_dump_in_json() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--generator-mode",
+        "state-machine",
+        "--dump-corpus",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    let corpus = payload["corpus"].as_object().expect("corpus object");
+    let strings = corpus["strings"].as_array().expect("corpus strings");
+    assert!(
+        strings.iter().any(|value| value == "status"),
+        "corpus strings: {strings:?}"
+    );
+}
+
+#[test]
+fn stdio_command_dumps_corpus_to_stderr_when_not_json() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--dump-corpus",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("corpus:"), "stderr: {stderr}");
+}
+
+#[test]
+fn stdio_command_logs_corpus_deltas_to_stderr() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--log-corpus-deltas",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("corpus delta after 'echo'"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn cli_can_disable_lenient_sourcing_via_flag() {
     let Some(server) = test_server() else {
         return;
@@ -643,6 +750,22 @@ fn run_http_failure_returns_exit_code_1() {
     ]);
 
     assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn run_http_failure_with_dump_corpus_skips_output() {
+    let output = run_tooltest(&[
+        "--generator-mode",
+        "state-machine",
+        "--dump-corpus",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("corpus:"), "stderr: {stderr}");
 }
 
 #[test]

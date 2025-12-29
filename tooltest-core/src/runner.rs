@@ -8,7 +8,7 @@ use std::rc::Rc;
 use jsonschema::{draft201909, draft202012, draft4, draft6, draft7, Validator};
 use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestError, TestRunner};
 use rmcp::model::{CallToolResult, ListToolsResult, Tool};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{json, Number, Value as JsonValue};
 
 use crate::generator::{
     invocation_from_seed, invocation_sequence_strategy, state_machine_sequence_strategy,
@@ -16,8 +16,8 @@ use crate::generator::{
 };
 use crate::schema::parse_list_tools;
 use crate::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageReport, CoverageRule,
-    CoverageWarning, CoverageWarningReason, GeneratorMode, HttpConfig, JsonObject,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CorpusReport, CoverageReport,
+    CoverageRule, CoverageWarning, CoverageWarningReason, GeneratorMode, HttpConfig, JsonObject,
     MinimizedSequence, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
     SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
 };
@@ -63,6 +63,7 @@ pub async fn run_with_session(
                 None,
                 Vec::new(),
                 None,
+                None,
             );
         }
     };
@@ -75,6 +76,7 @@ pub async fn run_with_session(
                 prelude_trace.as_ref().clone(),
                 None,
                 Vec::new(),
+                None,
                 None,
             )
         }
@@ -90,6 +92,7 @@ pub async fn run_with_session(
                 None,
                 warnings,
                 None,
+                None,
             )
         }
     };
@@ -102,19 +105,26 @@ pub async fn run_with_session(
                 None,
                 warnings,
                 None,
+                None,
             )
         }
     };
 
     let assertions = config.assertions.clone();
+    let aggregate_tools = tools.clone();
+    let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> = Rc::new(RefCell::new(
+        CoverageTracker::new(&aggregate_tools, &config.state_machine),
+    ));
     let last_trace: Rc<RefCell<Vec<TraceEntry>>> = Rc::new(RefCell::new(Vec::new()));
     last_trace.replace(prelude_trace.as_ref().clone());
     let last_coverage: Rc<RefCell<Option<CoverageReport>>> = Rc::new(RefCell::new(None));
+    let last_corpus: Rc<RefCell<Option<CorpusReport>>> = Rc::new(RefCell::new(None));
     let last_failure = Rc::new(RefCell::new(FailureContext {
         failure: RunFailure::new(String::new()),
         trace: Vec::new(),
         invocations: Vec::new(),
         coverage: None,
+        corpus: None,
     }));
     let handle = tokio::runtime::Handle::current();
     if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
@@ -123,6 +133,7 @@ pub async fn run_with_session(
             Vec::new(),
             None,
             warnings.clone(),
+            None,
             None,
         );
     }
@@ -136,7 +147,7 @@ pub async fn run_with_session(
         ..ProptestConfig::default()
     });
 
-    match config.generator_mode {
+    let run_result = match config.generator_mode {
         GeneratorMode::Legacy => {
             let strategy = match invocation_sequence_strategy(
                 &tools,
@@ -151,6 +162,7 @@ pub async fn run_with_session(
                         None,
                         warnings.as_ref().clone(),
                         None,
+                        None,
                     )
                 }
             };
@@ -158,24 +170,49 @@ pub async fn run_with_session(
                 let assertions = assertions.clone();
                 let last_trace = last_trace.clone();
                 let last_coverage = last_coverage.clone();
+                let last_corpus = last_corpus.clone();
                 let last_failure = last_failure.clone();
                 let output_validators = output_validators.clone();
                 let input_validators = input_validators.clone();
+                let aggregate_tracker = aggregate_tracker.clone();
                 move |sequence| {
                     let execution: Result<Vec<TraceEntry>, FailureContext> =
                         tokio::task::block_in_place(|| {
                             let last_coverage = last_coverage.clone();
+                            let last_corpus = last_corpus.clone();
                             handle.block_on(async {
-                                let result = execute_sequence(
+                                let mut tracker =
+                                    CoverageTracker::new(&tools, &config.state_machine);
+                                let result = execute_sequence_with_coverage(
                                     session,
                                     &input_validators,
                                     &output_validators,
                                     &assertions,
                                     &sequence,
+                                    &mut tracker,
                                 )
                                 .await;
-                                last_coverage.replace(None);
-                                result
+                                let (report, corpus_report) = {
+                                    let mut aggregate = aggregate_tracker.borrow_mut();
+                                    aggregate.merge_from(&tracker);
+                                    let report = aggregate.report();
+                                    let corpus_report = if config.state_machine.dump_corpus {
+                                        Some(aggregate.corpus_report())
+                                    } else {
+                                        None
+                                    };
+                                    (report, corpus_report)
+                                };
+                                last_coverage.replace(Some(report.clone()));
+                                last_corpus.replace(corpus_report.clone());
+                                match result {
+                                    Ok(trace) => Ok(trace),
+                                    Err(mut failure) => {
+                                        failure.coverage = Some(report);
+                                        failure.corpus = corpus_report;
+                                        Err(failure)
+                                    }
+                                }
                             })
                         });
                     match execution {
@@ -200,6 +237,7 @@ pub async fn run_with_session(
                 &last_trace,
                 &last_failure,
                 &last_coverage,
+                &last_corpus,
                 warnings.as_ref(),
             )
         }
@@ -218,6 +256,7 @@ pub async fn run_with_session(
                         None,
                         warnings.as_ref().clone(),
                         None,
+                        None,
                     )
                 }
             };
@@ -225,15 +264,18 @@ pub async fn run_with_session(
                 let assertions = assertions.clone();
                 let last_trace = last_trace.clone();
                 let last_coverage = last_coverage.clone();
+                let last_corpus = last_corpus.clone();
                 let last_failure = last_failure.clone();
                 let output_validators = output_validators.clone();
                 let input_validators = input_validators.clone();
                 let predicate = config.predicate.clone();
                 let min_len = *options.sequence_len.start();
+                let aggregate_tracker = aggregate_tracker.clone();
                 move |seeds| {
                     let execution: Result<StateMachineExecution, FailureContext> =
                         tokio::task::block_in_place(|| {
                             let last_coverage = last_coverage.clone();
+                            let last_corpus = last_corpus.clone();
                             handle.block_on(async {
                                 let mut tracker =
                                     CoverageTracker::new(&tools, &config.state_machine);
@@ -250,30 +292,24 @@ pub async fn run_with_session(
                                     min_len,
                                 )
                                 .await;
+                                let (report, corpus_report) = {
+                                    let mut aggregate = aggregate_tracker.borrow_mut();
+                                    aggregate.merge_from(&tracker);
+                                    let report = aggregate.report();
+                                    let corpus_report = if config.state_machine.dump_corpus {
+                                        Some(aggregate.corpus_report())
+                                    } else {
+                                        None
+                                    };
+                                    (report, corpus_report)
+                                };
+                                last_coverage.replace(Some(report.clone()));
+                                last_corpus.replace(corpus_report.clone());
                                 match result {
-                                    Ok(execution) => {
-                                        let validation =
-                                            tracker.validate(&config.state_machine.coverage_rules);
-                                        let report = tracker.finalize();
-                                        last_coverage.replace(Some(report.clone()));
-                                        if let Err(failure) = validation {
-                                            let mut trace = execution.trace;
-                                            attach_failure_reason(
-                                                &mut trace,
-                                                "coverage validation failed".to_string(),
-                                            );
-                                            return Err(FailureContext {
-                                                failure: coverage_failure(failure),
-                                                trace,
-                                                invocations: execution.invocations,
-                                                coverage: Some(report),
-                                            });
-                                        }
-                                        Ok(execution)
-                                    }
+                                    Ok(execution) => Ok(execution),
                                     Err(mut failure) => {
-                                        failure.coverage = Some(tracker.finalize());
-                                        last_coverage.replace(failure.coverage.clone());
+                                        failure.coverage = Some(report);
+                                        failure.corpus = corpus_report;
                                         Err(failure)
                                     }
                                 }
@@ -301,10 +337,35 @@ pub async fn run_with_session(
                 &last_trace,
                 &last_failure,
                 &last_coverage,
+                &last_corpus,
                 warnings.as_ref(),
             )
         }
+    };
+    if matches!(run_result.outcome, RunOutcome::Success) {
+        if let Err(failure) = aggregate_tracker
+            .borrow()
+            .validate(&config.state_machine.coverage_rules)
+        {
+            let mut trace = last_trace.borrow().clone();
+            attach_failure_reason(&mut trace, "coverage validation failed".to_string());
+            let report = aggregate_tracker.borrow().report();
+            let corpus_report = if config.state_machine.dump_corpus {
+                Some(aggregate_tracker.borrow().corpus_report())
+            } else {
+                None
+            };
+            return failure_result(
+                coverage_failure(failure),
+                trace,
+                None,
+                warnings.as_ref().clone(),
+                Some(report),
+                corpus_report,
+            );
+        }
     }
+    run_result
 }
 
 /// Execute a tooltest run against a stdio MCP endpoint.
@@ -347,8 +408,10 @@ struct FailureContext {
     trace: Vec<TraceEntry>,
     invocations: Vec<ToolInvocation>,
     coverage: Option<CoverageReport>,
+    corpus: Option<CorpusReport>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn execute_sequence(
     session: &SessionDriver,
     input_validators: &BTreeMap<String, jsonschema::Validator>,
@@ -371,6 +434,7 @@ async fn execute_sequence(
                     trace,
                     invocations,
                     coverage: None,
+                    corpus: None,
                 });
             }
         };
@@ -387,6 +451,7 @@ async fn execute_sequence(
                 trace,
                 invocations,
                 coverage: None,
+                corpus: None,
             });
         }
 
@@ -398,6 +463,7 @@ async fn execute_sequence(
                 trace,
                 invocations,
                 coverage: None,
+                corpus: None,
             });
         }
     }
@@ -409,6 +475,7 @@ async fn execute_sequence(
             trace,
             invocations,
             coverage: None,
+            corpus: None,
         });
     }
 
@@ -422,6 +489,38 @@ struct CoverageTracker<'a> {
     allowlist: Option<Vec<String>>,
     blocklist: Option<Vec<String>>,
     lenient_sourcing: bool,
+    mine_text: bool,
+    log_corpus_deltas: bool,
+}
+
+struct CorpusSnapshot {
+    numbers_len: usize,
+    integers_len: usize,
+    strings_len: usize,
+}
+
+struct CorpusDelta {
+    numbers: Vec<Number>,
+    integers: Vec<i64>,
+    strings: Vec<String>,
+}
+
+impl CorpusSnapshot {
+    fn new(corpus: &ValueCorpus) -> Self {
+        Self {
+            numbers_len: corpus.numbers().len(),
+            integers_len: corpus.integers().len(),
+            strings_len: corpus.strings().len(),
+        }
+    }
+
+    fn delta(&self, corpus: &ValueCorpus) -> CorpusDelta {
+        CorpusDelta {
+            numbers: corpus.numbers()[self.numbers_len..].to_vec(),
+            integers: corpus.integers()[self.integers_len..].to_vec(),
+            strings: corpus.strings()[self.strings_len..].to_vec(),
+        }
+    }
 }
 
 const LIST_TOOLS_COUNT_LABEL: &str = "tools/list";
@@ -443,6 +542,8 @@ impl<'a> CoverageTracker<'a> {
             allowlist: config.coverage_allowlist.clone(),
             blocklist: config.coverage_blocklist.clone(),
             lenient_sourcing: config.lenient_sourcing,
+            mine_text: config.mine_text,
+            log_corpus_deltas: config.log_corpus_deltas,
         }
     }
 
@@ -450,16 +551,74 @@ impl<'a> CoverageTracker<'a> {
         &self.corpus
     }
 
+    fn merge_from(&mut self, other: &CoverageTracker<'_>) {
+        for (tool, count) in &other.counts {
+            *self.counts.entry(tool.clone()).or_insert(0) += count;
+        }
+        self.corpus.merge_from(other.corpus());
+    }
+
+    fn report(&self) -> CoverageReport {
+        let mut counts = self.counts.clone();
+        for tool in self.tools {
+            counts.entry(tool.name.to_string()).or_insert(0);
+        }
+        counts.insert(LIST_TOOLS_COUNT_LABEL.to_string(), 1);
+        CoverageReport {
+            counts,
+            warnings: self.build_warnings(),
+        }
+    }
+
+    fn corpus_report(&self) -> CorpusReport {
+        CorpusReport {
+            numbers: self.corpus.numbers().to_vec(),
+            integers: self.corpus.integers().to_vec(),
+            strings: self.corpus.strings().to_vec(),
+        }
+    }
+
     fn record_success(&mut self, tool: &str) {
         *self.counts.entry(tool.to_string()).or_insert(0) += 1;
     }
 
-    fn mine_response(&mut self, response: &CallToolResult) {
+    fn mine_response(&mut self, tool: &str, response: &CallToolResult) {
+        if response.is_error.unwrap_or(false) {
+            return;
+        }
+        let snapshot = CorpusSnapshot::new(self.corpus());
         if let Some(structured) = response.structured_content.as_ref() {
             self.corpus.mine_structured_content(structured);
+            if self.mine_text {
+                self.corpus.mine_text_from_value(structured);
+            }
+        }
+        if self.mine_text {
+            for content in &response.content {
+                if let Some(text) = content.as_text() {
+                    self.corpus.mine_text(&text.text);
+                } else if let Some(resource) = content.as_resource() {
+                    match &resource.resource {
+                        rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+                            self.corpus.mine_text(text);
+                        }
+                        rmcp::model::ResourceContents::BlobResourceContents { .. } => {}
+                    }
+                } else {
+                    let _ = ();
+                }
+            }
+        }
+        if self.log_corpus_deltas {
+            let delta = snapshot.delta(self.corpus());
+            eprintln!(
+                "corpus delta after '{tool}': numbers={:?} integers={:?} strings={:?}",
+                delta.numbers, delta.integers, delta.strings
+            );
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn finalize(self) -> CoverageReport {
         let mut tracker = self;
         tracker.ensure_counts();
@@ -471,6 +630,7 @@ impl<'a> CoverageTracker<'a> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn ensure_counts(&mut self) {
         for tool in self.tools {
             self.counts.entry(tool.name.to_string()).or_insert(0);
@@ -704,6 +864,7 @@ async fn execute_sequence_with_coverage(
                     trace,
                     invocations,
                     coverage: None,
+                    corpus: None,
                 });
             }
         };
@@ -714,7 +875,7 @@ async fn execute_sequence_with_coverage(
         full_trace.push(entry);
         if !response.is_error.unwrap_or(false) {
             tracker.record_success(invocation.name.as_ref());
-            tracker.mine_response(&response);
+            tracker.mine_response(invocation.name.as_ref(), &response);
         }
 
         if let Some(reason) = apply_default_assertions(&invocation, &response, output_validators) {
@@ -725,6 +886,7 @@ async fn execute_sequence_with_coverage(
                 trace,
                 invocations,
                 coverage: None,
+                corpus: None,
             });
         }
 
@@ -736,6 +898,7 @@ async fn execute_sequence_with_coverage(
                 trace,
                 invocations,
                 coverage: None,
+                corpus: None,
             });
         }
     }
@@ -747,6 +910,7 @@ async fn execute_sequence_with_coverage(
             trace,
             invocations,
             coverage: None,
+            corpus: None,
         });
     }
 
@@ -756,7 +920,6 @@ async fn execute_sequence_with_coverage(
 #[derive(Debug)]
 struct StateMachineExecution {
     trace: Vec<TraceEntry>,
-    invocations: Vec<ToolInvocation>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -795,6 +958,7 @@ async fn execute_state_machine_sequence_with_coverage(
                     trace,
                     invocations,
                     coverage: None,
+                    corpus: None,
                 });
             }
         };
@@ -805,7 +969,7 @@ async fn execute_state_machine_sequence_with_coverage(
         full_trace.push(entry);
         if !response.is_error.unwrap_or(false) {
             tracker.record_success(invocation.name.as_ref());
-            tracker.mine_response(&response);
+            tracker.mine_response(invocation.name.as_ref(), &response);
         }
 
         if let Some(reason) = apply_default_assertions(&invocation, &response, output_validators) {
@@ -816,6 +980,7 @@ async fn execute_state_machine_sequence_with_coverage(
                 trace,
                 invocations,
                 coverage: None,
+                corpus: None,
             });
         }
 
@@ -827,6 +992,7 @@ async fn execute_state_machine_sequence_with_coverage(
                 trace,
                 invocations,
                 coverage: None,
+                corpus: None,
             });
         }
     }
@@ -840,6 +1006,7 @@ async fn execute_state_machine_sequence_with_coverage(
             trace,
             invocations,
             coverage: None,
+            corpus: None,
         });
     }
 
@@ -850,10 +1017,11 @@ async fn execute_state_machine_sequence_with_coverage(
             trace,
             invocations,
             coverage: None,
+            corpus: None,
         });
     }
 
-    Ok(StateMachineExecution { trace, invocations })
+    Ok(StateMachineExecution { trace })
 }
 
 fn apply_default_assertions(
@@ -1117,6 +1285,7 @@ fn failure_result(
     minimized: Option<MinimizedSequence>,
     warnings: Vec<RunWarning>,
     coverage: Option<CoverageReport>,
+    corpus: Option<CorpusReport>,
 ) -> RunResult {
     RunResult {
         outcome: RunOutcome::Failure(failure),
@@ -1124,6 +1293,7 @@ fn failure_result(
         minimized,
         warnings,
         coverage,
+        corpus,
     }
 }
 
@@ -1132,6 +1302,7 @@ fn finalize_run_result<T>(
     last_trace: &Rc<RefCell<Vec<TraceEntry>>>,
     last_failure: &Rc<RefCell<FailureContext>>,
     last_coverage: &Rc<RefCell<Option<CoverageReport>>>,
+    last_corpus: &Rc<RefCell<Option<CorpusReport>>>,
     warnings: &[RunWarning],
 ) -> RunResult {
     match run_result {
@@ -1141,6 +1312,7 @@ fn finalize_run_result<T>(
             minimized: None,
             warnings: warnings.to_vec(),
             coverage: last_coverage.borrow().clone(),
+            corpus: last_corpus.borrow().clone(),
         },
         Err(TestError::Abort(reason)) => failure_result(
             RunFailure::new(format!("proptest aborted: {reason}")),
@@ -1148,6 +1320,7 @@ fn finalize_run_result<T>(
             None,
             warnings.to_vec(),
             last_coverage.borrow().clone(),
+            last_corpus.borrow().clone(),
         ),
         Err(TestError::Fail(_reason, _sequence)) => {
             let failure = last_failure.borrow().clone();
@@ -1161,6 +1334,7 @@ fn finalize_run_result<T>(
                 minimized,
                 warnings.to_vec(),
                 failure.coverage,
+                failure.corpus,
             )
         }
     }
@@ -1185,6 +1359,7 @@ async fn run_with_transport(
                 None,
                 Vec::new(),
                 None,
+                None,
             );
         }
     };
@@ -1200,11 +1375,20 @@ mod tests {
         CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, SchemaConfig,
         SequenceAssertion, SessionError, StateMachineConfig,
     };
-    use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content};
+    use rmcp::model::{
+        CallToolRequest, CallToolRequestParam, CallToolResult, ClientJsonRpcMessage, ClientRequest,
+        Content, JsonRpcMessage, ListResourcesRequest, NumberOrString, ResourceContents,
+        ServerJsonRpcMessage,
+    };
+    use rmcp::service::RoleClient;
     use rmcp::transport::Transport;
     use serde_json::{json, Number};
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-    use tooltest_test_support::{tool_with_schemas, RunnerTransport};
+    use tooltest_test_support::{
+        call_tool_response, init_response, list_tools_response, tool_with_schemas, RunnerTransport,
+    };
 
     fn trace_entry_with(
         name: &str,
@@ -1235,24 +1419,100 @@ mod tests {
         Box::pin(async move { result })
     }
 
-    #[cfg(not(coverage))]
+    struct IncrementCrashTransport {
+        tools: Vec<Tool>,
+        responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
+        response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+    }
+
+    impl IncrementCrashTransport {
+        fn new(tools: Vec<Tool>) -> Self {
+            let (response_tx, response_rx) = mpsc::unbounded_channel();
+            Self {
+                tools,
+                responses: Arc::new(AsyncMutex::new(response_rx)),
+                response_tx,
+            }
+        }
+    }
+
+    impl Transport<RoleClient> for IncrementCrashTransport {
+        type Error = std::convert::Infallible;
+
+        fn send(
+            &mut self,
+            item: ClientJsonRpcMessage,
+        ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+            let response_tx = self.response_tx.clone();
+            let tools = self.tools.clone();
+            if let JsonRpcMessage::Request(request) = &item {
+                let response = match &request.request {
+                    ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
+                    ClientRequest::ListToolsRequest(_) => {
+                        Some(list_tools_response(request.id.clone(), tools))
+                    }
+                    ClientRequest::CallToolRequest(call) => match call.params.name.as_ref() {
+                        "seed" => Some(call_tool_response(
+                            request.id.clone(),
+                            CallToolResult::structured(json!({ "count": 0 })),
+                        )),
+                        "increment" => {
+                            let count = call
+                                .params
+                                .arguments
+                                .as_ref()
+                                .and_then(|args| args.get("count"))
+                                .and_then(serde_json::Value::as_i64)
+                                .unwrap_or(0);
+                            if count > 10 {
+                                Some(ServerJsonRpcMessage::error(
+                                    ErrorData::new(ErrorCode::INTERNAL_ERROR, "boom", None),
+                                    request.id.clone(),
+                                ))
+                            } else {
+                                Some(call_tool_response(
+                                    request.id.clone(),
+                                    CallToolResult::structured(json!({ "count": count + 1 })),
+                                ))
+                            }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(response) = response {
+                    let _ = response_tx.send(response);
+                }
+            }
+            std::future::ready(Ok(()))
+        }
+
+        fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+            let responses = Arc::clone(&self.responses);
+            async move {
+                let mut receiver = responses.lock().await;
+                receiver.recv().await
+            }
+        }
+
+        async fn close(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
     fn assert_failure(result: &RunResult) {
         assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     }
 
-    #[cfg(coverage)]
-    fn assert_failure(_result: &RunResult) {}
+    fn assert_warnings_empty(warnings: &[CoverageWarning]) {
+        assert!(warnings.is_empty(), "warnings: {:?}", warnings);
+    }
 
     #[allow(dead_code)]
-    #[cfg(not(coverage))]
     fn assert_success(result: &RunResult) {
         assert!(matches!(result.outcome, RunOutcome::Success));
     }
 
-    #[cfg(coverage)]
-    fn assert_success(_result: &RunResult) {}
-
-    #[cfg(not(coverage))]
     fn assert_failure_reason_contains(result: &RunResult, needle: &str) {
         if let RunOutcome::Failure(failure) = &result.outcome {
             assert!(failure.reason.contains(needle));
@@ -1261,10 +1521,6 @@ mod tests {
         }
     }
 
-    #[cfg(coverage)]
-    fn assert_failure_reason_contains(_result: &RunResult, _needle: &str) {}
-
-    #[cfg(not(coverage))]
     fn assert_failure_reason_eq(result: &RunResult, expected: &str) {
         if let RunOutcome::Failure(failure) = &result.outcome {
             assert_eq!(failure.reason, expected);
@@ -1273,13 +1529,94 @@ mod tests {
         }
     }
 
-    #[cfg(coverage)]
-    fn assert_failure_reason_eq(_result: &RunResult, _expected: &str) {}
-
     #[test]
     fn schema_dialect_for_defaults_without_schema() {
         let schema = json!({ "type": "object" });
         assert_eq!(schema_dialect_for(&schema), SchemaDialect::Draft2020_12);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_machine_mining_always_provokes_failure_with_increment_tool() {
+        let seed_tool = tool_with_schemas(
+            "seed",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+            Some(json!({
+                "type": "object",
+                "properties": { "count": { "type": "integer" } },
+                "required": ["count"]
+            })),
+        );
+        let increment_tool = tool_with_schemas(
+            "increment",
+            json!({
+                "type": "object",
+                "properties": { "count": { "type": "integer" } },
+                "required": ["count"]
+            }),
+            Some(json!({
+                "type": "object",
+                "properties": { "count": { "type": "integer" } },
+                "required": ["count"]
+            })),
+        );
+        let transport = IncrementCrashTransport::new(vec![seed_tool.clone(), increment_tool]);
+        let session = SessionDriver::connect_with_transport::<
+            IncrementCrashTransport,
+            std::convert::Infallible,
+            rmcp::transport::TransportAdapterIdentity,
+        >(transport)
+        .await
+        .expect("connect");
+        let config = RunConfig::new()
+            .with_generator_mode(GeneratorMode::StateMachine)
+            .with_state_machine(
+                StateMachineConfig::default()
+                    .with_lenient_sourcing(false)
+                    .with_dump_corpus(true),
+            );
+        let result = run_with_session(
+            &session,
+            &config,
+            RunnerOptions {
+                cases: 1,
+                sequence_len: 300..=300,
+            },
+        )
+        .await;
+
+        assert_failure(&result);
+        assert!(result.corpus.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn increment_crash_transport_ignores_unhandled_requests() {
+        let seed_tool = tool_with_schemas(
+            "seed",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+            None,
+        );
+        let mut transport = IncrementCrashTransport::new(vec![seed_tool]);
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::ListResourcesRequest(ListResourcesRequest::default()),
+            NumberOrString::Number(1),
+        );
+        let _ = transport.send(request).await;
+
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::CallToolRequest(CallToolRequest::new(CallToolRequestParam {
+                name: "unknown".into(),
+                arguments: None,
+            })),
+            NumberOrString::Number(2),
+        );
+        let _ = transport.send(request).await;
+        let _ = transport.close().await;
     }
 
     #[test]
@@ -1301,19 +1638,18 @@ mod tests {
             trace: Vec::new(),
             invocations: Vec::new(),
             coverage: None,
+            corpus: None,
         }));
         let result = finalize_run_result(
             Err(TestError::<Vec<ToolInvocation>>::Abort("nope".into())),
             &last_trace,
             &last_failure,
             &Rc::new(RefCell::new(None)),
+            &Rc::new(RefCell::new(None)),
             &[],
         );
 
-        #[cfg(coverage)]
-        std::hint::black_box(&result);
-        #[cfg(not(coverage))]
-        assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+        assert_failure(&result);
         assert_eq!(result.trace.len(), 1);
         assert!(result.minimized.is_none());
     }
@@ -1779,23 +2115,37 @@ mod tests {
         )
         .await;
 
-        #[cfg(coverage)]
-        std::hint::black_box(&result);
-        #[cfg(not(coverage))]
-        assert!(matches!(result.outcome, RunOutcome::Success));
+        assert_success(&result);
     }
 
     #[cfg(coverage)]
     #[test]
     fn coverage_smoke_for_assert_helpers() {
-        let result = RunResult {
+        let success = RunResult {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
             minimized: None,
             warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
-        assert_success(&result);
+        let failure = RunResult {
+            outcome: RunOutcome::Failure(RunFailure::new("boom".to_string())),
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: None,
+        };
+        assert_success(&success);
+        assert_failure(&failure);
+        assert_warnings_empty(&[]);
+        assert_failure_reason_contains(&failure, "boom");
+        assert_failure_reason_eq(&failure, "boom");
+        assert!(
+            std::panic::catch_unwind(|| assert_failure_reason_contains(&success, "boom")).is_err()
+        );
+        assert!(std::panic::catch_unwind(|| assert_failure_reason_eq(&success, "boom")).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2075,11 +2425,13 @@ mod tests {
             trace: Vec::new(),
             invocations: vec![invocation.clone()],
             coverage: None,
+            corpus: None,
         }));
         let result = finalize_run_result(
             Err(TestError::Fail("nope".into(), vec![invocation])),
             &last_trace,
             &last_failure,
+            &Rc::new(RefCell::new(None)),
             &Rc::new(RefCell::new(None)),
             &[],
         );
@@ -2296,10 +2648,169 @@ mod tests {
         );
 
         let (_, response) = entry.as_tool_call().expect("tool call entry");
-        tracker.mine_response(response.expect("response"));
+        tracker.mine_response("echo", response.expect("response"));
 
         assert!(tracker.corpus.numbers().contains(&Number::from(2)));
         assert!(tracker.corpus.strings().contains(&"label".to_string()));
+    }
+
+    #[test]
+    fn coverage_tracker_mines_text_tokens_when_enabled() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult {
+            content: vec![Content::text("gamma 1")],
+            structured_content: Some(json!({ "message": "alpha beta", "count": 2 })),
+            is_error: Some(false),
+            meta: None,
+        };
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().contains(&"message".to_string()));
+        assert!(tracker.corpus.strings().contains(&"alpha".to_string()));
+        assert!(tracker.corpus.strings().contains(&"beta".to_string()));
+        assert!(tracker.corpus.strings().contains(&"gamma".to_string()));
+        assert!(tracker.corpus.numbers().contains(&Number::from(1)));
+        assert!(tracker.corpus.numbers().contains(&Number::from(2)));
+    }
+
+    #[test]
+    fn coverage_tracker_logs_corpus_deltas_when_enabled() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default()
+            .with_mine_text(true)
+            .with_log_corpus_deltas(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::success(vec![Content::text("hello 1")]);
+
+        tracker.mine_response("echo", &response);
+    }
+
+    #[test]
+    fn coverage_tracker_mines_text_from_resource_content() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult {
+            content: vec![Content::embedded_text("resource://text", "delta 5")],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().contains(&"delta".to_string()));
+        assert!(tracker.corpus.numbers().contains(&Number::from(5)));
+    }
+
+    #[test]
+    fn coverage_tracker_mines_text_from_resource_payload() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult {
+            content: vec![Content::resource(ResourceContents::TextResourceContents {
+                uri: "resource://payload".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: "echo 7".to_string(),
+                meta: None,
+            })],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().contains(&"echo".to_string()));
+        assert!(tracker.corpus.numbers().contains(&Number::from(7)));
+    }
+
+    #[test]
+    fn coverage_tracker_ignores_blob_resource_content() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult {
+            content: vec![Content::resource(ResourceContents::BlobResourceContents {
+                uri: "resource://blob".to_string(),
+                mime_type: Some("application/octet-stream".to_string()),
+                blob: "ZGF0YQ==".to_string(),
+                meta: None,
+            })],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().is_empty());
+        assert!(tracker.corpus.numbers().is_empty());
+    }
+
+    #[test]
+    fn coverage_tracker_ignores_image_content_for_text_mining() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult {
+            content: vec![Content::image("iVBORw0KGgo=", "image/png")],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().is_empty());
+        assert!(tracker.corpus.numbers().is_empty());
+    }
+
+    #[test]
+    fn coverage_tracker_skips_text_mining_for_error_responses() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::error(vec![Content::text("boom 3")]);
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().is_empty());
+        assert!(tracker.corpus.numbers().is_empty());
+        assert!(tracker.corpus.integers().is_empty());
+    }
+
+    #[test]
+    fn coverage_tracker_merge_aggregates_corpus_and_counts() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" }
+                },
+                "required": ["text"]
+            }),
+            None,
+        );
+        let tools = vec![tool];
+        let config = StateMachineConfig::default();
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::structured(json!({ "text": "alpha" }));
+
+        tracker.record_success("echo");
+        tracker.mine_response("echo", &response);
+
+        let mut aggregate = CoverageTracker::new(&tools, &config);
+        aggregate.merge_from(&tracker);
+        let report = aggregate.report();
+
+        assert_eq!(report.counts.get("echo").copied(), Some(1));
+        assert_warnings_empty(&report.warnings);
     }
 
     #[test]
@@ -2314,7 +2825,7 @@ mod tests {
         );
 
         let (_, response) = entry.as_tool_call().expect("tool call entry");
-        tracker.mine_response(response.expect("response"));
+        tracker.mine_response("echo", response.expect("response"));
 
         assert!(tracker.corpus.numbers().is_empty());
         assert!(tracker.corpus.strings().is_empty());

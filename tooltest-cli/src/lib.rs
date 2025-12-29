@@ -28,6 +28,15 @@ pub struct Cli {
     /// Allow schema-based generation when corpus lacks required values.
     #[arg(long)]
     pub lenient_sourcing: bool,
+    /// Mine whitespace-delimited text tokens into the state corpus.
+    #[arg(long)]
+    pub mine_text: bool,
+    /// Dump the final state-machine corpus after the run completes.
+    #[arg(long)]
+    pub dump_corpus: bool,
+    /// Log newly mined corpus values after each tool response.
+    #[arg(long)]
+    pub log_corpus_deltas: bool,
     /// Disable schema-based generation when corpus lacks required values.
     #[arg(long, conflicts_with = "lenient_sourcing")]
     pub no_lenient_sourcing: bool,
@@ -63,6 +72,12 @@ struct StateMachineConfigInput {
     #[serde(default)]
     seed_strings: Vec<String>,
     #[serde(default)]
+    mine_text: bool,
+    #[serde(default)]
+    dump_corpus: bool,
+    #[serde(default)]
+    log_corpus_deltas: bool,
+    #[serde(default)]
     lenient_sourcing: bool,
     #[serde(default)]
     coverage_allowlist: Option<Vec<String>>,
@@ -77,6 +92,9 @@ impl From<StateMachineConfigInput> for StateMachineConfig {
         StateMachineConfig {
             seed_numbers: input.seed_numbers,
             seed_strings: input.seed_strings,
+            mine_text: input.mine_text,
+            dump_corpus: input.dump_corpus,
+            log_corpus_deltas: input.log_corpus_deltas,
             lenient_sourcing: input.lenient_sourcing,
             coverage_allowlist: input.coverage_allowlist,
             coverage_blocklist: input.coverage_blocklist,
@@ -135,6 +153,16 @@ pub async fn run(cli: Cli) -> ExitCode {
     } else if cli.no_lenient_sourcing {
         state_machine.lenient_sourcing = false;
     }
+    if cli.mine_text {
+        state_machine.mine_text = true;
+    }
+    if cli.dump_corpus {
+        state_machine.dump_corpus = true;
+    }
+    if cli.log_corpus_deltas {
+        state_machine.log_corpus_deltas = true;
+    }
+    let dump_corpus = state_machine.dump_corpus;
     let run_config = RunConfig::new()
         .with_generator_mode(cli.generator_mode.into())
         .with_state_machine(state_machine);
@@ -170,6 +198,14 @@ pub async fn run(cli: Cli) -> ExitCode {
         format_run_result_human(&result)
     };
     print!("{output}");
+    if dump_corpus && !cli.json {
+        if let Some(corpus) = &result.corpus {
+            let payload = serde_json::to_string_pretty(corpus).expect("serialize corpus");
+            eprintln!("corpus:\n{payload}");
+        } else {
+            let _ = ();
+        }
+    }
 
     exit_code_for_result(&result)
 }
@@ -415,6 +451,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
         assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
 
@@ -424,6 +461,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
         assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
     }
@@ -545,6 +583,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -564,6 +603,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -603,6 +643,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: Some(coverage),
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -625,6 +666,7 @@ mod tests {
                 tool: Some("echo".to_string()),
             }],
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -646,6 +688,7 @@ mod tests {
                 tool: None,
             }],
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -674,6 +717,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: None,
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -694,6 +738,7 @@ mod tests {
             minimized: None,
             warnings: Vec::new(),
             coverage: Some(coverage),
+            corpus: None,
         };
 
         let output = format_run_result_human(&result);
@@ -708,6 +753,9 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: Some("{bad json}".to_string()),
             json: false,
@@ -729,6 +777,9 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::StateMachine,
             lenient_sourcing: true,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,
@@ -750,6 +801,9 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::StateMachine,
             lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,
@@ -771,6 +825,9 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,
@@ -794,6 +851,9 @@ mod tests {
             max_sequence_len: 1,
             generator_mode: GeneratorModeArg::Legacy,
             lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
             json: false,

@@ -226,14 +226,7 @@ fn stdio_command_accepts_mine_text_flag() {
     let Some(server) = test_server() else {
         return;
     };
-    let output = run_tooltest(&[
-        "--mine-text",
-        "--cases",
-        "1",
-        "stdio",
-        "--command",
-        server,
-    ]);
+    let output = run_tooltest(&["--mine-text", "--cases", "1", "stdio", "--command", server]);
 
     assert!(
         output.status.success(),
@@ -724,12 +717,7 @@ fn run_http_failure_returns_exit_code_1() {
 
 #[test]
 fn run_http_failure_with_dump_corpus_skips_output() {
-    let output = run_tooltest(&[
-        "--dump-corpus",
-        "http",
-        "--url",
-        "http://127.0.0.1:0/mcp",
-    ]);
+    let output = run_tooltest(&["--dump-corpus", "http", "--url", "http://127.0.0.1:0/mcp"]);
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);

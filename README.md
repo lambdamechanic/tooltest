@@ -108,6 +108,15 @@ Or override it on the CLI:
 
 CLI flags take precedence over the JSON config.
 
+### Seed data
+
+Seed the corpus with known values (strings or numbers) using inline JSON:
+
+```bash
+tooltest stdio --command ./target/debug/my-mcp-server \
+  --state-machine-config '{"seed_strings":["alpha"],"seed_numbers":[42]}'
+```
+
 ### Text mining
 
 If your MCP server only emits textual content, you can mine whitespace-delimited tokens into the corpus:

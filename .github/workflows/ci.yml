@@ -40,3 +40,126 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Rust coverage
         run: cargo llvm-cov --workspace --fail-under-lines 95 --features tooltest-cli/cli-test-server
+
+  release-build:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: tooltest-linux-x86_64
+            binary: tooltest
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_name: tooltest-linux-aarch64
+            binary: tooltest
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: tooltest-macos-arm64
+            binary: tooltest
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: tooltest-windows-x86_64.exe
+            binary: tooltest.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install aarch64 cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      - name: Build tooltest
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: cargo build -p tooltest-cli --bin tooltest --release --target ${{ matrix.target }}
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.asset_name }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tooltest-${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          retention-days: 30
+
+  release-publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: release-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tooltest-*
+          merge-multiple: true
+          path: dist
+      - name: Delete existing latest assets
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const assetsToDelete = new Set([
+              "tooltest-linux-x86_64",
+              "tooltest-linux-aarch64",
+              "tooltest-macos-arm64",
+              "tooltest-windows-x86_64.exe",
+              "tooltest-linux-x86_64.sha256",
+              "tooltest-linux-aarch64.sha256",
+              "tooltest-macos-arm64.sha256",
+              "tooltest-windows-x86_64.exe.sha256",
+            ]);
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: "latest",
+              });
+
+              for (const asset of release.data.assets) {
+                if (!assetsToDelete.has(asset.name)) {
+                  continue;
+                }
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: asset.id,
+                });
+              }
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+      - name: Update latest tag
+        run: |
+          git tag -f latest "${GITHUB_SHA}"
+          git push -f origin latest
+      - name: Generate checksums
+        run: |
+          for file in dist/*; do
+            if [ -f "${file}" ]; then
+              sha256sum "${file}" > "${file}.sha256"
+            fi
+          done
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest
+          files: dist/*
+          generate_release_notes: false

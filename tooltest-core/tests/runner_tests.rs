@@ -208,7 +208,7 @@ async fn run_with_session_rejects_current_thread_runtime() {
 fn runner_options_default_matches_expected_values() {
     let options = RunnerOptions::default();
     assert_eq!(options.cases, 32);
-    assert_eq!(options.sequence_len, 1..=3);
+    assert_eq!(options.sequence_len, 1..=20);
 }
 
 #[tokio::test(flavor = "multi_thread")]

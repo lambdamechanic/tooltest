@@ -4,12 +4,10 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
-use proptest_state_machine::ReferenceStateMachine;
+use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, TestRunner};
 use regex::Regex;
 use rmcp::model::{JsonObject, Tool};
 use serde_json::{Number, Value as JsonValue};
@@ -18,7 +16,6 @@ use crate::{StateMachineConfig, ToolInvocation, ToolPredicate};
 
 thread_local! {
     static LAST_REJECT_CONTEXT: RefCell<Option<String>> = const { RefCell::new(None) };
-    static STATE_MACHINE_CONTEXT: RefCell<Option<StateMachineContext>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn clear_reject_context() {
@@ -105,45 +102,14 @@ pub(crate) struct ValueCorpus {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum StateMachineTransition {
-    Invoke(ToolInvocation),
-    Skip { reason: Option<String> },
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct StateMachineSequence {
-    pub(crate) transitions: Vec<StateMachineTransition>,
-    pub(crate) seen_counter: Option<Arc<AtomicUsize>>,
+    pub(crate) seeds: Vec<u64>,
 }
 
 impl StateMachineSequence {
     fn empty() -> Self {
-        Self {
-            transitions: Vec::new(),
-            seen_counter: None,
-        }
+        Self { seeds: Vec::new() }
     }
-}
-
-#[derive(Clone)]
-struct StateMachineContext {
-    tools: Arc<Vec<Tool>>,
-    predicate: Option<ToolPredicate>,
-    seed_numbers: Vec<Number>,
-    seed_strings: Vec<String>,
-    lenient_sourcing: bool,
-}
-
-fn set_state_machine_context(context: StateMachineContext) {
-    STATE_MACHINE_CONTEXT.with(|slot| {
-        *slot.borrow_mut() = Some(context);
-    });
-}
-
-fn get_state_machine_context() -> StateMachineContext {
-    STATE_MACHINE_CONTEXT
-        .with(|slot| slot.borrow().clone())
-        .expect("state machine context")
 }
 
 impl ValueCorpus {
@@ -367,80 +333,51 @@ pub(crate) fn invocation_strategy_from_corpus(
     Ok(Some(union))
 }
 
-struct StateMachineModel;
+pub(crate) fn invocation_from_corpus_seeded(
+    tools: &[Tool],
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+    seed: u64,
+) -> Result<Option<ToolInvocation>, InvocationError> {
+    validate_state_machine_tools(tools)?;
+    let Some(strategy) =
+        invocation_strategy_from_corpus(tools, predicate, corpus, lenient_sourcing)?
+    else {
+        return Ok(None);
+    };
+    let mut runner = seeded_test_runner(seed);
+    Ok(invocation_from_strategy(&strategy, &mut runner))
+}
 
-impl ReferenceStateMachine for StateMachineModel {
-    type State = ValueCorpus;
-    type Transition = StateMachineTransition;
-
-    fn init_state() -> BoxedStrategy<Self::State> {
-        let context = get_state_machine_context();
-        let mut corpus = ValueCorpus::default();
-        corpus.seed_numbers(context.seed_numbers.clone());
-        corpus.seed_strings(context.seed_strings.clone());
-        Just(corpus).boxed()
+fn invocation_from_strategy(
+    strategy: &BoxedStrategy<ToolInvocation>,
+    runner: &mut TestRunner,
+) -> Option<ToolInvocation> {
+    match strategy.new_tree(runner) {
+        Ok(tree) => Some(tree.current()),
+        Err(_) => None,
     }
+}
 
-    fn transitions(state: &Self::State) -> BoxedStrategy<Self::Transition> {
-        let context = get_state_machine_context();
-        let mut strategies = Vec::new();
-        for tool in context.tools.iter() {
-            let Some(strategy) =
-                invocation_from_corpus_unfiltered(tool, state, context.lenient_sourcing)
-            else {
-                continue;
-            };
-            let predicate = context.predicate.clone();
-            let tool_name = tool.name.clone();
-            let strategy = strategy
-                .prop_map(move |invocation| {
-                    if let Some(predicate) = predicate.as_ref() {
-                        let input = invocation
-                            .arguments
-                            .clone()
-                            .map(JsonValue::Object)
-                            .unwrap_or(JsonValue::Null);
-                        if !predicate(tool_name.as_ref(), &input) {
-                            record_reject_context(format!(
-                                "predicate rejected tool '{}'",
-                                tool_name.as_ref()
-                            ));
-                            return StateMachineTransition::Skip {
-                                reason: Some(format!(
-                                    "predicate rejected tool '{}'",
-                                    tool_name.as_ref()
-                                )),
-                            };
-                        }
-                    }
-                    StateMachineTransition::Invoke(invocation)
-                })
-                .boxed();
-            strategies.push(strategy);
-        }
+fn seeded_test_runner(seed: u64) -> TestRunner {
+    let config = ProptestConfig {
+        rng_algorithm: RngAlgorithm::ChaCha,
+        ..ProptestConfig::default()
+    };
+    let seed_bytes = seed_bytes(seed, 32);
+    let rng = TestRng::from_seed(config.rng_algorithm, &seed_bytes);
+    TestRunner::new_with_rng(config, rng)
+}
 
-        if strategies.is_empty() {
-            return Just(StateMachineTransition::Skip {
-                reason: Some("no callable tools".to_string()),
-            })
-            .boxed();
-        }
-
-        proptest::strategy::Union::new(strategies).boxed()
+fn seed_bytes(seed: u64, len: usize) -> Vec<u8> {
+    let bytes = seed.to_le_bytes();
+    let mut output = Vec::with_capacity(len);
+    while output.len() < len {
+        output.extend_from_slice(&bytes);
     }
-
-    fn apply(state: Self::State, transition: &Self::Transition) -> Self::State {
-        match transition {
-            StateMachineTransition::Invoke(invocation) => {
-                let mut next = state.clone();
-                if let Some(args) = invocation.arguments.as_ref() {
-                    next.mine_structured_content(&JsonValue::Object(args.clone()));
-                }
-                next
-            }
-            StateMachineTransition::Skip { .. } => state,
-        }
-    }
+    output.truncate(len);
+    output
 }
 
 pub(crate) fn state_machine_sequence_strategy(
@@ -459,29 +396,9 @@ pub(crate) fn state_machine_sequence_strategy(
         return Ok(Just(StateMachineSequence::empty()).boxed());
     }
 
-    let context = StateMachineContext {
-        tools: Arc::new(tools.to_vec()),
-        predicate: predicate.cloned(),
-        seed_numbers: config.seed_numbers.clone(),
-        seed_strings: config.seed_strings.clone(),
-        lenient_sourcing: config.lenient_sourcing,
-    };
-    set_state_machine_context(context);
-
-    let strategy: BoxedStrategy<_> = StateMachineModel::sequential_strategy(len_range)
-        .prop_filter("no invocations", |(_, transitions, _)| {
-            transitions
-                .iter()
-                .any(|transition| matches!(transition, StateMachineTransition::Invoke(_)))
-        })
-        .boxed();
-    let strategy = strategy
-        .prop_map(|(_, transitions, seen_counter)| StateMachineSequence {
-            transitions,
-            seen_counter,
-        })
-        .boxed();
-    Ok(strategy)
+    Ok(proptest::collection::vec(any::<u64>(), len_range)
+        .prop_map(|seeds| StateMachineSequence { seeds })
+        .boxed())
 }
 
 fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
@@ -2234,6 +2151,19 @@ mod tests {
             .current()
     }
 
+    #[test]
+    fn invocation_from_strategy_returns_none_for_rejected_values() {
+        let invocation = ToolInvocation {
+            name: "echo".to_string().into(),
+            arguments: None,
+        };
+        let strategy = Just(invocation)
+            .prop_filter("always reject", |_| false)
+            .boxed();
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        assert!(invocation_from_strategy(&strategy, &mut runner).is_none());
+    }
+
     fn outcome_is_missing_required(outcome: &PropertyOutcome) -> bool {
         matches!(outcome, PropertyOutcome::MissingRequired)
     }
@@ -2244,10 +2174,6 @@ mod tests {
 
     fn outcome_is_include(outcome: &PropertyOutcome) -> bool {
         matches!(outcome, PropertyOutcome::Include(_))
-    }
-
-    fn transition_is_skip(transition: &StateMachineTransition) -> bool {
-        matches!(transition, StateMachineTransition::Skip { .. })
     }
 
     fn assert_unsupported(schema: JsonValue, expected: &str) {
@@ -2409,130 +2335,6 @@ mod tests {
         std::hint::black_box(&result);
         #[cfg(not(coverage))]
         assert!(matches!(result, Err(InvocationError::NoEligibleTools)));
-    }
-
-    #[test]
-    fn state_machine_transitions_skip_on_predicate() {
-        let tool = tool_with_schema(
-            "echo",
-            json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } }
-            }),
-        );
-        let predicate: ToolPredicate = Arc::new(|_name, _input| false);
-        set_state_machine_context(StateMachineContext {
-            tools: Arc::new(vec![tool]),
-            predicate: Some(predicate),
-            seed_numbers: Vec::new(),
-            seed_strings: Vec::new(),
-            lenient_sourcing: false,
-        });
-        let transition = sample(StateMachineModel::transitions(&ValueCorpus::default()));
-        assert!(matches!(
-            transition,
-            StateMachineTransition::Skip {
-                reason: Some(reason)
-            } if reason.contains("predicate rejected tool")
-        ));
-    }
-
-    #[test]
-    fn state_machine_transitions_skip_when_no_tools() {
-        set_state_machine_context(StateMachineContext {
-            tools: Arc::new(Vec::new()),
-            predicate: None,
-            seed_numbers: Vec::new(),
-            seed_strings: Vec::new(),
-            lenient_sourcing: false,
-        });
-        let transition = sample(StateMachineModel::transitions(&ValueCorpus::default()));
-        assert!(matches!(
-            transition,
-            StateMachineTransition::Skip {
-                reason: Some(reason)
-            } if reason == "no callable tools"
-        ));
-    }
-
-    #[test]
-    fn state_machine_transitions_skip_when_tool_unavailable() {
-        let tool = tool_with_schema("echo", json!({ "type": "object", "properties": "nope" }));
-        set_state_machine_context(StateMachineContext {
-            tools: Arc::new(vec![tool]),
-            predicate: None,
-            seed_numbers: Vec::new(),
-            seed_strings: Vec::new(),
-            lenient_sourcing: false,
-        });
-        let transition = sample(StateMachineModel::transitions(&ValueCorpus::default()));
-        assert!(transition_is_skip(&transition));
-    }
-
-    #[test]
-    fn state_machine_transitions_invoke_when_predicate_allows() {
-        let tool = tool_with_schema(
-            "echo",
-            json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            }),
-        );
-        let predicate: ToolPredicate = Arc::new(|_name, _input| true);
-        set_state_machine_context(StateMachineContext {
-            tools: Arc::new(vec![tool]),
-            predicate: Some(predicate),
-            seed_numbers: Vec::new(),
-            seed_strings: Vec::new(),
-            lenient_sourcing: false,
-        });
-        let mut corpus = ValueCorpus::default();
-        corpus.seed_strings(["alpha".to_string()]);
-        let transition = sample(StateMachineModel::transitions(&corpus));
-        assert!(!transition_is_skip(&transition));
-        assert!(matches!(
-            transition,
-            StateMachineTransition::Invoke(ref invocation)
-                if invocation.arguments.as_ref().and_then(|args| args.get("text"))
-                    == Some(&json!("alpha"))
-        ));
-    }
-
-    #[test]
-    fn state_machine_apply_keeps_state_on_skip() {
-        let mut corpus = ValueCorpus::default();
-        corpus.seed_strings(["alpha".to_string()]);
-        let transition = StateMachineTransition::Skip { reason: None };
-        let next = StateMachineModel::apply(corpus.clone(), &transition);
-        assert_eq!(next.strings(), corpus.strings());
-    }
-
-    #[test]
-    fn state_machine_apply_mines_arguments_on_invoke() {
-        let mut corpus = ValueCorpus::default();
-        corpus.seed_strings(["alpha".to_string()]);
-        let mut arguments = JsonObject::new();
-        arguments.insert("text".to_string(), json!("beta"));
-        let transition = StateMachineTransition::Invoke(ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: Some(arguments),
-        });
-        let next = StateMachineModel::apply(corpus, &transition);
-        assert!(next.strings().contains(&"text".to_string()));
-        assert!(next.strings().contains(&"beta".to_string()));
-    }
-
-    #[test]
-    fn state_machine_apply_handles_invoke_without_arguments() {
-        let mut corpus = ValueCorpus::default();
-        corpus.seed_strings(["alpha".to_string()]);
-        let transition = StateMachineTransition::Invoke(ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        });
-        let next = StateMachineModel::apply(corpus.clone(), &transition);
-        assert_eq!(next.strings(), corpus.strings());
     }
 
     #[test]
@@ -4305,6 +4107,32 @@ mod tests {
             .expect("schema");
         let err = schema_oneof_branches(&schema).expect_err("oneOf error");
         assert_eq!(err, "oneOf must be an array");
+    }
+
+    #[test]
+    fn schema_violations_include_schema_error_for_invalid_anyof() {
+        let schema = json!({ "anyOf": [] }).as_object().cloned().expect("schema");
+        let violations = schema_violations(&schema, &json!(true));
+        assert!(violations.iter().any(|constraint| {
+            matches!(
+                &constraint.kind,
+                ConstraintKind::Schema(reason)
+                    if reason == "anyOf must include at least one schema object"
+            )
+        }));
+    }
+
+    #[test]
+    fn schema_violations_include_schema_error_for_invalid_oneof() {
+        let schema = json!({ "oneOf": [] }).as_object().cloned().expect("schema");
+        let violations = schema_violations(&schema, &json!(true));
+        assert!(violations.iter().any(|constraint| {
+            matches!(
+                &constraint.kind,
+                ConstraintKind::Schema(reason)
+                    if reason == "oneOf must include at least one schema object"
+            )
+        }));
     }
 
     #[test]

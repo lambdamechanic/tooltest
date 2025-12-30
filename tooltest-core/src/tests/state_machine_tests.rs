@@ -2,9 +2,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::generator::{
-    invocation_strategy_from_corpus, state_machine_sequence_strategy, ValueCorpus,
+    invocation_from_corpus_seeded, invocation_strategy_from_corpus,
+    state_machine_sequence_strategy, InvocationError, ValueCorpus,
 };
-use crate::StateMachineConfig;
+use crate::{StateMachineConfig, ToolPredicate};
 use proptest::prelude::*;
 use rmcp::model::Tool;
 use serde_json::{json, Number, Value as JsonValue};
@@ -127,7 +128,7 @@ fn state_machine_generator_returns_empty_when_no_callable_tools() {
     let strategy = state_machine_sequence_strategy(&[], None, &config, 1..=3).expect("strategy");
 
     let sequence = sample(strategy);
-    assert!(sequence.transitions.is_empty());
+    assert!(sequence.seeds.is_empty());
 }
 
 #[test]
@@ -138,11 +139,7 @@ fn state_machine_generator_returns_transitions_when_callable() {
         state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
 
     let sequence = sample(strategy);
-    assert_eq!(sequence.transitions.len(), 1);
-    assert!(matches!(
-        sequence.transitions.first(),
-        Some(crate::generator::StateMachineTransition::Invoke(_))
-    ));
+    assert_eq!(sequence.seeds.len(), 1);
 }
 
 #[test]
@@ -154,19 +151,41 @@ fn state_machine_generator_supports_kev_schema_without_seeds() {
     let tool = tool_with_schema("get_related_cves", schema);
     let config = StateMachineConfig::default();
     let strategy =
-        state_machine_sequence_strategy(&[tool], None, &config, 1..=1).expect("strategy");
+        state_machine_sequence_strategy(&[tool.clone()], None, &config, 1..=1).expect("strategy");
 
     let sequence = sample(strategy);
-    assert_eq!(sequence.transitions.len(), 1);
-    let invocation = match sequence.transitions.first() {
-        Some(crate::generator::StateMachineTransition::Invoke(invocation)) => invocation,
-        Some(crate::generator::StateMachineTransition::Skip { .. }) => {
-            panic!("expected invocation")
-        }
-        None => panic!("expected transition"),
-    };
+    assert_eq!(sequence.seeds.len(), 1);
+    let corpus = ValueCorpus::default();
+    let invocation = invocation_from_corpus_seeded(
+        &[tool],
+        None,
+        &corpus,
+        config.lenient_sourcing,
+        sequence.seeds[0],
+    )
+    .expect("invocation")
+    .expect("callable");
     let args = invocation.arguments.as_ref().expect("arguments");
     assert!(args.contains_key("vendor") || args.contains_key("product"));
+}
+
+#[test]
+fn invocation_from_corpus_seeded_returns_error_when_predicate_rejects_all() {
+    let tool = tool_with_schema(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": { "text": { "type": "string" } },
+            "required": ["text"]
+        }),
+    );
+    let predicate: ToolPredicate = Arc::new(|_name, _input| false);
+    let mut corpus = ValueCorpus::default();
+    corpus.seed_strings(["alpha".to_string()]);
+
+    let error = invocation_from_corpus_seeded(&[tool], Some(&predicate), &corpus, false, 0)
+        .expect_err("error");
+    assert!(matches!(error, InvocationError::NoEligibleTools));
 }
 
 #[test]

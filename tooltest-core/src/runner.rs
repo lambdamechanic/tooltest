@@ -11,8 +11,9 @@ use rmcp::model::{CallToolResult, ListToolsResult, Tool};
 use serde_json::{json, Number, Value as JsonValue};
 
 use crate::generator::{
-    clear_reject_context, record_reject_context, state_machine_sequence_strategy,
-    take_reject_context, uncallable_reason, StateMachineSequence, UncallableReason, ValueCorpus,
+    clear_reject_context, invocation_from_corpus_seeded, record_reject_context,
+    state_machine_sequence_strategy, take_reject_context, uncallable_reason, StateMachineSequence,
+    UncallableReason, ValueCorpus,
 };
 use crate::schema::parse_list_tools;
 use crate::{
@@ -35,7 +36,7 @@ impl Default for RunnerOptions {
     fn default() -> Self {
         Self {
             cases: 32,
-            sequence_len: 1..=3,
+            sequence_len: 1..=20,
         }
     }
 }
@@ -174,10 +175,12 @@ pub async fn run_with_session(
                         };
                         let result = execute_state_machine_sequence(
                             session,
+                            &tools,
                             &validators,
                             &assertions,
                             &sequence,
                             &mut tracker,
+                            config.predicate.as_ref(),
                             min_len,
                         )
                         .await;
@@ -428,6 +431,10 @@ impl<'a> CoverageTracker<'a> {
 
     fn corpus(&self) -> &ValueCorpus {
         &self.corpus
+    }
+
+    fn lenient_sourcing(&self) -> bool {
+        self.lenient_sourcing
     }
 
     fn merge_from(&mut self, other: &CoverageTracker<'_>) {
@@ -688,6 +695,7 @@ async fn execute_sequence_with_coverage(
         let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
         let invocation = invocation.clone();
         let response = response.expect("tool call response").clone();
+        attach_response(&mut trace, response.clone());
         full_trace.push(entry);
         if !response.is_error.unwrap_or(false) {
             tracker.record_success(invocation.name.as_ref());
@@ -730,29 +738,40 @@ async fn execute_sequence_with_coverage(
     Ok(trace)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_state_machine_sequence(
     session: &SessionDriver,
+    tools: &[Tool],
     validators: &BTreeMap<String, jsonschema::Validator>,
     assertions: &AssertionSet,
     sequence: &StateMachineSequence,
     tracker: &mut CoverageTracker<'_>,
+    predicate: Option<&crate::ToolPredicate>,
     min_len: Option<usize>,
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
     let mut invocation_count = 0usize;
-    for transition in &sequence.transitions {
-        if let Some(seen_counter) = sequence.seen_counter.as_ref() {
-            seen_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-
-        let invocation = match transition {
-            crate::generator::StateMachineTransition::Invoke(invocation) => invocation.clone(),
-            crate::generator::StateMachineTransition::Skip { reason } => {
-                if let Some(reason) = reason.as_ref() {
-                    record_reject_context(reason.clone());
-                }
-                continue;
+    for seed in &sequence.seeds {
+        let invocation = match invocation_from_corpus_seeded(
+            tools,
+            predicate,
+            tracker.corpus(),
+            tracker.lenient_sourcing(),
+            *seed,
+        ) {
+            Ok(Some(invocation)) => invocation,
+            Ok(None) | Err(crate::generator::InvocationError::NoEligibleTools) => {
+                record_reject_context("no callable tools".to_string());
+                break;
+            }
+            Err(error) => {
+                return Err(FailureContext {
+                    failure: RunFailure::new(error.to_string()),
+                    trace,
+                    coverage: None,
+                    corpus: None,
+                });
             }
         };
 
@@ -1226,7 +1245,6 @@ mod tests {
     use super::*;
     use crate::generator::{
         clear_reject_context, set_reject_context_for_test, StateMachineSequence,
-        StateMachineTransition,
     };
     use crate::{
         AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
@@ -1894,7 +1912,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn execute_sequence_reports_session_error() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+            None,
+        );
         let response = CallToolResult::success(vec![Content::text("ok")]);
         let transport = RunnerTransport::new(tool, response).with_call_tool_error(ErrorData::new(
             ErrorCode::INTERNAL_ERROR,
@@ -2209,6 +2235,7 @@ mod tests {
         let transport = RunnerTransport::new(tool, response);
         let session = connect_runner_transport(transport).await.expect("connect");
         let state_machine = StateMachineConfig::default()
+            .with_dump_corpus(true)
             .with_coverage_rules(vec![CoverageRule::MinCallsPerTool { min: 2 }]);
         let config = RunConfig::new().with_state_machine(state_machine);
         let options = RunnerOptions {
@@ -2241,152 +2268,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn execute_state_machine_sequence_skips_when_transition_is_skip() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let tools = vec![tool];
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let sequence = StateMachineSequence {
-            transitions: vec![
-                StateMachineTransition::Skip {
-                    reason: Some("predicate rejected".to_string()),
-                },
-                StateMachineTransition::Invoke(invocation),
-            ],
-            seen_counter: None,
-        };
-        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
-
-        let result = execute_state_machine_sequence(
-            &session,
-            &BTreeMap::new(),
-            &AssertionSet::default(),
-            &sequence,
-            &mut tracker,
-            Some(1),
-        )
-        .await;
-        let trace = result.expect("expected success");
-        assert_eq!(trace.len(), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_state_machine_sequence_reports_session_error() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response).with_call_tool_error(
-            ErrorData::new(ErrorCode::INTERNAL_ERROR, "call failed", None),
-        );
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let tools = vec![tool];
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let sequence = StateMachineSequence {
-            transitions: vec![StateMachineTransition::Invoke(invocation)],
-            seen_counter: None,
-        };
-        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
-
-        let result = execute_state_machine_sequence(
-            &session,
-            &BTreeMap::new(),
-            &AssertionSet::default(),
-            &sequence,
-            &mut tracker,
-            Some(1),
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure.failure.reason.contains("session error"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_state_machine_sequence_reports_response_assertion_failure() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let tools = vec![tool];
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let sequence = StateMachineSequence {
-            transitions: vec![StateMachineTransition::Invoke(invocation)],
-            seen_counter: None,
-        };
-        let assertions = AssertionSet {
-            rules: vec![AssertionRule::Response(ResponseAssertion {
-                tool: None,
-                checks: vec![AssertionCheck {
-                    target: AssertionTarget::Input,
-                    pointer: "/missing".to_string(),
-                    expected: json!(true),
-                }],
-            })],
-        };
-        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
-
-        let result = execute_state_machine_sequence(
-            &session,
-            &BTreeMap::new(),
-            &assertions,
-            &sequence,
-            &mut tracker,
-            Some(1),
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure.failure.reason.contains("assertion pointer"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn execute_state_machine_sequence_reports_sequence_assertion_failure() {
-        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-        let response = CallToolResult::success(vec![Content::text("ok")]);
-        let transport = RunnerTransport::new(tool.clone(), response);
-        let session = connect_runner_transport(transport).await.expect("connect");
-        let tools = vec![tool];
-        let invocation = ToolInvocation {
-            name: "echo".to_string().into(),
-            arguments: None,
-        };
-        let sequence = StateMachineSequence {
-            transitions: vec![StateMachineTransition::Invoke(invocation)],
-            seen_counter: None,
-        };
-        let assertions = AssertionSet {
-            rules: vec![AssertionRule::Sequence(SequenceAssertion {
-                checks: vec![AssertionCheck {
-                    target: AssertionTarget::Sequence,
-                    pointer: "/missing".to_string(),
-                    expected: json!(true),
-                }],
-            })],
-        };
-        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
-
-        let result = execute_state_machine_sequence(
-            &session,
-            &BTreeMap::new(),
-            &assertions,
-            &sequence,
-            &mut tracker,
-            Some(1),
-        )
-        .await;
-        let failure = result.expect_err("expected failure");
-        assert!(failure.failure.reason.contains("assertion pointer"));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn execute_state_machine_sequence_breaks_when_no_callable_tools() {
         let tool = tool_with_schemas(
             "echo",
@@ -2401,18 +2282,174 @@ mod tests {
         let transport = RunnerTransport::new(tool.clone(), response);
         let session = connect_runner_transport(transport).await.expect("connect");
         let tools = vec![tool];
-        let sequence = StateMachineSequence {
-            transitions: vec![StateMachineTransition::Skip { reason: None }],
-            seen_counter: None,
+        let sequence = StateMachineSequence { seeds: vec![1, 2] };
+        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+
+        let result = execute_state_machine_sequence(
+            &session,
+            &tools,
+            &BTreeMap::new(),
+            &AssertionSet::default(),
+            &sequence,
+            &mut tracker,
+            None,
+            None,
+        )
+        .await;
+        let trace = result.expect("expected success");
+        assert!(trace.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_state_machine_sequence_reports_generation_error() {
+        let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let transport = RunnerTransport::new(tool.clone(), response);
+        let session = connect_runner_transport(transport).await.expect("connect");
+        let tools = vec![tool];
+        let sequence = StateMachineSequence { seeds: vec![0] };
+        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+
+        let result = execute_state_machine_sequence(
+            &session,
+            &tools,
+            &BTreeMap::new(),
+            &AssertionSet::default(),
+            &sequence,
+            &mut tracker,
+            None,
+            None,
+        )
+        .await;
+        let failure = result.expect_err("expected failure");
+        assert!(failure
+            .failure
+            .reason
+            .contains("inputSchema type must be object"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_state_machine_sequence_reports_session_error() {
+        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let transport = RunnerTransport::new(tool.clone(), response).with_call_tool_error(
+            ErrorData::new(ErrorCode::INTERNAL_ERROR, "call failed", None),
+        );
+        let session = connect_runner_transport(transport).await.expect("connect");
+        let tools = vec![tool];
+        let sequence = StateMachineSequence { seeds: vec![0] };
+        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+
+        let result = execute_state_machine_sequence(
+            &session,
+            &tools,
+            &BTreeMap::new(),
+            &AssertionSet::default(),
+            &sequence,
+            &mut tracker,
+            None,
+            Some(1),
+        )
+        .await;
+        let failure = result.expect_err("expected failure");
+        assert!(failure.failure.reason.contains("session error"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_state_machine_sequence_reports_response_assertion_failure() {
+        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let transport = RunnerTransport::new(tool.clone(), response);
+        let session = connect_runner_transport(transport).await.expect("connect");
+        let tools = vec![tool];
+        let sequence = StateMachineSequence { seeds: vec![0] };
+        let assertions = AssertionSet {
+            rules: vec![AssertionRule::Response(ResponseAssertion {
+                tool: None,
+                checks: vec![AssertionCheck {
+                    target: AssertionTarget::Input,
+                    pointer: "/missing".to_string(),
+                    expected: json!(true),
+                }],
+            })],
         };
         let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
         let result = execute_state_machine_sequence(
             &session,
+            &tools,
+            &BTreeMap::new(),
+            &assertions,
+            &sequence,
+            &mut tracker,
+            None,
+            Some(1),
+        )
+        .await;
+        let failure = result.expect_err("expected failure");
+        assert!(failure.failure.reason.contains("assertion pointer"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_state_machine_sequence_reports_sequence_assertion_failure() {
+        let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let transport = RunnerTransport::new(tool.clone(), response);
+        let session = connect_runner_transport(transport).await.expect("connect");
+        let tools = vec![tool];
+        let sequence = StateMachineSequence { seeds: vec![0] };
+        let assertions = AssertionSet {
+            rules: vec![AssertionRule::Sequence(SequenceAssertion {
+                checks: vec![AssertionCheck {
+                    target: AssertionTarget::Sequence,
+                    pointer: "/missing".to_string(),
+                    expected: json!(true),
+                }],
+            })],
+        };
+        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+
+        let result = execute_state_machine_sequence(
+            &session,
+            &tools,
+            &BTreeMap::new(),
+            &assertions,
+            &sequence,
+            &mut tracker,
+            None,
+            Some(1),
+        )
+        .await;
+        let failure = result.expect_err("expected failure");
+        assert!(failure.failure.reason.contains("assertion pointer"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
+        let tool = tool_with_schemas(
+            "echo",
+            json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+            None,
+        );
+        let response = CallToolResult::success(vec![Content::text("ok")]);
+        let transport = RunnerTransport::new(tool.clone(), response);
+        let session = connect_runner_transport(transport).await.expect("connect");
+        let tools = vec![tool];
+        let sequence = StateMachineSequence { seeds: vec![0] };
+        let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+
+        let result = execute_state_machine_sequence(
+            &session,
+            &tools,
             &BTreeMap::new(),
             &AssertionSet::default(),
             &sequence,
             &mut tracker,
+            None,
             Some(1),
         )
         .await;
@@ -2471,10 +2508,7 @@ mod tests {
         let result = finalize_state_machine_result(
             Err(TestError::Fail(
                 "nope".into(),
-                StateMachineSequence {
-                    transitions: Vec::new(),
-                    seen_counter: None,
-                },
+                StateMachineSequence { seeds: Vec::new() },
             )),
             &last_trace,
             &last_failure,
@@ -2485,6 +2519,31 @@ mod tests {
 
         assert_failure_reason_eq(&result, "failure");
         assert!(result.minimized.is_some());
+    }
+
+    #[test]
+    fn finalize_state_machine_result_skips_minimized_without_invocations() {
+        let last_trace = Rc::new(RefCell::new(Vec::new()));
+        let last_failure = Rc::new(RefCell::new(FailureContext {
+            failure: RunFailure::new("failure".to_string()),
+            trace: Vec::new(),
+            coverage: None,
+            corpus: None,
+        }));
+        let result = finalize_state_machine_result(
+            Err(TestError::Fail(
+                "nope".into(),
+                StateMachineSequence { seeds: Vec::new() },
+            )),
+            &last_trace,
+            &last_failure,
+            &Rc::new(RefCell::new(None)),
+            &Rc::new(RefCell::new(None)),
+            &[],
+        );
+
+        assert_failure_reason_eq(&result, "failure");
+        assert!(result.minimized.is_none());
     }
 
     #[test]
@@ -2756,6 +2815,20 @@ mod tests {
     }
 
     #[test]
+    fn coverage_tracker_logs_corpus_deltas_and_reports() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_log_corpus_deltas(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::structured(json!({ "value": 1 }));
+
+        tracker.mine_response("echo", &response);
+
+        let report = tracker.corpus_report();
+        assert!(report.integers.contains(&1));
+        assert!(report.numbers.contains(&Number::from(1)));
+    }
+
+    #[test]
     fn coverage_tracker_ignores_missing_structured_content() {
         let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
         let config = StateMachineConfig::default();
@@ -2810,6 +2883,32 @@ mod tests {
 
         assert!(tracker.corpus.strings().contains(&"alpha".to_string()));
         assert!(tracker.corpus.strings().contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn coverage_tracker_mines_text_from_structured_content() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::structured(json!({ "note": "alpha 1" }));
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().contains(&"alpha".to_string()));
+        assert!(tracker.corpus.integers().contains(&1));
+    }
+
+    #[test]
+    fn coverage_tracker_mines_text_content() {
+        let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+        let config = StateMachineConfig::default().with_mine_text(true);
+        let mut tracker = CoverageTracker::new(&tools, &config);
+        let response = CallToolResult::success(vec![Content::text("beta 2")]);
+
+        tracker.mine_response("echo", &response);
+
+        assert!(tracker.corpus.strings().contains(&"beta".to_string()));
+        assert!(tracker.corpus.integers().contains(&2));
     }
 
     #[test]

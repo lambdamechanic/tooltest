@@ -338,11 +338,21 @@ mod tests {
     use std::collections::BTreeMap;
 
     use clap::CommandFactory;
-    use rmcp::model::{CallToolResult, Content};
-    use tooltest_core::{
-        list_tools_http, list_tools_stdio, CoverageReport, CoverageWarning, HttpConfig, RunFailure,
-        RunWarning, RunWarningCode, SchemaConfig, StdioConfig, ToolInvocation, TraceEntry,
+    use rmcp::model::{
+        CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, JsonRpcMessage,
+        ListPromptsRequest, NumberOrString, PaginatedRequestParam, ServerJsonRpcMessage,
     };
+    use rmcp::service::RoleClient;
+    use rmcp::transport::Transport;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tooltest_core::{
+        list_tools_http, list_tools_stdio, list_tools_with_session, CoverageReport,
+        CoverageWarning, HttpConfig, ListToolsError, RunFailure, RunWarning, RunWarningCode,
+        SchemaConfig, SchemaError, SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
+    };
+    use tooltest_test_support::{init_response, stub_tool, ListToolsTransport};
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -460,6 +470,130 @@ mod tests {
         assert!(list_tools_stdio(&stdio, &SchemaConfig::default())
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_session_reports_tools_in_cli_tests() {
+        let tool = stub_tool("echo");
+        let transport = ListToolsTransport::new(vec![tool]);
+        let driver = SessionDriver::connect_with_transport::<
+            ListToolsTransport,
+            std::convert::Infallible,
+            rmcp::transport::TransportAdapterIdentity,
+        >(transport)
+        .await
+        .expect("connect");
+
+        let tools = list_tools_with_session(&driver, &SchemaConfig::default())
+            .await
+            .expect("tools");
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[derive(Debug)]
+    struct TransportError(&'static str);
+
+    impl std::fmt::Display for TransportError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for TransportError {}
+
+    struct FaultyListToolsTransport {
+        responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
+        response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+    }
+
+    impl FaultyListToolsTransport {
+        fn new() -> Self {
+            let (response_tx, response_rx) = mpsc::unbounded_channel();
+            Self {
+                responses: Arc::new(AsyncMutex::new(response_rx)),
+                response_tx,
+            }
+        }
+    }
+
+    impl Transport<RoleClient> for FaultyListToolsTransport {
+        type Error = TransportError;
+
+        fn send(
+            &mut self,
+            item: ClientJsonRpcMessage,
+        ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+            let response_tx = self.response_tx.clone();
+            if let JsonRpcMessage::Request(request) = &item {
+                match &request.request {
+                    ClientRequest::InitializeRequest(_) => {
+                        let _ = response_tx.send(init_response(request.id.clone()));
+                    }
+                    ClientRequest::ListToolsRequest(_) => {
+                        return std::future::ready(Err(TransportError("list tools")));
+                    }
+                    _ => {}
+                }
+            }
+            std::future::ready(Ok(()))
+        }
+
+        fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+            let responses = Arc::clone(&self.responses);
+            async move {
+                let mut receiver = responses.lock().await;
+                receiver.recv().await
+            }
+        }
+
+        async fn close(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_session_reports_error_in_cli_tests() {
+        let transport = FaultyListToolsTransport::new();
+        let driver = SessionDriver::connect_with_transport::<
+            FaultyListToolsTransport,
+            TransportError,
+            rmcp::transport::TransportAdapterIdentity,
+        >(transport)
+        .await
+        .expect("connect");
+
+        let error = list_tools_with_session(&driver, &SchemaConfig::default())
+            .await
+            .expect_err("list tools error");
+        let mut saw_session = false;
+        let mut saw_schema = false;
+        let schema_error = ListToolsError::Schema(SchemaError::InvalidListTools("schema".into()));
+
+        for error in [error, schema_error] {
+            match error {
+                ListToolsError::Session(_) => saw_session = true,
+                ListToolsError::Schema(_) => saw_schema = true,
+            }
+        }
+
+        assert!(saw_session && saw_schema);
+    }
+
+    #[tokio::test]
+    async fn faulty_list_tools_transport_handles_unhandled_request_and_close_in_cli_tests() {
+        let mut transport = FaultyListToolsTransport::new();
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::ListPromptsRequest(ListPromptsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(1),
+        );
+
+        transport.send(request).await.expect("send");
+        transport.close().await.expect("close");
+        assert_eq!(TransportError("boom").to_string(), "boom");
     }
 
     #[test]

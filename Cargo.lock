@@ -1962,6 +1962,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tooltest-core",
+ "tooltest-test-support",
 ]
 
 [[package]]

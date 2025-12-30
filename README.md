@@ -15,6 +15,28 @@ Use it to:
 
 ### Install
 
+Latest prebuilt binaries (auto-detect OS/arch):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lambdamechanic/tooltest/main/install.sh | bash
+```
+
+Optionally set an install directory (default `/usr/local/bin`, fallback to `~/.local/bin`):
+
+```bash
+INSTALL_DIR="$HOME/.local/bin" \
+  curl -fsSL https://raw.githubusercontent.com/lambdamechanic/tooltest/main/install.sh | bash
+```
+
+Direct downloads (stable URLs):
+
+- `https://github.com/lambdamechanic/tooltest/releases/download/latest/tooltest-linux-x86_64`
+- `https://github.com/lambdamechanic/tooltest/releases/download/latest/tooltest-linux-aarch64`
+- `https://github.com/lambdamechanic/tooltest/releases/download/latest/tooltest-macos-arm64`
+- `https://github.com/lambdamechanic/tooltest/releases/download/latest/tooltest-windows-x86_64.exe`
+
+Build from source:
+
 ```bash
 cargo install --path tooltest-cli
 ```

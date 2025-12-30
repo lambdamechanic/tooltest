@@ -340,7 +340,8 @@ mod tests {
     use clap::CommandFactory;
     use rmcp::model::{CallToolResult, Content};
     use tooltest_core::{
-        CoverageReport, CoverageWarning, RunFailure, RunWarning, RunWarningCode, ToolInvocation,
+        list_tools_http, list_tools_stdio, CoverageReport, CoverageWarning, HttpConfig,
+        RunFailure, RunWarning, RunWarningCode, SchemaConfig, StdioConfig, ToolInvocation,
         TraceEntry,
     };
 
@@ -444,6 +445,22 @@ mod tests {
             corpus: None,
         };
         assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn list_tools_helpers_report_errors_in_cli_tests() {
+        let http = HttpConfig {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        };
+        assert!(list_tools_http(&http, &SchemaConfig::default())
+            .await
+            .is_err());
+
+        let stdio = StdioConfig::new("mcp-server");
+        assert!(list_tools_stdio(&stdio, &SchemaConfig::default())
+            .await
+            .is_err());
     }
 
     #[test]

@@ -164,4 +164,3 @@ pub fn schema_version_label(version: &SchemaVersion) -> Cow<'_, str> {
 #[cfg(test)]
 #[path = "../tests/internal/schema_unit_tests.rs"]
 mod tests;
-

@@ -6,9 +6,8 @@ use proptest::strategy::NewTree;
 use rmcp::model::{
     CallToolResult, ClientJsonRpcMessage, ClientNotification, ClientRequest, Content,
     InitializeRequest, InitializeRequestParam, InitializedNotification, JsonRpcMessage,
-    JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0, ListPromptsRequest,
-    ListToolsRequest, NumberOrString, PaginatedRequestParam, ServerJsonRpcMessage,
-    ServerResult, Tool,
+    JsonRpcNotification, JsonRpcResponse, JsonRpcVersion2_0, ListPromptsRequest, ListToolsRequest,
+    NumberOrString, PaginatedRequestParam, ServerJsonRpcMessage, ServerResult, Tool,
 };
 use rmcp::service::ServiceError;
 use rmcp::transport::Transport;
@@ -104,17 +103,16 @@ enum ConnectorOutcome {
 
 fn test_connector(
     outcome: ConnectorOutcome,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<SessionDriver, SessionError>> + Send>,
-> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SessionDriver, SessionError>> + Send>>
+{
     Box::pin(async move {
         match outcome {
             ConnectorOutcome::Ok(transport) => {
                 SessionDriver::connect_with_transport(transport).await
             }
-            ConnectorOutcome::Err => Err(SessionError::Transport(Box::new(
-                std::io::Error::other("connector"),
-            ))),
+            ConnectorOutcome::Err => Err(SessionError::Transport(Box::new(std::io::Error::other(
+                "connector",
+            )))),
         }
     })
 }
@@ -258,8 +256,8 @@ impl Transport<rmcp::service::RoleClient> for FaultyTransport {
                     if fail_on_list {
                         return std::future::ready(Err(TransportError("list tools")));
                     }
-                    let _ = response_tx
-                        .send(list_tools_response(request.id.clone(), tools.clone()));
+                    let _ =
+                        response_tx.send(list_tools_response(request.id.clone(), tools.clone()));
                 }
                 ClientRequest::CallToolRequest(_) => {
                     if let Some(fail_after) = call_fail_after {
@@ -439,9 +437,7 @@ async fn list_tools_stub_handles_initialize_and_list_tools() {
     let mut transport = ListToolsTransport::new(tools.clone());
 
     let init = ClientJsonRpcMessage::request(
-        ClientRequest::InitializeRequest(InitializeRequest::new(
-            InitializeRequestParam::default(),
-        )),
+        ClientRequest::InitializeRequest(InitializeRequest::new(InitializeRequestParam::default())),
         NumberOrString::Number(1),
     );
     let _ = transport.send(init).await;
@@ -697,7 +693,10 @@ async fn list_tools_session_reports_error() {
     let ListToolsError::Session(error) = error else {
         panic!("expected session error");
     };
-    assert!(matches!(error, SessionError::Service(_) | SessionError::Transport(_)));
+    assert!(matches!(
+        error,
+        SessionError::Service(_) | SessionError::Transport(_)
+    ));
 }
 
 #[tokio::test]
@@ -729,13 +728,10 @@ async fn list_tools_with_connector_accepts_http_config() {
         url: "fail".to_string(),
         auth_token: None,
     };
-    let error = list_tools_with_connector(
-        error_config,
-        &SchemaConfig::default(),
-        http_test_connector,
-    )
-    .await
-    .expect_err("error");
+    let error =
+        list_tools_with_connector(error_config, &SchemaConfig::default(), http_test_connector)
+            .await
+            .expect_err("error");
     let ListToolsError::Session(error) = error else {
         panic!("expected session error");
     };
@@ -746,19 +742,17 @@ async fn list_tools_with_connector_accepts_http_config() {
 async fn list_tools_with_connector_accepts_stdio_config() {
     let ok_config = StdioConfig::new("mcp-server");
 
-    let tools = list_tools_with_connector(ok_config, &SchemaConfig::default(), stdio_test_connector)
-        .await
-        .expect("tools");
+    let tools =
+        list_tools_with_connector(ok_config, &SchemaConfig::default(), stdio_test_connector)
+            .await
+            .expect("tools");
     assert_eq!(tools.len(), 1);
 
     let error_config = StdioConfig::new("fail");
-    let error = list_tools_with_connector(
-        error_config,
-        &SchemaConfig::default(),
-        stdio_test_connector,
-    )
-    .await
-    .expect_err("error");
+    let error =
+        list_tools_with_connector(error_config, &SchemaConfig::default(), stdio_test_connector)
+            .await
+            .expect_err("error");
     let ListToolsError::Session(error) = error else {
         panic!("expected session error");
     };
@@ -802,14 +796,18 @@ async fn list_tools_http_reports_error_for_unreachable_endpoint() {
         auth_token: None,
     };
 
-    assert!(list_tools_http(&http, &SchemaConfig::default()).await.is_err());
+    assert!(list_tools_http(&http, &SchemaConfig::default())
+        .await
+        .is_err());
 }
 
 #[cfg(coverage)]
 #[tokio::test]
 async fn list_tools_stdio_reports_error_in_coverage() {
     let stdio = StdioConfig::new("mcp-server");
-    assert!(list_tools_stdio(&stdio, &SchemaConfig::default()).await.is_err());
+    assert!(list_tools_stdio(&stdio, &SchemaConfig::default())
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -1060,9 +1058,8 @@ async fn shrink_failure_sequence_tree_handles_failure_after_simplify() {
     let driver = SessionDriver::connect_with_transport(transport)
         .await
         .expect("connect");
-    let validator: ToolValidationFn = Arc::new(|_, _| {
-        ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string()))
-    });
+    let validator: ToolValidationFn =
+        Arc::new(|_, _| ToolValidationDecision::Reject(RunFailure::new("non-zero".to_string())));
     let config = ToolValidationConfig::new()
         .with_cases_per_tool(1)
         .with_validator(validator);

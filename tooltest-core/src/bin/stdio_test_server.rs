@@ -83,4 +83,3 @@ fn tool_stub() -> Tool {
 fn tool_response() -> CallToolResult {
     CallToolResult::structured(json!({ "status": "ok" }))
 }
-

@@ -340,9 +340,8 @@ mod tests {
     use clap::CommandFactory;
     use rmcp::model::{CallToolResult, Content};
     use tooltest_core::{
-        list_tools_http, list_tools_stdio, CoverageReport, CoverageWarning, HttpConfig,
-        RunFailure, RunWarning, RunWarningCode, SchemaConfig, StdioConfig, ToolInvocation,
-        TraceEntry,
+        list_tools_http, list_tools_stdio, CoverageReport, CoverageWarning, HttpConfig, RunFailure,
+        RunWarning, RunWarningCode, SchemaConfig, StdioConfig, ToolInvocation, TraceEntry,
     };
 
     #[test]

@@ -18,11 +18,11 @@ mod corpus;
 mod schema;
 
 pub(crate) use corpus::ValueCorpus;
+use schema::value_matches_type;
 #[allow(unused_imports)]
 pub(crate) use schema::{
     decode_pointer_segment, path_from_pointer, Constraint, ConstraintKind, PathSegment,
 };
-use schema::value_matches_type;
 
 #[cfg(test)]
 #[path = "../../tests/internal/generator_unit_tests.rs"]

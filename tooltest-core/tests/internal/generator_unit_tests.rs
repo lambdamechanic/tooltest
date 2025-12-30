@@ -464,8 +464,7 @@ fn property_strategy_from_corpus_handles_integer_and_number() {
     assert!(!outcome_is_missing_required(&integer_optional));
     assert!(outcome_is_omit(&integer_optional));
 
-    let number_required =
-        property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
+    let number_required = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
     assert!(outcome_is_include(&number_required));
     assert!(!outcome_is_missing_required(&number_required));
 
@@ -535,8 +534,7 @@ fn property_strategy_from_corpus_reports_invalid_numeric_bounds() {
     let integer_outcome =
         property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, false);
     assert!(outcome_is_missing_required(&integer_outcome));
-    let number_outcome =
-        property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
+    let number_outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, false);
     assert!(outcome_is_missing_required(&number_outcome));
 }
 
@@ -557,8 +555,7 @@ fn property_strategy_from_corpus_lenient_invalid_numeric_schema_reports_missing_
         property_strategy_from_corpus(&integer_schema, true, &corpus, &tool, true);
     assert!(outcome_is_missing_required(&integer_outcome));
 
-    let number_outcome =
-        property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
+    let number_outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
     assert!(outcome_is_missing_required(&number_outcome));
 }
 
@@ -876,8 +873,8 @@ fn invocation_strategy_from_corpus_skips_unavailable_tools() {
     );
     let mut corpus = ValueCorpus::default();
     corpus.seed_strings(["alpha".to_string()]);
-    let strategy = invocation_strategy_from_corpus(&[invalid, valid], None, &corpus, false)
-        .expect("strategy");
+    let strategy =
+        invocation_strategy_from_corpus(&[invalid, valid], None, &corpus, false).expect("strategy");
     assert!(strategy.is_some());
 }
 
@@ -956,10 +953,10 @@ fn invocation_from_corpus_for_schema_returns_none_for_missing_required_property(
     let corpus = ValueCorpus::default();
     let schema = tool.input_schema.as_ref();
     let omit_keys = HashSet::new();
-    assert!(invocation_from_corpus_for_schema(
-        &tool, schema, &corpus, false, &omit_keys, false
-    )
-    .is_none());
+    assert!(
+        invocation_from_corpus_for_schema(&tool, schema, &corpus, false, &omit_keys, false)
+            .is_none()
+    );
 }
 
 #[test]
@@ -1089,8 +1086,8 @@ fn input_object_strategy_rejects_invalid_ref() {
         }),
     );
     let schema = tool.input_schema.as_ref();
-    let error = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-        .expect_err("error");
+    let error =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect_err("error");
     #[cfg(coverage)]
     std::hint::black_box(&error);
     #[cfg(not(coverage))]
@@ -1107,8 +1104,8 @@ fn input_object_strategy_rejects_empty_oneof() {
         }),
     );
     let schema = tool.input_schema.as_ref();
-    let error = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-        .expect_err("error");
+    let error =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect_err("error");
     #[cfg(coverage)]
     std::hint::black_box(&error);
     #[cfg(not(coverage))]
@@ -1136,8 +1133,8 @@ fn input_object_strategy_resolves_allof_schema() {
         }),
     );
     let schema = tool.input_schema.as_ref();
-    let strategy = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-        .expect("strategy");
+    let strategy =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect("strategy");
     let object = sample(strategy);
     assert!(object.contains_key("text"));
     assert!(object.contains_key("count"));
@@ -1729,13 +1726,9 @@ fn input_object_strategy_ignores_non_string_ref() {
             "properties": { "text": { "type": "string" } }
         }),
     );
-    let strategy = input_object_strategy_for_schema(
-        tool.input_schema.as_ref(),
-        &tool,
-        false,
-        &HashSet::new(),
-    )
-    .expect("strategy");
+    let strategy =
+        input_object_strategy_for_schema(tool.input_schema.as_ref(), &tool, false, &HashSet::new())
+            .expect("strategy");
     let object = sample(strategy);
     assert!(object.contains_key("text"));
 }
@@ -1816,8 +1809,8 @@ fn input_object_strategy_supports_ref_items_with_oneof_required() {
         }),
     );
     let schema = tool.input_schema.as_ref();
-    let strategy = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-        .expect("strategy");
+    let strategy =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect("strategy");
     let object = sample(strategy);
     let has_vendor = object.contains_key("vendor");
     let has_product = object.contains_key("product");
@@ -1901,12 +1894,8 @@ fn input_object_strategy_anyof_exercises_union_path() {
     any_of.push(JsonValue::Object(required_vendor));
     schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
-    let result = input_object_strategy_for_schema(
-        tool.input_schema.as_ref(),
-        &tool,
-        false,
-        &HashSet::new(),
-    );
+    let result =
+        input_object_strategy_for_schema(tool.input_schema.as_ref(), &tool, false, &HashSet::new());
     std::hint::black_box(&result);
 }
 
@@ -1938,8 +1927,8 @@ fn input_object_strategy_rejects_invalid_union_branch() {
     );
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
     let schema = tool.input_schema.as_ref();
-    let error = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-        .expect_err("error");
+    let error =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect_err("error");
     #[cfg(coverage)]
     std::hint::black_box(&error);
     #[cfg(not(coverage))]

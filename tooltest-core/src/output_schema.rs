@@ -23,15 +23,9 @@ pub(crate) fn compile_output_schema(schema: &JsonObject) -> Result<Validator, St
     match schema_id {
         DRAFT202012 => draft202012::new(&schema_value).map_err(|error| error.to_string()),
         DRAFT201909 => draft201909::new(&schema_value).map_err(|error| error.to_string()),
-        DRAFT7_HTTP | DRAFT7_HTTPS => {
-            draft7::new(&schema_value).map_err(|error| error.to_string())
-        }
-        DRAFT6_HTTP | DRAFT6_HTTPS => {
-            draft6::new(&schema_value).map_err(|error| error.to_string())
-        }
-        DRAFT4_HTTP | DRAFT4_HTTPS => {
-            draft4::new(&schema_value).map_err(|error| error.to_string())
-        }
+        DRAFT7_HTTP | DRAFT7_HTTPS => draft7::new(&schema_value).map_err(|error| error.to_string()),
+        DRAFT6_HTTP | DRAFT6_HTTPS => draft6::new(&schema_value).map_err(|error| error.to_string()),
+        DRAFT4_HTTP | DRAFT4_HTTPS => draft4::new(&schema_value).map_err(|error| error.to_string()),
         other => Err(format!("unknown output schema version: {other}")),
     }
 }

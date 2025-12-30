@@ -21,13 +21,13 @@ pub use listing::{list_tools_http, list_tools_stdio, list_tools_with_session, Li
 mod tests;
 
 #[cfg(test)]
-use validators::{apply_validators, default_validator, output_schema_validator};
-#[cfg(test)]
-use listing::list_tools_with_connector;
+use crate::SchemaError;
 #[cfg(test)]
 use crate::{HttpConfig, SchemaConfig, StdioConfig};
 #[cfg(test)]
-use crate::SchemaError;
+use listing::list_tools_with_connector;
+#[cfg(test)]
+use validators::{apply_validators, default_validator, output_schema_validator};
 
 const DEFAULT_CASES_PER_TOOL: usize = 50;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_CASES_PER_TOOL";
@@ -154,7 +154,6 @@ impl From<SessionError> for ToolValidationError {
         ToolValidationError::Session(error)
     }
 }
-
 
 /// Validates tools by name, or all tools when no name list is provided.
 pub async fn validate_tools(

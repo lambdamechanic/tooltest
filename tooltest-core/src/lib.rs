@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value as JsonValue};
 
 mod generator;
-mod runner;
 mod output_schema;
+mod runner;
 pub mod schema;
 pub mod session;
 mod validation;

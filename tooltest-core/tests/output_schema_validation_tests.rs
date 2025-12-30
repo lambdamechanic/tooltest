@@ -1,8 +1,8 @@
 use rmcp::model::CallToolResult;
 use serde_json::json;
 use tooltest_core::{
-    list_tools_with_session, RunConfig, RunOutcome, RunnerOptions, SchemaConfig, SessionDriver,
-    ToolValidationConfig, ToolValidationError, validate_tool,
+    list_tools_with_session, validate_tool, RunConfig, RunOutcome, RunnerOptions, SchemaConfig,
+    SessionDriver, ToolValidationConfig, ToolValidationError,
 };
 use tooltest_test_support::{tool_with_schemas, ListToolsTransport, RunnerTransport};
 
@@ -87,7 +87,10 @@ async fn tool_validation_rejects_unknown_output_schema_version() {
 
     match result {
         Err(ToolValidationError::ValidationFailed(failure)) => {
-            assert!(failure.failure.reason.contains("unknown output schema version"));
+            assert!(failure
+                .failure
+                .reason
+                .contains("unknown output schema version"));
         }
         other => panic!("unexpected result: {other:?}"),
     }
@@ -106,7 +109,9 @@ async fn list_tools_session_validates_schema() {
         None,
     );
     let transport = ListToolsTransport::new(vec![tool]);
-    let driver = connect_list_tools_transport(transport).await.expect("connect");
+    let driver = connect_list_tools_transport(transport)
+        .await
+        .expect("connect");
 
     let result = list_tools_with_session(&driver, &SchemaConfig::default()).await;
     assert!(result.is_err());

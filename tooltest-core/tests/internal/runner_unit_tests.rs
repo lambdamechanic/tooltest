@@ -1,15 +1,11 @@
 use super::*;
-use crate::generator::{
-    clear_reject_context, set_reject_context_for_test, StateMachineSequence,
-};
+use crate::generator::{clear_reject_context, set_reject_context_for_test, StateMachineSequence};
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, RunWarningCode,
     SchemaConfig, SequenceAssertion, SessionError, StateMachineConfig, ToolPredicate,
 };
-use rmcp::model::{
-    CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents,
-};
+use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents};
 use rmcp::transport::Transport;
 use serde_json::{json, Number};
 use std::collections::BTreeMap;
@@ -21,11 +17,7 @@ fn outcome_is_success(outcome: &RunOutcome) -> bool {
     matches!(outcome, RunOutcome::Success)
 }
 
-fn trace_entry_with(
-    name: &str,
-    args: Option<JsonValue>,
-    response: CallToolResult,
-) -> TraceEntry {
+fn trace_entry_with(name: &str, args: Option<JsonValue>, response: CallToolResult) -> TraceEntry {
     TraceEntry::tool_call_with_response(
         ToolInvocation {
             name: name.to_string().into(),
@@ -270,8 +262,7 @@ fn apply_response_assertions_handles_empty_rules() {
     );
     let assertions = AssertionSet::default();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_response_assertions(&assertions, invocation, response.expect("response"));
+    let result = apply_response_assertions(&assertions, invocation, response.expect("response"));
     assert!(result.is_none());
 }
 
@@ -293,8 +284,7 @@ fn apply_response_assertions_reports_pointer_missing() {
         })],
     };
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_response_assertions(&assertions, invocation, response.expect("response"));
+    let result = apply_response_assertions(&assertions, invocation, response.expect("response"));
     assert!(result.is_some());
 }
 
@@ -316,8 +306,7 @@ fn apply_response_assertions_reports_value_mismatch() {
         })],
     };
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_response_assertions(&assertions, invocation, response.expect("response"));
+    let result = apply_response_assertions(&assertions, invocation, response.expect("response"));
     assert!(result.is_some());
 }
 
@@ -339,8 +328,7 @@ fn apply_response_assertions_skips_tool_mismatch() {
         })],
     };
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_response_assertions(&assertions, invocation, response.expect("response"));
+    let result = apply_response_assertions(&assertions, invocation, response.expect("response"));
     assert!(result.is_none());
 }
 
@@ -362,8 +350,7 @@ fn apply_response_assertions_supports_unscoped_rules() {
         })],
     };
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_response_assertions(&assertions, invocation, response.expect("response"));
+    let result = apply_response_assertions(&assertions, invocation, response.expect("response"));
     assert!(result.is_none());
 }
 
@@ -384,8 +371,7 @@ fn apply_response_assertions_skips_non_response_rules() {
         })],
     };
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_response_assertions(&assertions, invocation, response.expect("response"));
+    let result = apply_response_assertions(&assertions, invocation, response.expect("response"));
     assert!(result.is_none());
 }
 
@@ -811,8 +797,7 @@ async fn execute_sequence_succeeds_with_empty_sequence() {
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
 
-    let result =
-        execute_sequence(&session, &BTreeMap::new(), &AssertionSet::default(), &[]).await;
+    let result = execute_sequence(&session, &BTreeMap::new(), &AssertionSet::default(), &[]).await;
 
     let trace = result.expect("expected success");
     assert!(trace.is_empty());
@@ -1005,8 +990,7 @@ async fn run_with_session_state_machine_min_calls_per_tool_failure() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_state_machine_no_uncalled_tools_failure() {
-    let tool_a =
-        tool_with_schemas("alpha", json!({ "type": "object", "properties": {} }), None);
+    let tool_a = tool_with_schemas("alpha", json!({ "type": "object", "properties": {} }), None);
     let tool_b = tool_with_schemas("beta", json!({ "type": "object", "properties": {} }), None);
     let response = CallToolResult::structured(json!({ "value": 1 }));
     let transport = RunnerTransport::new_with_tools(vec![tool_a, tool_b], response);
@@ -1695,8 +1679,7 @@ fn coverage_tracker_skips_blocklisted_tools() {
         }),
         None,
     )];
-    let config =
-        StateMachineConfig::default().with_coverage_blocklist(vec!["echo".to_string()]);
+    let config = StateMachineConfig::default().with_coverage_blocklist(vec!["echo".to_string()]);
     let tracker = CoverageTracker::new(&tools, &config);
     let warnings = tracker.build_warnings();
     assert!(warnings.is_empty());
@@ -1722,8 +1705,7 @@ fn coverage_tracker_build_warnings_respects_blocklist() {
         }),
         None,
     );
-    let config =
-        StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
+    let config = StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
     let tracker = CoverageTracker::new(&tools, &config);
 
@@ -1757,8 +1739,7 @@ fn coverage_tracker_respects_allowlist_for_warnings() {
         }),
         None,
     );
-    let config =
-        StateMachineConfig::default().with_coverage_allowlist(vec!["alpha".to_string()]);
+    let config = StateMachineConfig::default().with_coverage_allowlist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
     let tracker = CoverageTracker::new(&tools, &config);
 
@@ -1956,8 +1937,7 @@ fn coverage_tracker_skips_percent_called_when_no_callable_tools() {
 fn eligible_tools_respects_allowlist() {
     let alpha = tool_with_schemas("alpha", json!({ "type": "object" }), None);
     let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
-    let config =
-        StateMachineConfig::default().with_coverage_allowlist(vec!["alpha".to_string()]);
+    let config = StateMachineConfig::default().with_coverage_allowlist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
     let tracker = CoverageTracker::new(&tools, &config);
     let eligible = tracker.eligible_tools();
@@ -1969,8 +1949,7 @@ fn eligible_tools_respects_allowlist() {
 fn eligible_tools_respects_blocklist() {
     let alpha = tool_with_schemas("alpha", json!({ "type": "object" }), None);
     let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
-    let config =
-        StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
+    let config = StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
     let tracker = CoverageTracker::new(&tools, &config);
     let eligible = tracker.eligible_tools();

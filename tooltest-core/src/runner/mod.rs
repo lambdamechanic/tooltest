@@ -13,9 +13,9 @@ use crate::generator::{
     state_machine_sequence_strategy, take_reject_context, StateMachineSequence,
 };
 use crate::{
-    AssertionSet, CorpusReport, CoverageReport, HttpConfig, MinimizedSequence,
-    RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, SessionDriver, StdioConfig,
-    ToolInvocation, TraceEntry,
+    AssertionSet, CorpusReport, CoverageReport, HttpConfig, MinimizedSequence, RunConfig,
+    RunFailure, RunOutcome, RunResult, RunWarning, SessionDriver, StdioConfig, ToolInvocation,
+    TraceEntry,
 };
 
 mod assertions;
@@ -34,17 +34,17 @@ use coverage::{coverage_failure, CoverageTracker};
 use schema::{build_output_validators, collect_schema_warnings, validate_tools};
 
 #[cfg(test)]
-use coverage::map_uncallable_reason;
+use crate::generator::UncallableReason;
 #[cfg(test)]
-use assertions::{AssertionPayloads, evaluate_checks};
+use assertions::{evaluate_checks, AssertionPayloads};
+#[cfg(test)]
+use coverage::map_uncallable_reason;
 #[cfg(test)]
 use jsonschema::draft202012;
 #[cfg(test)]
-use serde_json::Value as JsonValue;
-#[cfg(test)]
 use schema::collect_schema_keyword_warnings;
 #[cfg(test)]
-use crate::generator::UncallableReason;
+use serde_json::Value as JsonValue;
 
 /// Configuration for proptest-driven run behavior.
 #[derive(Clone, Debug)]

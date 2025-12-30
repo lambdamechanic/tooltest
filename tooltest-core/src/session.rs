@@ -131,4 +131,3 @@ fn build_http_transport(
 
     StreamableHttpClientTransport::from_config(http_transport_config(config))
 }
-

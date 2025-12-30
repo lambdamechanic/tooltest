@@ -338,10 +338,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use clap::CommandFactory;
-    use rmcp::model::{CallToolResult, Content};
+    use rmcp::model::{
+        CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ListPromptsRequest,
+        NumberOrString, PaginatedRequestParam, Tool,
+    };
+    use rmcp::transport::Transport;
+    use std::sync::Arc;
     use tooltest_core::{
-        CoverageReport, CoverageWarning, RunFailure, RunWarning, RunWarningCode, ToolInvocation,
-        TraceEntry,
+        list_tools_http, list_tools_stdio, list_tools_with_session, CoverageReport,
+        CoverageWarning, HttpConfig, ListToolsError, RunFailure, RunWarning, RunWarningCode,
+        SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
+    };
+    use tooltest_test_support::{
+        stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
     };
 
     #[test]
@@ -444,6 +453,110 @@ mod tests {
             corpus: None,
         };
         assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn list_tools_helpers_report_errors_in_cli_tests() {
+        let http = HttpConfig {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        };
+        assert!(list_tools_http(&http, &SchemaConfig::default())
+            .await
+            .is_err());
+
+        let missing = std::env::temp_dir().join("tooltest-missing-stdio");
+        let stdio = StdioConfig::new(missing.display().to_string());
+        assert!(list_tools_stdio(&stdio, &SchemaConfig::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_session_reports_tools_in_cli_tests() {
+        let tool = stub_tool("echo");
+        let transport = ListToolsTransport::new(vec![tool]);
+        let driver = SessionDriver::connect_with_transport::<
+            ListToolsTransport,
+            std::convert::Infallible,
+            rmcp::transport::TransportAdapterIdentity,
+        >(transport)
+        .await
+        .expect("connect");
+
+        let tools = list_tools_with_session(&driver, &SchemaConfig::default())
+            .await
+            .expect("tools");
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_session_reports_errors_in_cli_tests() {
+        let transport = FaultyListToolsTransport::default();
+        let driver = SessionDriver::connect_with_transport::<
+            FaultyListToolsTransport,
+            TransportError,
+            rmcp::transport::TransportAdapterIdentity,
+        >(transport)
+        .await
+        .expect("connect");
+
+        let session_error = list_tools_with_session(&driver, &SchemaConfig::default())
+            .await
+            .expect_err("list tools error");
+
+        let mut input_schema = serde_json::Map::new();
+        input_schema.insert("type".to_string(), serde_json::Value::Bool(false));
+        let tool = Tool {
+            name: "bad".to_string().into(),
+            title: None,
+            description: None,
+            input_schema: Arc::new(input_schema),
+            output_schema: None,
+            annotations: None,
+            icons: None,
+            meta: None,
+        };
+        let transport = ListToolsTransport::new(vec![tool]);
+        let driver = SessionDriver::connect_with_transport::<
+            ListToolsTransport,
+            std::convert::Infallible,
+            rmcp::transport::TransportAdapterIdentity,
+        >(transport)
+        .await
+        .expect("connect");
+
+        let schema_error = list_tools_with_session(&driver, &SchemaConfig::default())
+            .await
+            .expect_err("schema error");
+        let mut saw_session = false;
+        let mut saw_schema = false;
+
+        for error in [session_error, schema_error] {
+            match error {
+                ListToolsError::Session(_) => saw_session = true,
+                ListToolsError::Schema(_) => saw_schema = true,
+            }
+        }
+
+        assert!(saw_session && saw_schema);
+    }
+
+    #[tokio::test]
+    async fn faulty_list_tools_transport_handles_unhandled_request_and_close_in_cli_tests() {
+        let mut transport = FaultyListToolsTransport::default();
+        let request = ClientJsonRpcMessage::request(
+            ClientRequest::ListPromptsRequest(ListPromptsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(1),
+        );
+
+        transport.send(request).await.expect("send");
+        transport.close().await.expect("close");
+        assert_eq!(TransportError("boom").to_string(), "boom");
     }
 
     #[test]

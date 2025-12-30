@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value as JsonValue};
 
 mod generator;
+mod output_schema;
 mod runner;
 pub mod schema;
 pub mod session;
@@ -25,12 +26,13 @@ pub use schema::{
 };
 pub use session::{SessionDriver, SessionError};
 pub use validation::{
-    list_tools_http, list_tools_stdio, validate_tool, validate_tools, BulkToolValidationSummary,
-    ToolValidationConfig, ToolValidationDecision, ToolValidationError, ToolValidationFailure,
-    ToolValidationFn,
+    list_tools_http, list_tools_stdio, list_tools_with_session, validate_tool, validate_tools,
+    BulkToolValidationSummary, ListToolsError, ToolValidationConfig, ToolValidationDecision,
+    ToolValidationError, ToolValidationFailure, ToolValidationFn,
 };
 
 #[cfg(test)]
+#[path = "../tests/internal/mod.rs"]
 mod tests;
 
 /// Schema versions supported by the tooltest core.

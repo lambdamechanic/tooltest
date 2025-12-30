@@ -127,6 +127,73 @@ impl Transport<RoleClient> for ListToolsTransport {
     }
 }
 
+#[derive(Debug)]
+pub struct TransportError(pub &'static str);
+
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for TransportError {}
+
+pub struct FaultyListToolsTransport {
+    responses: Arc<AsyncMutex<mpsc::UnboundedReceiver<ServerJsonRpcMessage>>>,
+    response_tx: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+}
+
+impl FaultyListToolsTransport {
+    pub fn new() -> Self {
+        let (response_tx, response_rx) = mpsc::unbounded_channel();
+        Self {
+            responses: Arc::new(AsyncMutex::new(response_rx)),
+            response_tx,
+        }
+    }
+}
+
+impl Default for FaultyListToolsTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Transport<RoleClient> for FaultyListToolsTransport {
+    type Error = TransportError;
+
+    fn send(
+        &mut self,
+        item: ClientJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let response_tx = self.response_tx.clone();
+        if let JsonRpcMessage::Request(request) = &item {
+            match &request.request {
+                ClientRequest::InitializeRequest(_) => {
+                    let _ = response_tx.send(init_response(request.id.clone()));
+                }
+                ClientRequest::ListToolsRequest(_) => {
+                    return std::future::ready(Err(TransportError("list tools")));
+                }
+                _ => {}
+            }
+        }
+        std::future::ready(Ok(()))
+    }
+
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<ServerJsonRpcMessage>> {
+        let responses = Arc::clone(&self.responses);
+        async move {
+            let mut receiver = responses.lock().await;
+            receiver.recv().await
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 pub struct RunnerTransport {
     tools: Vec<Tool>,
     response: CallToolResult,

@@ -15,7 +15,7 @@ The project currently runs CI on pushes to main and PRs. It does not publish a s
   - Rationale: Provides durable URLs without introducing versioned releases.
 - Decision: Build a matrix for linux-x86_64, linux-aarch64, macos-arm64, and windows-x86_64.
   - Rationale: Matches the requested "most important" targets.
-- Decision: Keep workflow artifacts for history with a configurable retention period (default to 90 days unless specified).
+- Decision: Keep workflow artifacts for history with a configurable retention period (default to 30 days).
   - Rationale: Workflow artifacts are short-lived, but sufficient for recent history.
 - Decision: Provide a `curl | bash` installer that detects OS/arch and fetches the matching `latest` asset, plus direct URLs for manual downloads.
   - Rationale: Meets usability needs while keeping direct download options.
@@ -30,4 +30,4 @@ The project currently runs CI on pushes to main and PRs. It does not publish a s
 - Validate the workflow by merging to main and verifying the release assets.
 
 ## Open Questions
-- Confirm retention policy for workflow artifacts (90 days default vs shorter).
+- None.

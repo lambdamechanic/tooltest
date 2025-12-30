@@ -46,16 +46,31 @@ else
 fi
 
 url="https://github.com/${REPO}/releases/download/latest/${asset}"
+checksum_url="${url}.sha256"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "${url}" -o "${tmp_dir}/${binary_name}"
+  curl -fsSL "${url}" -o "${tmp_dir}/${asset}"
+  curl -fsSL "${checksum_url}" -o "${tmp_dir}/${asset}.sha256" || true
 elif command -v wget >/dev/null 2>&1; then
-  wget -q "${url}" -O "${tmp_dir}/${binary_name}"
+  wget -q "${url}" -O "${tmp_dir}/${asset}"
+  wget -q "${checksum_url}" -O "${tmp_dir}/${asset}.sha256" || true
 else
   echo "curl or wget is required to download ${asset}" >&2
   exit 1
+fi
+
+if [ -f "${tmp_dir}/${asset}.sha256" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "${tmp_dir}" && sha256sum -c "${asset}.sha256")
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "${tmp_dir}" && shasum -a 256 -c "${asset}.sha256")
+  else
+    echo "Checksum verification skipped (sha256sum/shasum not found)." >&2
+  fi
+else
+  echo "Checksum file not found; skipping verification." >&2
 fi
 
 mkdir -p "${INSTALL_DIR}"
@@ -66,7 +81,7 @@ if [ ! -w "${INSTALL_DIR}" ]; then
 fi
 
 install_path="${INSTALL_DIR}/${binary_name}"
-mv "${tmp_dir}/${binary_name}" "${install_path}"
+mv "${tmp_dir}/${asset}" "${install_path}"
 chmod +x "${install_path}"
 
 echo "Installed ${binary_name} to ${install_path}"

@@ -21,6 +21,8 @@ Latest prebuilt binaries (auto-detect OS/arch):
 curl -fsSL https://raw.githubusercontent.com/lambdamechanic/tooltest/main/install.sh | bash
 ```
 
+The installer verifies downloaded binaries against the `*.sha256` checksums when `sha256sum` or `shasum` is available.
+
 Optionally set an install directory (default `/usr/local/bin`, fallback to `~/.local/bin`):
 
 ```bash

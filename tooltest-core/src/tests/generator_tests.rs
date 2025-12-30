@@ -1573,7 +1573,7 @@ fn schema_violations_rejects_oneof_miss() {
 }
 
 #[test]
-fn schema_violations_accepts_oneof_multiple_matches() {
+fn schema_violations_rejects_oneof_multiple_matches() {
     let schema = json!({
         "oneOf": [
             { "type": "string", "minLength": 2 },
@@ -1582,7 +1582,9 @@ fn schema_violations_accepts_oneof_multiple_matches() {
     });
     let value = json!("aa");
     let violations = schema_violations(schema.as_object().expect("schema object"), &value);
-    assert!(violations.is_empty());
+    assert!(violations
+        .iter()
+        .any(|violation| matches!(violation.kind, ConstraintKind::OneOfMatches(2))));
 }
 
 #[test]

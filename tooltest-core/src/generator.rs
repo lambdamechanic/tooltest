@@ -76,6 +76,8 @@ pub(crate) enum ConstraintKind {
     Const(JsonValue),
     Enum(Vec<JsonValue>),
     Type(String),
+    OneOfMatches(usize),
+    Schema(String),
     MinLength(usize),
     MaxLength(usize),
     Pattern(String),
@@ -1688,61 +1690,88 @@ fn collect_violations_inner(
         return;
     }
 
-    if let Some(one_of) = schema_oneof_branches(schema) {
-        let base = schema_without_oneof(schema);
-        let mut base_violations = schema_violations_inner(&base, value, root);
-        if !base_violations.is_empty() {
-            violations.append(&mut base_violations);
-            return;
-        }
-        let mut matches = 0;
-        let mut best: Option<Vec<Constraint>> = None;
-        for branch in &one_of {
-            let branch_violations = schema_violations_inner(branch, value, root);
-            if branch_violations.is_empty() {
-                matches += 1;
-                continue;
-            }
-            let is_better = best
-                .as_ref()
-                .map(|current| branch_violations.len() < current.len())
-                .unwrap_or(true);
-            if is_better {
-                best = Some(branch_violations);
-            }
-        }
-        if matches >= 1 {
-            return;
-        }
-        let mut best = best.expect("oneOf branches must yield a best violation set");
-        violations.append(&mut best);
-        return;
-    }
-
-    if let Some(any_of) = schema_anyof_branches(schema) {
-        let base = schema_without_anyof(schema);
-        let mut base_violations = schema_violations_inner(&base, value, root);
-        if !base_violations.is_empty() {
-            violations.append(&mut base_violations);
-            return;
-        }
-        let mut best: Option<Vec<Constraint>> = None;
-        for branch in &any_of {
-            let branch_violations = schema_violations_inner(branch, value, root);
-            if branch_violations.is_empty() {
+    match schema_oneof_branches(schema) {
+        Ok(Some(one_of)) => {
+            let base = schema_without_oneof(schema);
+            let mut base_violations = schema_violations_inner(&base, value, root);
+            if !base_violations.is_empty() {
+                violations.append(&mut base_violations);
                 return;
             }
-            let is_better = best
-                .as_ref()
-                .map(|current| branch_violations.len() < current.len())
-                .unwrap_or(true);
-            if is_better {
-                best = Some(branch_violations);
+            let mut matches = 0;
+            let mut best: Option<Vec<Constraint>> = None;
+            for branch in &one_of {
+                let branch_violations = schema_violations_inner(branch, value, root);
+                if branch_violations.is_empty() {
+                    matches += 1;
+                    continue;
+                }
+                let is_better = best
+                    .as_ref()
+                    .map(|current| branch_violations.len() < current.len())
+                    .unwrap_or(true);
+                if is_better {
+                    best = Some(branch_violations);
+                }
             }
+            if matches == 1 {
+                return;
+            }
+            if matches > 1 {
+                violations.push(Constraint {
+                    path: nonempty_path(path),
+                    kind: ConstraintKind::OneOfMatches(matches),
+                });
+                return;
+            }
+            let mut best = best.expect("oneOf branches must yield a best violation set");
+            violations.append(&mut best);
+            return;
         }
-        let mut best = best.expect("anyOf branches must yield a best violation set");
-        violations.append(&mut best);
-        return;
+        Ok(None) => {}
+        Err(reason) => {
+            violations.push(Constraint {
+                path: nonempty_path(path),
+                kind: ConstraintKind::Schema(reason),
+            });
+            return;
+        }
+    }
+
+    match schema_anyof_branches(schema) {
+        Ok(Some(any_of)) => {
+            let base = schema_without_anyof(schema);
+            let mut base_violations = schema_violations_inner(&base, value, root);
+            if !base_violations.is_empty() {
+                violations.append(&mut base_violations);
+                return;
+            }
+            let mut best: Option<Vec<Constraint>> = None;
+            for branch in &any_of {
+                let branch_violations = schema_violations_inner(branch, value, root);
+                if branch_violations.is_empty() {
+                    return;
+                }
+                let is_better = best
+                    .as_ref()
+                    .map(|current| branch_violations.len() < current.len())
+                    .unwrap_or(true);
+                if is_better {
+                    best = Some(branch_violations);
+                }
+            }
+            let mut best = best.expect("anyOf branches must yield a best violation set");
+            violations.append(&mut best);
+            return;
+        }
+        Ok(None) => {}
+        Err(reason) => {
+            violations.push(Constraint {
+                path: nonempty_path(path),
+                kind: ConstraintKind::Schema(reason),
+            });
+            return;
+        }
     }
 
     if let Some(type_union) = schema_type_union_branches(schema) {
@@ -1914,34 +1943,44 @@ fn schema_violations_inner(
     violations
 }
 
-fn schema_anyof_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
-    let JsonValue::Array(any_of) = schema.get("anyOf")? else {
-        return None;
+fn schema_anyof_branches(schema: &JsonObject) -> Result<Option<Vec<JsonObject>>, String> {
+    let Some(value) = schema.get("anyOf") else {
+        return Ok(None);
+    };
+    let JsonValue::Array(any_of) = value else {
+        return Err("anyOf must be an array".to_string());
     };
     if any_of.is_empty() {
-        return None;
+        return Err("anyOf must include at least one schema object".to_string());
     }
     let mut branches = Vec::with_capacity(any_of.len());
-    for value in any_of {
-        let schema_object = value.as_object()?;
+    for (idx, value) in any_of.iter().enumerate() {
+        let schema_object = value
+            .as_object()
+            .ok_or_else(|| format!("anyOf[{idx}] schema must be an object"))?;
         branches.push(schema_object.clone());
     }
-    Some(branches)
+    Ok(Some(branches))
 }
 
-fn schema_oneof_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
-    let JsonValue::Array(one_of) = schema.get("oneOf")? else {
-        return None;
+fn schema_oneof_branches(schema: &JsonObject) -> Result<Option<Vec<JsonObject>>, String> {
+    let Some(value) = schema.get("oneOf") else {
+        return Ok(None);
+    };
+    let JsonValue::Array(one_of) = value else {
+        return Err("oneOf must be an array".to_string());
     };
     if one_of.is_empty() {
-        return None;
+        return Err("oneOf must include at least one schema object".to_string());
     }
     let mut branches = Vec::with_capacity(one_of.len());
-    for value in one_of {
-        let schema_object = value.as_object()?;
+    for (idx, value) in one_of.iter().enumerate() {
+        let schema_object = value
+            .as_object()
+            .ok_or_else(|| format!("oneOf[{idx}] schema must be an object"))?;
         branches.push(schema_object.clone());
     }
-    Some(branches)
+    Ok(Some(branches))
 }
 
 fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
@@ -3793,35 +3832,42 @@ mod tests {
     }
 
     #[test]
-    fn schema_branch_helpers_return_none_for_missing_or_empty_arrays() {
+    fn schema_branch_helpers_return_none_for_missing_arrays() {
         let schema = json!({ "type": "object" })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_anyof_branches(&schema).is_none());
-        assert!(schema_oneof_branches(&schema).is_none());
+        assert!(schema_anyof_branches(&schema).unwrap().is_none());
+        assert!(schema_oneof_branches(&schema).unwrap().is_none());
         assert!(schema_type_union_branches(&schema).is_none());
+    }
 
+    #[test]
+    fn schema_branch_helpers_return_errors_for_empty_arrays() {
         let schema = json!({ "anyOf": [] }).as_object().cloned().expect("schema");
-        assert!(schema_anyof_branches(&schema).is_none());
+        let err = schema_anyof_branches(&schema).expect_err("anyOf error");
+        assert_eq!(err, "anyOf must include at least one schema object");
         let schema = json!({ "oneOf": [] }).as_object().cloned().expect("schema");
-        assert!(schema_oneof_branches(&schema).is_none());
+        let err = schema_oneof_branches(&schema).expect_err("oneOf error");
+        assert_eq!(err, "oneOf must include at least one schema object");
         let schema = json!({ "type": [] }).as_object().cloned().expect("schema");
         assert!(schema_type_union_branches(&schema).is_none());
     }
 
     #[test]
-    fn schema_branch_helpers_return_none_for_non_object_entries() {
+    fn schema_branch_helpers_return_errors_for_non_object_entries() {
         let schema = json!({ "anyOf": [true] })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_anyof_branches(&schema).is_none());
+        let err = schema_anyof_branches(&schema).expect_err("anyOf error");
+        assert_eq!(err, "anyOf[0] schema must be an object");
         let schema = json!({ "oneOf": [1] })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_oneof_branches(&schema).is_none());
+        let err = schema_oneof_branches(&schema).expect_err("oneOf error");
+        assert_eq!(err, "oneOf[0] schema must be an object");
     }
 
     #[test]
@@ -3839,13 +3885,13 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        assert_eq!(schema_anyof_branches(&schema).unwrap().len(), 1);
+        assert_eq!(schema_anyof_branches(&schema).unwrap().unwrap().len(), 1);
 
         let schema = json!({ "oneOf": [ { "type": "number" } ] })
             .as_object()
             .cloned()
             .expect("schema");
-        assert_eq!(schema_oneof_branches(&schema).unwrap().len(), 1);
+        assert_eq!(schema_oneof_branches(&schema).unwrap().unwrap().len(), 1);
 
         let schema = json!({ "type": ["string", "number"] })
             .as_object()
@@ -4250,13 +4296,15 @@ mod tests {
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_anyof_branches(&schema).is_none());
+        let err = schema_anyof_branches(&schema).expect_err("anyOf error");
+        assert_eq!(err, "anyOf must be an array");
 
         let schema = json!({ "oneOf": "nope" })
             .as_object()
             .cloned()
             .expect("schema");
-        assert!(schema_oneof_branches(&schema).is_none());
+        let err = schema_oneof_branches(&schema).expect_err("oneOf error");
+        assert_eq!(err, "oneOf must be an array");
     }
 
     #[test]

@@ -523,6 +523,35 @@ async fn run_with_session_excludes_error_responses_from_coverage() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_session_error() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response).with_call_tool_error(ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        "call failed",
+        None,
+    ));
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let result = tooltest_core::run_with_session(
+        &driver,
+        &RunConfig::new(),
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert!(failure.reason.contains("session error"));
+        }
+        _ => panic!("expected failure"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_list_tools_error() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);

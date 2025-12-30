@@ -97,6 +97,12 @@ fn state_machine_config_sets_log_corpus_deltas() {
 }
 
 #[test]
+fn state_machine_config_sets_mine_text() {
+    let config = StateMachineConfig::default().with_mine_text(true);
+    assert!(config.mine_text);
+}
+
+#[test]
 fn coverage_rule_no_uncalled_tools_builder() {
     let rule = CoverageRule::no_uncalled_tools();
     assert!(matches!(rule, CoverageRule::NoUncalledTools));

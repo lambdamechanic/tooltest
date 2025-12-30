@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "$defs": {
+    "relatedCvesBase": {
+      "type": "object",
+      "properties": {
+        "vendor": {
+          "type": "string",
+          "description": "Vendor name to find related CVEs"
+        },
+        "product": {
+          "type": "string",
+          "description": "Product name to find related CVEs"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Maximum number of results to return (default: 20)"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "cveID",
+              "vendorProject",
+              "product",
+              "vulnerabilityName",
+              "dateAdded",
+              "shortDescription",
+              "requiredAction",
+              "dueDate",
+              "knownRansomwareCampaignUse",
+              "cwes",
+              "notes"
+            ]
+          },
+          "description": "Array of fields to include in response (default: ['cveID', 'vendorProject', 'product', 'vulnerabilityName', 'dateAdded']). Available fields: cveID, vendorProject, product, vulnerabilityName, dateAdded, shortDescription, requiredAction, dueDate, knownRansomwareCampaignUse, cwes, notes"
+        }
+      },
+      "additionalProperties": false
+    },
+    "relatedCvesVendor": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/relatedCvesBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "vendor"
+          ]
+        }
+      ]
+    },
+    "relatedCvesProduct": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/relatedCvesBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "product"
+          ]
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/relatedCvesVendor"
+    },
+    {
+      "$ref": "#/$defs/relatedCvesProduct"
+    }
+  ]
+}

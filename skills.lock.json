@@ -54,7 +54,17 @@
       "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
       "digest": "sha256:63c89e30e6f8e508c2c1d864b257b35551860324f406286db928b354f948462a",
       "installedAt": "2025-12-21T06:16:47.122277870+00:00"
+    },
+    {
+      "installName": "galahad",
+      "source": {
+        "repoKey": "github.com/lambdamechanic/skills",
+        "skillPath": "galahad"
+      },
+      "commit": "509fc6aae0c2daa6bcb2d65fc7908f77a307734a",
+      "digest": "sha256:b31dd800f1ce006dd354ceace83ef202a1840f73ac0041bad8d5802a51b3a873",
+      "installedAt": "2025-12-30T11:04:57.691441996+00:00"
     }
   ],
-  "generatedAt": "2025-12-21T06:16:47.122331290+00:00"
+  "generatedAt": "2025-12-30T11:04:57.691445054+00:00"
 }

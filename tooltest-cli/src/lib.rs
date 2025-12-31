@@ -10,6 +10,8 @@ use tooltest_core::{
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
 };
 
+pub mod test_server;
+
 #[derive(Parser)]
 #[command(name = "tooltest", version, about = "CLI wrapper for tooltest-core")]
 pub struct Cli {

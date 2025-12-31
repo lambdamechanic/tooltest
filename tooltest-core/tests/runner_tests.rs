@@ -68,7 +68,13 @@ impl HttpTestServer {
 }
 
 fn stdio_server_config() -> Option<StdioConfig> {
-    option_env!("CARGO_BIN_EXE_stdio_test_server").map(StdioConfig::new)
+    option_env!("CARGO_BIN_EXE_stdio_test_server").map(|server| {
+        let mut config = StdioConfig::new(server);
+        config
+            .env
+            .insert("LLVM_PROFILE_FILE".to_string(), "/dev/null".to_string());
+        config
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]

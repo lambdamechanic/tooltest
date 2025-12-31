@@ -11,6 +11,7 @@ stdio-test-server = ["dep:tooltest-test-support"]
 name = "stdio_test_server"
 path = "src/bin/stdio_test_server.rs"
 required-features = ["stdio-test-server"]
+test = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

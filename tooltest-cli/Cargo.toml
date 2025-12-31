@@ -7,6 +7,7 @@ license = "MIT"
 [[bin]]
 name = "tooltest"
 path = "src/main.rs"
+test = false
 
 [features]
 cli-test-server = []
@@ -14,6 +15,7 @@ cli-test-server = []
 [[bin]]
 name = "tooltest_cli_test_server"
 path = "src/bin/tooltest_cli_test_server.rs"
+test = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -1,14 +1,14 @@
-use rmcp::model::CallToolResult;
-use serde_json::json;
-use tooltest_core::{
+use crate::{
     list_tools_with_session, validate_tool, RunConfig, RunOutcome, RunnerOptions, SchemaConfig,
     SessionDriver, ToolValidationConfig, ToolValidationError,
 };
+use rmcp::model::CallToolResult;
+use serde_json::json;
 use tooltest_test_support::{tool_with_schemas, ListToolsTransport, RunnerTransport};
 
 async fn connect_runner_transport(
     transport: RunnerTransport,
-) -> Result<SessionDriver, tooltest_core::SessionError> {
+) -> Result<SessionDriver, crate::SessionError> {
     SessionDriver::connect_with_transport::<
         RunnerTransport,
         std::convert::Infallible,
@@ -19,7 +19,7 @@ async fn connect_runner_transport(
 
 async fn connect_list_tools_transport(
     transport: ListToolsTransport,
-) -> Result<SessionDriver, tooltest_core::SessionError> {
+) -> Result<SessionDriver, crate::SessionError> {
     SessionDriver::connect_with_transport::<
         ListToolsTransport,
         std::convert::Infallible,
@@ -46,7 +46,7 @@ async fn run_rejects_unknown_output_schema_version() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {

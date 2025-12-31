@@ -1,2 +1,5 @@
 [env]
 LLVM_COV_FLAGS = "--ignore-filename-regex=/tests/"
+
+[alias]
+llvm-cov-excl = "llvm-cov --workspace --exclude tooltest-test-support --ignore-filename-regex tooltest-test-support/"

@@ -1,5 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+use crate::{
+    ClientInitializeError, ErrorCode, ErrorData, ServiceError, SessionDriver, SessionError,
+    ToolInvocation,
+};
 #[cfg(coverage)]
 use axum::response::IntoResponse;
 use rmcp::model::{
@@ -11,10 +15,6 @@ use rmcp::transport::Transport;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
-use tooltest_core::{
-    ClientInitializeError, ErrorCode, ErrorData, ServiceError, SessionDriver, SessionError,
-    ToolInvocation,
-};
 
 struct TestTransport {
     requests: Arc<Mutex<Vec<ClientJsonRpcMessage>>>,
@@ -251,7 +251,7 @@ async fn run_invocations_reports_call_error() {
 #[cfg(coverage)]
 #[tokio::test]
 async fn connect_stdio_stub_returns_error() {
-    let config = tooltest_core::StdioConfig::new("mcp-server");
+    let config = crate::StdioConfig::new("mcp-server");
     let result = SessionDriver::connect_stdio(&config).await;
     assert!(matches!(result, Err(SessionError::Transport(_))));
 }
@@ -260,7 +260,7 @@ async fn connect_stdio_stub_returns_error() {
 #[tokio::test]
 async fn connect_stdio_applies_cwd() {
     let cwd = std::env::current_dir().expect("cwd");
-    let mut config = tooltest_core::StdioConfig::new("mcp-server");
+    let mut config = crate::StdioConfig::new("mcp-server");
     config.cwd = Some(cwd.to_string_lossy().to_string());
     let result = SessionDriver::connect_stdio(&config).await;
     assert!(matches!(result, Err(SessionError::Transport(_))));
@@ -270,7 +270,7 @@ async fn connect_stdio_applies_cwd() {
 #[tokio::test]
 async fn connect_stdio_attempts_child_process_spawn() {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut config = tooltest_core::StdioConfig::new(shell);
+    let mut config = crate::StdioConfig::new(shell);
     config.args = vec!["-c".to_string(), "exit 0".to_string()];
     let result = SessionDriver::connect_stdio(&config).await;
     assert!(matches!(
@@ -284,7 +284,7 @@ async fn connect_stdio_attempts_child_process_spawn() {
 #[cfg(coverage)]
 #[tokio::test]
 async fn connect_http_reports_error_for_invalid_url() {
-    let config = tooltest_core::HttpConfig {
+    let config = crate::HttpConfig {
         url: "http://127.0.0.1:0/mcp".to_string(),
         auth_token: Some("Bearer token".to_string()),
     };
@@ -295,7 +295,7 @@ async fn connect_http_reports_error_for_invalid_url() {
 #[cfg(coverage)]
 #[tokio::test]
 async fn connect_http_reports_error_without_auth_token() {
-    let config = tooltest_core::HttpConfig {
+    let config = crate::HttpConfig {
         url: "http://127.0.0.1:0/mcp".to_string(),
         auth_token: None,
     };
@@ -306,7 +306,7 @@ async fn connect_http_reports_error_without_auth_token() {
 #[cfg(coverage)]
 #[tokio::test]
 async fn connect_http_reports_error_with_raw_token() {
-    let config = tooltest_core::HttpConfig {
+    let config = crate::HttpConfig {
         url: "http://127.0.0.1:0/mcp".to_string(),
         auth_token: Some("token".to_string()),
     };
@@ -365,7 +365,7 @@ async fn connect_http_reports_error_with_local_server() {
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let config = tooltest_core::HttpConfig {
+    let config = crate::HttpConfig {
         url: format!("http://{addr}/mcp"),
         auth_token: None,
     };

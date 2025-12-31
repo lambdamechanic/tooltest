@@ -1,8 +1,8 @@
 use std::env;
 use std::time::Duration;
 
+use crate::{validate_tool, HttpConfig, SessionDriver, ToolValidationConfig};
 use tokio::time::timeout;
-use tooltest_core::{validate_tool, HttpConfig, SessionDriver, ToolValidationConfig};
 
 const CASES_PER_TOOL_DEFAULT: usize = 10;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_HOSTED_CASES_PER_TOOL";

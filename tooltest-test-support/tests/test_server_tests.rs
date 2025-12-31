@@ -1,0 +1,374 @@
+use std::io::{self, Write};
+use std::sync::Mutex;
+
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParam, ClientJsonRpcMessage, ClientNotification, ClientRequest,
+    Extensions, InitializeRequest, InitializeRequestParam, InitializedNotification, JsonRpcRequest,
+    JsonRpcVersion2_0, ListToolsRequest, PingRequest, RequestId,
+};
+use tooltest_test_support::test_server::{
+    current_dir, handle_message, list_tools_response, run, run_server, tool_stub,
+    validate_expectations, write_response,
+};
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+const EXPECTATION_ENV_KEYS: &[&str] = &[
+    "EXPECT_ARG",
+    "EXPECT_CWD",
+    "FORCE_CWD_ERROR",
+    "TOOLTEST_REQUIRE_VALUE",
+    "TOOLTEST_VALUE_TYPE",
+];
+
+fn reset_env() {
+    for key in EXPECTATION_ENV_KEYS {
+        std::env::remove_var(key);
+    }
+}
+
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: String) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.previous {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+struct FailingWriter;
+
+impl Write for FailingWriter {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+        Err(io::Error::new(io::ErrorKind::Other, "write failed"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Other, "flush failed"))
+    }
+}
+
+struct FlushFailingWriter;
+
+impl Write for FlushFailingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Other, "flush failed"))
+    }
+}
+
+fn list_tools_line() -> String {
+    let request = ClientRequest::ListToolsRequest(ListToolsRequest {
+        method: Default::default(),
+        params: None,
+        extensions: Extensions::default(),
+    });
+    let message = ClientJsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JsonRpcVersion2_0,
+        id: RequestId::Number(1),
+        request,
+    });
+    serde_json::to_string(&message).expect("serialize request")
+}
+
+fn call_tool_line() -> String {
+    let request = ClientRequest::CallToolRequest(CallToolRequest {
+        method: Default::default(),
+        params: CallToolRequestParam {
+            name: "echo".to_string().into(),
+            arguments: None,
+        },
+        extensions: Extensions::default(),
+    });
+    let message = ClientJsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JsonRpcVersion2_0,
+        id: RequestId::Number(2),
+        request,
+    });
+    serde_json::to_string(&message).expect("serialize request")
+}
+
+fn ping_line() -> String {
+    let request = ClientRequest::PingRequest(PingRequest::default());
+    let message = ClientJsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JsonRpcVersion2_0,
+        id: RequestId::Number(3),
+        request,
+    });
+    serde_json::to_string(&message).expect("serialize request")
+}
+
+fn initialize_line() -> String {
+    let request =
+        ClientRequest::InitializeRequest(InitializeRequest::new(InitializeRequestParam::default()));
+    let message = ClientJsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JsonRpcVersion2_0,
+        id: RequestId::Number(4),
+        request,
+    });
+    serde_json::to_string(&message).expect("serialize request")
+}
+
+#[test]
+fn main_reports_expectation_failure() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("EXPECT_ARG", "definitely-missing-arg".to_string());
+    let mut lines = Vec::<io::Result<String>>::new().into_iter();
+    let mut output = Vec::new();
+    let result = run(&mut lines, &mut output);
+    assert!(result.is_err());
+}
+
+#[test]
+fn env_guard_restores_previous_value() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    std::env::set_var("EXPECT_ARG", "alpha");
+    let _guard = EnvGuard::set("EXPECT_ARG", "beta".to_string());
+    assert_eq!(std::env::var("EXPECT_ARG").ok().as_deref(), Some("beta"));
+    drop(_guard);
+    assert_eq!(std::env::var("EXPECT_ARG").ok().as_deref(), Some("alpha"));
+}
+
+#[test]
+fn env_guard_removes_when_unset() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    std::env::remove_var("EXPECT_ARG");
+    let _guard = EnvGuard::set("EXPECT_ARG", "beta".to_string());
+    assert!(std::env::var("EXPECT_ARG").is_ok());
+    drop(_guard);
+    assert!(std::env::var("EXPECT_ARG").is_err());
+}
+
+#[test]
+fn validate_expectations_errors_on_missing_arg() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("EXPECT_ARG", "nope".to_string());
+    let result = validate_expectations();
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_expectations_accepts_existing_arg() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let arg = std::env::args().next().unwrap_or_default();
+    let _guard = EnvGuard::set("EXPECT_ARG", arg);
+    let result = validate_expectations();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn validate_expectations_errors_on_cwd_mismatch() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("EXPECT_CWD", "/definitely/wrong".to_string());
+    let result = validate_expectations();
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_expectations_errors_on_unreadable_cwd() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("EXPECT_CWD", "/missing".to_string());
+    let _force = EnvGuard::set("FORCE_CWD_ERROR", "1".to_string());
+    let result = validate_expectations();
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_expectations_accepts_matching_cwd() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let cwd = std::env::current_dir().expect("cwd");
+    let _guard = EnvGuard::set("EXPECT_CWD", cwd.to_string_lossy().to_string());
+    let result = validate_expectations();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn validate_expectations_rejects_invalid_value_type() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "nope".to_string());
+    let result = validate_expectations();
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_expectations_accepts_valid_value_type() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "number".to_string());
+    let result = validate_expectations();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn current_dir_errors_when_forced() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _force = EnvGuard::set("FORCE_CWD_ERROR", "1".to_string());
+    assert!(current_dir().is_err());
+}
+
+#[test]
+fn run_succeeds_with_empty_input() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    std::env::remove_var("EXPECT_ARG");
+    std::env::remove_var("EXPECT_CWD");
+    let mut lines = Vec::<io::Result<String>>::new().into_iter();
+    let mut output = Vec::new();
+    assert!(run(&mut lines, &mut output).is_ok());
+    assert!(output.is_empty());
+}
+
+#[test]
+fn handle_message_ignores_unhandled_requests() {
+    let request = ClientRequest::PingRequest(PingRequest::default());
+    let message = ClientJsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JsonRpcVersion2_0,
+        id: RequestId::Number(1),
+        request,
+    });
+    assert!(handle_message(message).is_none());
+}
+
+#[test]
+fn handle_message_ignores_notifications() {
+    let message = ClientJsonRpcMessage::notification(ClientNotification::InitializedNotification(
+        InitializedNotification::default(),
+    ));
+    assert!(handle_message(message).is_none());
+}
+
+#[test]
+fn run_server_skips_invalid_and_empty_lines() {
+    let mut lines = vec![Ok("".to_string()), Ok("not-json".to_string())].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn run_server_handles_read_errors() {
+    let mut lines = vec![Err(io::Error::new(io::ErrorKind::Other, "read failed"))].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn run_server_skips_unhandled_requests() {
+    let mut lines = vec![Ok(ping_line())].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn run_server_handles_call_tool_request() {
+    let mut lines = vec![Ok(call_tool_line())].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+    assert!(!output.is_empty());
+}
+
+#[test]
+fn run_server_handles_list_tools_request() {
+    let mut lines = vec![Ok(list_tools_line())].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+
+    let payload = String::from_utf8(output).expect("utf8");
+    let response: serde_json::Value = serde_json::from_str(payload.trim()).expect("json");
+    assert_eq!(
+        response["result"]["tools"]
+            .as_array()
+            .map(|items| items.len()),
+        Some(1)
+    );
+}
+
+#[test]
+fn run_server_handles_initialize_request() {
+    let mut lines = vec![Ok(initialize_line())].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+
+    let payload = String::from_utf8(output).expect("utf8");
+    let response: serde_json::Value = serde_json::from_str(payload.trim()).expect("json");
+    assert!(response["result"]["protocolVersion"].is_string());
+}
+
+#[test]
+fn tool_stub_requires_value_when_env_set() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_REQUIRE_VALUE", "1".to_string());
+    let tool = tool_stub();
+    let required = tool
+        .input_schema
+        .get("required")
+        .and_then(|value| value.as_array());
+    assert!(required.is_some());
+}
+
+#[test]
+fn validate_expectations_succeeds_without_expectations() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    std::env::remove_var("EXPECT_ARG");
+    std::env::remove_var("EXPECT_CWD");
+    std::env::remove_var("TOOLTEST_VALUE_TYPE");
+    let result = validate_expectations();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn list_tools_helpers_report_errors_in_cli_tests() {
+    let response = list_tools_response(RequestId::Number(1), vec![]);
+    let result = write_response(&mut FailingWriter, &response);
+    assert!(result.is_err());
+}
+
+#[test]
+fn failing_writer_flush_reports_error() {
+    let mut writer = FailingWriter;
+    assert!(writer.flush().is_err());
+}
+
+#[test]
+fn run_server_reports_write_errors() {
+    let mut lines = vec![Ok(list_tools_line())].into_iter();
+    let mut writer = FailingWriter;
+    run_server(&mut lines, &mut writer);
+}
+
+#[test]
+fn write_response_reports_flush_errors() {
+    let response = list_tools_response(RequestId::Number(1), vec![]);
+    let result = write_response(&mut FlushFailingWriter, &response);
+    assert!(result.is_err());
+}

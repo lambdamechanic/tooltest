@@ -10,8 +10,6 @@ use tooltest_core::{
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
 };
 
-pub mod test_server;
-
 #[derive(Parser)]
 #[command(name = "tooltest", version, about = "CLI wrapper for tooltest-core")]
 pub struct Cli {
@@ -180,16 +178,18 @@ pub async fn run(cli: Cli) -> ExitCode {
         format_run_result_human(&result)
     };
     print!("{output}");
-    if dump_corpus && !cli.json {
+    maybe_dump_corpus(dump_corpus, cli.json, &result);
+
+    exit_code_for_result(&result)
+}
+
+fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
+    if dump_corpus && !json {
         if let Some(corpus) = &result.corpus {
             let payload = serde_json::to_string_pretty(corpus).expect("serialize corpus");
             eprintln!("corpus:\n{payload}");
-        } else {
-            let _ = ();
         }
     }
-
-    exit_code_for_result(&result)
 }
 
 pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
@@ -347,7 +347,7 @@ mod tests {
     use rmcp::transport::Transport;
     use std::sync::Arc;
     use tooltest_core::{
-        list_tools_http, list_tools_stdio, list_tools_with_session, CoverageReport,
+        list_tools_http, list_tools_stdio, list_tools_with_session, CorpusReport, CoverageReport,
         CoverageWarning, HttpConfig, ListToolsError, RunFailure, RunWarning, RunWarningCode,
         SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
     };
@@ -818,6 +818,25 @@ mod tests {
     }
 
     #[test]
+    fn maybe_dump_corpus_emits_when_requested() {
+        let corpus = CorpusReport {
+            numbers: vec![serde_json::Number::from(1)],
+            integers: vec![2],
+            strings: vec!["status".to_string()],
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: Some(corpus),
+        };
+
+        maybe_dump_corpus(true, false, &result);
+    }
+
+    #[test]
     fn exit_code_for_result_reports_success_and_failure() {
         let success = RunResult {
             outcome: RunOutcome::Success,
@@ -938,6 +957,98 @@ mod tests {
 
         let exit = run(cli).await;
         assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_applies_state_machine_overrides() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: true,
+            dump_corpus: false,
+            log_corpus_deltas: true,
+            no_lenient_sourcing: true,
+            state_machine_config: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_accepts_state_machine_config_with_json_output() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
+            json: true,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_applies_dump_corpus_flag() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: true,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: true,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_invalid_sequence_len_returns_exit_code_2() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 0,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
     }
 
     #[tokio::test]

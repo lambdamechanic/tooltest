@@ -1,3 +1,8 @@
+use crate::{
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
+    CoverageWarningReason, ErrorCode, HttpConfig, ResponseAssertion, RunConfig, RunOutcome,
+    RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
+};
 use axum::Router;
 use rmcp::handler::server::{
     router::tool::ToolRouter,
@@ -12,17 +17,12 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
-use tooltest_core::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, HttpConfig, ResponseAssertion, RunConfig, RunOutcome,
-    RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig, TraceEntry,
-};
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
 
 async fn connect_runner_transport(
     transport: RunnerTransport,
-) -> Result<SessionDriver, tooltest_core::SessionError> {
+) -> Result<SessionDriver, crate::SessionError> {
     SessionDriver::connect_with_transport::<
         RunnerTransport,
         std::convert::Infallible,
@@ -105,7 +105,7 @@ async fn run_with_session_returns_minimized_failure() {
         cases: 1,
         sequence_len: 1..=1,
     };
-    let result = tooltest_core::run_with_session(&driver, &config, options).await;
+    let result = crate::run_with_session(&driver, &config, options).await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     assert!(result.minimized.is_some());
@@ -179,7 +179,7 @@ async fn run_with_session_accepts_json_dsl_assertions() {
         cases: 1,
         sequence_len: 1..=1,
     };
-    let result = tooltest_core::run_with_session(&driver, &config, options).await;
+    let result = crate::run_with_session(&driver, &config, options).await;
 
     assert!(matches!(result.outcome, RunOutcome::Success));
     assert!(result.trace.is_empty());
@@ -192,7 +192,7 @@ async fn run_with_session_rejects_current_thread_runtime() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -236,7 +236,7 @@ async fn run_with_session_supports_state_machine_generator() {
 
     let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(5)]);
     let config = RunConfig::new().with_state_machine(state_machine);
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -270,7 +270,7 @@ async fn run_with_session_emits_uncallable_tool_warning() {
     let driver = connect_runner_transport(transport).await.expect("connect");
 
     let config = RunConfig::new();
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -323,7 +323,7 @@ async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
         .with_coverage_blocklist(vec!["beta".to_string()]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -356,7 +356,7 @@ async fn run_with_session_executes_allowlist_and_blocklist_filters() {
         .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -391,7 +391,7 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
         .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -433,7 +433,7 @@ async fn run_with_session_coverage_failure_includes_corpus_dump() {
         .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -480,7 +480,7 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
         .with_coverage_rules(vec![CoverageRule::percent_called(100.0)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -513,7 +513,7 @@ async fn run_with_session_excludes_error_responses_from_coverage() {
     let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(3)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -539,7 +539,7 @@ async fn run_with_session_reports_session_error() {
     ));
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -568,7 +568,7 @@ async fn run_with_session_reports_list_tools_error() {
     ));
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -595,7 +595,7 @@ async fn run_with_session_reports_invalid_tool_schema() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -619,7 +619,7 @@ async fn run_with_session_reports_invalid_input_schema() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -649,7 +649,7 @@ async fn run_with_session_reports_invalid_output_schema() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -676,7 +676,7 @@ async fn run_with_session_reports_uncompilable_output_schema() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -699,7 +699,7 @@ async fn run_with_session_reports_no_eligible_tools() {
     let transport = RunnerTransport::new_with_tools(Vec::new(), response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -719,7 +719,7 @@ async fn run_with_session_reports_tool_error_response() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -743,7 +743,7 @@ async fn run_with_session_reports_call_tool_error() {
     ));
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -774,7 +774,7 @@ async fn run_with_session_succeeds_with_default_assertions() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
         RunnerOptions {
@@ -806,7 +806,7 @@ async fn run_with_session_reports_response_assertion_failure() {
     };
 
     let config = RunConfig::new().with_assertions(assertions);
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -837,7 +837,7 @@ async fn run_with_session_reports_sequence_assertion_failure() {
     };
 
     let config = RunConfig::new().with_assertions(assertions);
-    let result = tooltest_core::run_with_session(
+    let result = crate::run_with_session(
         &driver,
         &config,
         RunnerOptions {
@@ -881,7 +881,7 @@ async fn run_http_succeeds_with_streamable_server() {
         auth_token: None,
     };
     let state_machine = StateMachineConfig::default().with_lenient_sourcing(true);
-    let result = tooltest_core::run_http(
+    let result = crate::run_http(
         &config,
         &RunConfig::new().with_state_machine(state_machine),
         RunnerOptions {
@@ -903,16 +903,14 @@ async fn run_http_reports_transport_error() {
         url: "http://localhost:1234/mcp".to_string(),
         auth_token: None,
     };
-    let result =
-        tooltest_core::run_http(&config, &RunConfig::new(), RunnerOptions::default()).await;
+    let result = crate::run_http(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_stdio_reports_transport_error() {
     let config = StdioConfig::new("mcp-server");
-    let result =
-        tooltest_core::run_stdio(&config, &RunConfig::new(), RunnerOptions::default()).await;
+    let result = crate::run_stdio(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
 }
 
@@ -924,7 +922,7 @@ async fn run_stdio_succeeds_with_real_transport() {
     if !std::path::Path::new(&config.command).exists() {
         return;
     }
-    let result = tooltest_core::run_stdio(
+    let result = crate::run_stdio(
         &config,
         &RunConfig::new(),
         RunnerOptions {

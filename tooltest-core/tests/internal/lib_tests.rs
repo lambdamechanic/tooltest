@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use serde_json::json;
-use tooltest_core::{
+use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule, ResponseAssertion,
     RunConfig, SchemaConfig, SchemaVersion, StateMachineConfig, StdioConfig, ToolPredicate,
     TraceEntry,
 };
+use serde_json::json;
 
 #[test]
 fn schema_config_defaults_to_latest() {

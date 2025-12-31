@@ -16,6 +16,7 @@ cli-test-server = []
 name = "tooltest_cli_test_server"
 path = "src/bin/tooltest_cli_test_server.rs"
 test = false
+required-features = ["cli-test-server"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -25,7 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tooltest-core = { path = "../tooltest-core" }
+tooltest-test-support = { path = "../tooltest-test-support" }
 
 [dev-dependencies]
 serde_json = "1"
-tooltest-test-support = { path = "../tooltest-test-support" }

@@ -1,8 +1,8 @@
-use serde_json::json;
-use tooltest_core::{
+use crate::{
     parse_call_tool_request, parse_call_tool_result, parse_list_tools, schema_version_label,
     SchemaConfig, SchemaError, SchemaVersion,
 };
+use serde_json::json;
 
 fn default_config() -> SchemaConfig {
     SchemaConfig {

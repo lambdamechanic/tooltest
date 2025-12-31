@@ -4,8 +4,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
+    let mut full_args: Vec<&str> = args.to_vec();
+    if args.iter().any(|arg| *arg == "stdio") {
+        full_args.push("--env");
+        full_args.push("LLVM_PROFILE_FILE=/dev/null");
+    }
     Command::new(tooltest)
-        .args(args)
+        .args(full_args)
         .output()
         .expect("run tooltest")
 }
@@ -393,6 +398,8 @@ fn run_stdio_reports_success_with_env_and_cwd() {
             &format!("EXPECT_ARG={expected_arg}"),
             "--env",
             &format!("EXPECT_CWD={}", cwd.display()),
+            "--env",
+            "LLVM_PROFILE_FILE=/dev/null",
             "--cwd",
             &cwd.to_string_lossy(),
         ])

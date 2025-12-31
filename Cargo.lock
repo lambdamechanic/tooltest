@@ -1989,13 +1989,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tooltest-ffi"
-version = "0.1.0"
-dependencies = [
- "tooltest-core",
-]
-
-[[package]]
 name = "tooltest-test-support"
 version = "0.1.0"
 dependencies = [

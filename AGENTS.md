@@ -19,6 +19,16 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 
 # Agent Instructions
 
+## MCP Tools (pctx)
+
+This project supports pctx MCP tools for enhanced capabilities. See `docs/pctx-claude-setup.md` for configuration details. When running Claude Code with pctx configured, you'll have access to:
+- beads (bd issue tracking)
+- github (GitHub integration)
+- dumbwaiter, circleci, sk (additional integrations)
+- exa (web search)
+
+## Issue Tracking
+
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
 ## Quick Reference

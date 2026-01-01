@@ -1,0 +1,70 @@
+use std::collections::BTreeMap;
+
+use crate::{RunConfig, RunFailure, RunResult, RunWarning, SessionDriver, Tool, TraceEntry};
+
+use super::result::failure_result;
+use super::schema::{build_output_validators, collect_schema_warnings, validate_tools};
+
+pub(super) struct PreparedRun {
+    pub(super) tools: Vec<Tool>,
+    pub(super) warnings: Vec<RunWarning>,
+    pub(super) validators: BTreeMap<String, jsonschema::Validator>,
+    pub(super) prelude_trace: Vec<TraceEntry>,
+}
+
+pub(super) async fn prepare_run(
+    session: &SessionDriver,
+    config: &RunConfig,
+) -> Result<PreparedRun, RunResult> {
+    let prelude_trace = vec![TraceEntry::list_tools()];
+    let tools = match session.list_tools().await {
+        Ok(tools) => tools,
+        Err(error) => {
+            let reason = format!("failed to list tools: {error:?}");
+            return Err(failure_result(
+                RunFailure::new(reason.clone()),
+                vec![TraceEntry::list_tools_with_failure(reason)],
+                None,
+                Vec::new(),
+                None,
+                None,
+            ));
+        }
+    };
+
+    let tools = match validate_tools(tools, &config.schema) {
+        Ok(tools) => tools,
+        Err(reason) => {
+            return Err(failure_result(
+                RunFailure::new(reason),
+                prelude_trace.clone(),
+                None,
+                Vec::new(),
+                None,
+                None,
+            ))
+        }
+    };
+    let warnings = collect_schema_warnings(&tools);
+
+    let validators = match build_output_validators(&tools) {
+        Ok(validators) => validators,
+        Err(reason) => {
+            return Err(failure_result(
+                RunFailure::new(reason),
+                prelude_trace.clone(),
+                None,
+                warnings.clone(),
+                None,
+                None,
+            ))
+        }
+    };
+
+    Ok(PreparedRun {
+        tools,
+        warnings,
+        validators,
+        prelude_trace,
+    })
+}

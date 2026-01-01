@@ -3,7 +3,8 @@ use std::pin::Pin;
 
 use crate::{HttpConfig, RunConfig, RunFailure, RunResult, SessionDriver, StdioConfig};
 
-use super::execution::{failure_result, run_with_session, RunnerOptions};
+use super::execution::{run_with_session, RunnerOptions};
+use super::result::failure_result;
 
 pub(super) type ConnectFuture<'a> =
     Pin<Box<dyn Future<Output = Result<SessionDriver, crate::SessionError>> + Send + 'a>>;

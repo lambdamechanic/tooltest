@@ -3,6 +3,11 @@
 mod assertions;
 mod coverage;
 mod execution;
+mod prepare;
+mod result;
+mod schema;
+mod sequence;
+mod state_machine;
 mod transport;
 
 #[cfg(test)]
@@ -11,20 +16,3 @@ mod tests;
 
 pub use execution::{run_with_session, RunnerOptions};
 pub use transport::{run_http, run_stdio};
-
-#[cfg(test)]
-use crate::generator::UncallableReason;
-#[cfg(test)]
-use assertions::{
-    apply_default_assertions, apply_response_assertions, apply_sequence_assertions,
-    attach_failure_reason, attach_response, evaluate_checks, AssertionPayloads,
-};
-#[cfg(test)]
-use coverage::{map_uncallable_reason, CoverageTracker};
-#[cfg(test)]
-use execution::{
-    build_output_validators, collect_schema_keyword_warnings, collect_schema_warnings,
-    validate_tools, FailureContext,
-};
-#[cfg(test)]
-use jsonschema::draft202012;

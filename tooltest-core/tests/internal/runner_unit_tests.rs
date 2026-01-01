@@ -1,14 +1,20 @@
 use super::*;
+use super::{execution, transport};
 use crate::generator::{clear_reject_context, set_reject_context_for_test, StateMachineSequence};
 use crate::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, RunWarningCode,
-    SchemaConfig, SequenceAssertion, SessionError, StateMachineConfig, ToolPredicate,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CorpusReport, CoverageReport,
+    CoverageRule, CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject,
+    ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions,
+    SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
+    ToolInvocation, ToolPredicate, TraceEntry,
 };
+use proptest::test_runner::TestError;
 use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents};
 use rmcp::transport::Transport;
-use serde_json::{json, Number};
+use serde_json::{json, Number, Value as JsonValue};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -38,7 +44,9 @@ async fn connect_runner_transport(
     .await
 }
 
-fn connect_result(result: Result<SessionDriver, SessionError>) -> ConnectFuture<'static> {
+fn connect_result(
+    result: Result<SessionDriver, SessionError>,
+) -> transport::ConnectFuture<'static> {
     Box::pin(async move { result })
 }
 
@@ -101,7 +109,7 @@ fn finalize_run_result_uses_abort_path() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_run_result(
+    let result = execution::finalize_run_result(
         Err(TestError::Abort("nope".into())),
         &last_trace,
         &last_failure,
@@ -138,7 +146,7 @@ fn finalize_run_result_success_includes_coverage_and_corpus() {
         integers: vec![1],
         strings: vec!["alpha".to_string()],
     };
-    let result = finalize_run_result(
+    let result = execution::finalize_run_result(
         Ok(()),
         &last_trace,
         &last_failure,
@@ -621,7 +629,7 @@ async fn run_with_transport_success_path() {
         .await
         .expect("connect");
 
-    let result = run_with_transport(
+    let result = transport::run_with_transport(
         connect_result(Ok(session)),
         "local",
         &RunConfig::new(),
@@ -674,7 +682,7 @@ async fn execute_sequence_reports_session_error() {
         name: "echo".to_string().into(),
         arguments: None,
     };
-    let result = execute_sequence(
+    let result = execution::execute_sequence(
         &session,
         &BTreeMap::new(),
         &AssertionSet::default(),
@@ -695,7 +703,7 @@ async fn execute_sequence_reports_default_assertion_failure() {
         name: "echo".to_string().into(),
         arguments: None,
     };
-    let result = execute_sequence(
+    let result = execution::execute_sequence(
         &session,
         &BTreeMap::new(),
         &AssertionSet::default(),
@@ -729,7 +737,8 @@ async fn execute_sequence_reports_response_assertion_failure() {
             }],
         })],
     };
-    let result = execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
+    let result =
+        execution::execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
     let failure = result.expect_err("expected failure");
     assert!(failure.failure.reason.contains("assertion pointer"));
 }
@@ -753,7 +762,8 @@ async fn execute_sequence_reports_sequence_assertion_failure() {
             }],
         })],
     };
-    let result = execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
+    let result =
+        execution::execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
     let failure = result.expect_err("expected failure");
     assert!(failure.failure.reason.contains("assertion pointer"));
 }
@@ -778,7 +788,7 @@ async fn execute_sequence_succeeds_with_valid_response() {
         arguments: Some(JsonObject::new()),
     };
 
-    let result = execute_sequence(
+    let result = execution::execute_sequence(
         &session,
         &validators,
         &AssertionSet::default(),
@@ -797,7 +807,9 @@ async fn execute_sequence_succeeds_with_empty_sequence() {
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
 
-    let result = execute_sequence(&session, &BTreeMap::new(), &AssertionSet::default(), &[]).await;
+    let result =
+        execution::execute_sequence(&session, &BTreeMap::new(), &AssertionSet::default(), &[])
+            .await;
 
     let trace = result.expect("expected success");
     assert!(trace.is_empty());
@@ -1025,7 +1037,7 @@ async fn execute_state_machine_sequence_breaks_when_no_callable_tools() {
     let sequence = StateMachineSequence { seeds: vec![1, 2] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execution::execute_state_machine_sequence(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1050,7 +1062,7 @@ async fn execute_state_machine_sequence_reports_generation_error() {
     let sequence = StateMachineSequence { seeds: vec![0] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execution::execute_state_machine_sequence(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1080,7 +1092,7 @@ async fn execute_state_machine_sequence_reports_session_error() {
     let sequence = StateMachineSequence { seeds: vec![0] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execution::execute_state_machine_sequence(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1115,7 +1127,7 @@ async fn execute_state_machine_sequence_reports_response_assertion_failure() {
     };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execution::execute_state_machine_sequence(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1149,7 +1161,7 @@ async fn execute_state_machine_sequence_reports_sequence_assertion_failure() {
     };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execution::execute_state_machine_sequence(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1182,7 +1194,7 @@ async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
     let sequence = StateMachineSequence { seeds: vec![0] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execution::execute_state_machine_sequence(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1218,7 +1230,7 @@ fn finalize_run_result_uses_fail_path() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_run_result(
+    let result = execution::finalize_run_result(
         Err(TestError::Fail("nope".into(), vec![invocation])),
         &last_trace,
         &last_failure,
@@ -1245,7 +1257,7 @@ fn finalize_state_machine_result_uses_fail_path() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_state_machine_result(
+    let result = execution::finalize_state_machine_result(
         Err(TestError::Fail(
             "nope".into(),
             StateMachineSequence { seeds: Vec::new() },
@@ -1270,7 +1282,7 @@ fn finalize_state_machine_result_skips_minimized_without_invocations() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_state_machine_result(
+    let result = execution::finalize_state_machine_result(
         Err(TestError::Fail(
             "nope".into(),
             StateMachineSequence { seeds: Vec::new() },
@@ -1298,7 +1310,7 @@ fn finalize_run_result_includes_reject_context_on_abort() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_run_result(
+    let result = execution::finalize_run_result(
         Err(TestError::Abort("nope".into())),
         &last_trace,
         &last_failure,
@@ -1321,7 +1333,7 @@ fn finalize_state_machine_result_includes_reject_context_on_abort() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_state_machine_result(
+    let result = execution::finalize_state_machine_result(
         Err(TestError::Abort("nope".into())),
         &last_trace,
         &last_failure,
@@ -1347,7 +1359,7 @@ fn finalize_state_machine_result_appends_reject_context() {
         coverage: None,
         corpus: None,
     }));
-    let result = finalize_state_machine_result(
+    let result = execution::finalize_state_machine_result(
         Err(TestError::Abort("nope".into())),
         &last_trace,
         &last_failure,
@@ -1363,7 +1375,7 @@ fn finalize_state_machine_result_appends_reject_context() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_transport_reports_connect_error() {
-    let result = run_with_transport(
+    let result = transport::run_with_transport(
         connect_result(Err(SessionError::Transport(Box::new(
             std::io::Error::other("connect failed"),
         )))),
@@ -1995,7 +2007,7 @@ async fn execute_sequence_with_coverage_reports_session_error() {
         name: "echo".to_string().into(),
         arguments: Some(JsonObject::new()),
     };
-    let result = execute_sequence_with_coverage(
+    let result = execution::execute_sequence_with_coverage(
         &session,
         &BTreeMap::new(),
         &AssertionSet { rules: Vec::new() },
@@ -2031,7 +2043,7 @@ async fn execute_sequence_with_coverage_reports_response_assertion_failure() {
         name: "echo".to_string().into(),
         arguments: Some(JsonObject::new()),
     };
-    let result = execute_sequence_with_coverage(
+    let result = execution::execute_sequence_with_coverage(
         &session,
         &BTreeMap::new(),
         &assertions,
@@ -2066,7 +2078,7 @@ async fn execute_sequence_with_coverage_reports_sequence_assertion_failure() {
         name: "echo".to_string().into(),
         arguments: Some(JsonObject::new()),
     };
-    let result = execute_sequence_with_coverage(
+    let result = execution::execute_sequence_with_coverage(
         &session,
         &BTreeMap::new(),
         &assertions,
@@ -2092,7 +2104,7 @@ async fn execute_sequence_with_coverage_reports_default_assertion_failure() {
         arguments: Some(JsonObject::new()),
     };
 
-    let result = execute_sequence_with_coverage(
+    let result = execution::execute_sequence_with_coverage(
         &session,
         &BTreeMap::new(),
         &AssertionSet { rules: Vec::new() },
@@ -2127,7 +2139,7 @@ async fn execute_sequence_with_coverage_reports_error_response() {
         arguments: Some(JsonObject::new()),
     };
 
-    let result = execute_sequence_with_coverage(
+    let result = execution::execute_sequence_with_coverage(
         &session,
         &BTreeMap::new(),
         &AssertionSet { rules: Vec::new() },
@@ -2166,7 +2178,7 @@ async fn execute_sequence_with_coverage_succeeds_and_tracks() {
         arguments: Some(JsonObject::new()),
     };
 
-    let result = execute_sequence_with_coverage(
+    let result = execution::execute_sequence_with_coverage(
         &session,
         &validators,
         &AssertionSet { rules: Vec::new() },

@@ -6,7 +6,6 @@ mod execution;
 mod prepare;
 mod result;
 mod schema;
-mod sequence;
 mod state_machine;
 mod transport;
 

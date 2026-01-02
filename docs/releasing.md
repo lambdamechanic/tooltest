@@ -6,6 +6,7 @@ Tooltest uses release-plz to publish crates to crates.io.
 
 - `CARGO_REGISTRY_TOKEN` is set in GitHub Actions secrets.
 - `tooltest` and `tooltest-core` are the only crates published; `tooltest-test-support` is excluded.
+- `tooltest-core` ships with an internal-use README to discourage direct consumption.
 
 ## Workflow
 

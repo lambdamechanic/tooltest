@@ -39,7 +39,7 @@ jobs:
       - name: Rust clippy
         run: cargo clippy --workspace -- -D warnings
       - name: Rust coverage
-        run: cargo llvm-cov --workspace --fail-under-lines 95 --features tooltest-cli/cli-test-server
+        run: cargo llvm-cov --workspace --fail-under-lines 95 --features tooltest/cli-test-server
 
   release-build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -78,7 +78,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-        run: cargo build -p tooltest-cli --bin tooltest --release --target ${{ matrix.target }}
+        run: cargo build -p tooltest --bin tooltest --release --target ${{ matrix.target }}
       - name: Package binary
         shell: bash
         run: |

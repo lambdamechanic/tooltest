@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use tooltest_cli::{run, Cli};
+use tooltest::{run, Cli};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {

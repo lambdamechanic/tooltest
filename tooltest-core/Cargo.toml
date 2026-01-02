@@ -1,8 +1,11 @@
 [package]
 name = "tooltest-core"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core runner for MCP conformance testing."
+repository.workspace = true
+readme = "../README.md"
 
 [features]
 stdio-test-server = ["dep:tooltest-test-support"]

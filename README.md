@@ -40,7 +40,7 @@ Direct downloads (stable URLs):
 Build from source:
 
 ```bash
-cargo install --path tooltest-cli
+cargo install tooltest
 ```
 
 ### Test a stdio MCP server
@@ -98,7 +98,7 @@ fields when the corpus is empty, set `--lenient-sourcing` or provide
 Simple run against a hosted MCP endpoint:
 
 ```bash
-cargo run -p tooltest-cli --bin tooltest -- \
+cargo run -p tooltest --bin tooltest -- \
   --cases 100 \
   http --url https://pymcp.app.lambdamechanic.com/kev/mcp
 ```
@@ -106,7 +106,7 @@ cargo run -p tooltest-cli --bin tooltest -- \
 Simple run against a local stdio MCP server:
 
 ```bash
-cargo run -p tooltest-cli --bin tooltest -- \
+cargo run -p tooltest --bin tooltest -- \
   --cases 100 \
   stdio --command ./target/debug/my-mcp-server
 ```

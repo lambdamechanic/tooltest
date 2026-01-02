@@ -1,0 +1,16 @@
+[workspace]
+changelog_path = "CHANGELOG.md"
+
+[[package]]
+name = "tooltest"
+changelog_path = "tooltest/CHANGELOG.md"
+publish = true
+
+[[package]]
+name = "tooltest-core"
+changelog_path = "tooltest-core/CHANGELOG.md"
+publish = true
+
+[[package]]
+name = "tooltest-test-support"
+publish = false

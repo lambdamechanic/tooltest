@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn parse_state_machine_config_reads_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join("tooltest-cli-state-machine.json");
+        let path = dir.join("tooltest-state-machine.json");
         fs::write(&path, r#"{"seed_numbers":[2],"seed_strings":["beta"]}"#).expect("write config");
         let config = parse_state_machine_config(&format!("@{}", path.display())).expect("config");
         assert_eq!(config.seed_numbers.len(), 1);
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn parse_state_machine_config_rejects_missing_file() {
         let dir = std::env::temp_dir();
-        let path = dir.join("tooltest-cli-missing.json");
+        let path = dir.join("tooltest-missing.json");
         let error = parse_state_machine_config(&format!("@{}", path.display())).expect_err("error");
         assert!(error.contains("failed to read state-machine-config"));
     }

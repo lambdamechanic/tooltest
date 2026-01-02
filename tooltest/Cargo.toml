@@ -1,8 +1,11 @@
 [package]
-name = "tooltest-cli"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+name = "tooltest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI conformance testing for MCP servers."
+repository.workspace = true
+readme = "../README.md"
 
 [[bin]]
 name = "tooltest"
@@ -13,8 +16,8 @@ test = false
 cli-test-server = []
 
 [[bin]]
-name = "tooltest_cli_test_server"
-path = "src/bin/tooltest_cli_test_server.rs"
+name = "tooltest_test_server"
+path = "src/bin/tooltest_test_server.rs"
 test = false
 required-features = ["cli-test-server"]
 

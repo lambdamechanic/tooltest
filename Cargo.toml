@@ -1,9 +1,15 @@
 [workspace]
-members = ["tooltest-core", "tooltest-test-support", "tooltest-cli"]
+members = ["tooltest-core", "tooltest-test-support", "tooltest"]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/lambdamechanic/tooltest"
 
 [workspace.dependencies]
 rmcp = "0.12"
 
 [workspace.metadata.llvm-cov]
-ignore-filename-regex = "stdio_test_server\\.rs|tooltest_cli_test_server\\.rs"
+ignore-filename-regex = "stdio_test_server\\.rs|tooltest_test_server\\.rs"

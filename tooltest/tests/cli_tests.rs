@@ -34,7 +34,7 @@ fn run_tooltest_json_allow_failure(args: &[&str]) -> (Output, serde_json::Value)
 }
 
 fn test_server() -> Option<&'static str> {
-    let server = option_env!("CARGO_BIN_EXE_tooltest_cli_test_server")?;
+    let server = option_env!("CARGO_BIN_EXE_tooltest_test_server")?;
     if std::path::Path::new(server).exists() {
         Some(server)
     } else {
@@ -47,7 +47,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    std::env::temp_dir().join(format!("tooltest-cli-{name}-{nanos}"))
+    std::env::temp_dir().join(format!("tooltest-{name}-{nanos}"))
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn test_server_exits_on_expectation_failure() {
         .expect("run test server");
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("tooltest_cli_test_server"));
+    assert!(stderr.contains("tooltest_test_server"));
 }
 
 #[test]

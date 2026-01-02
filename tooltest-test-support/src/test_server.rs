@@ -15,7 +15,7 @@ pub fn run_main() {
     let mut stdout = io::stdout();
     let mut lines = stdin.lock().lines();
     if let Err(message) = run(&mut lines, &mut stdout) {
-        eprintln!("tooltest_cli_test_server: {message}");
+        eprintln!("tooltest_test_server: {message}");
         std::process::exit(2);
     }
 }
@@ -83,7 +83,7 @@ pub fn run_server(lines: &mut dyn Iterator<Item = io::Result<String>>, stdout: &
         let line = match line {
             Ok(line) => line,
             Err(error) => {
-                eprintln!("tooltest_cli_test_server: failed to read stdin: {error}");
+                eprintln!("tooltest_test_server: failed to read stdin: {error}");
                 break;
             }
         };
@@ -93,7 +93,7 @@ pub fn run_server(lines: &mut dyn Iterator<Item = io::Result<String>>, stdout: &
         let message: ClientJsonRpcMessage = match serde_json::from_str(&line) {
             Ok(message) => message,
             Err(error) => {
-                eprintln!("tooltest_cli_test_server: invalid json: {error}");
+                eprintln!("tooltest_test_server: invalid json: {error}");
                 continue;
             }
         };
@@ -101,7 +101,7 @@ pub fn run_server(lines: &mut dyn Iterator<Item = io::Result<String>>, stdout: &
             continue;
         };
         if let Err(error) = write_response(stdout, &response) {
-            eprintln!("tooltest_cli_test_server: failed to write stdout: {error}");
+            eprintln!("tooltest_test_server: failed to write stdout: {error}");
             break;
         }
     }

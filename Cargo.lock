@@ -1952,7 +1952,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tooltest-cli"
+name = "tooltest"
 version = "0.1.0"
 dependencies = [
  "clap",

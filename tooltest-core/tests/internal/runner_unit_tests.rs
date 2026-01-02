@@ -3,7 +3,7 @@ use super::assertions::{
     attach_failure_reason, attach_response, evaluate_checks, AssertionPayloads,
 };
 use super::coverage::{map_uncallable_reason, CoverageTracker};
-use super::result::{finalize_run_result, finalize_state_machine_result, FailureContext};
+use super::result::{finalize_state_machine_result, FailureContext};
 use super::schema::{
     build_output_validators, collect_schema_keyword_warnings, collect_schema_warnings,
     validate_tools,
@@ -15,10 +15,10 @@ use crate::generator::{
     clear_reject_context, set_reject_context_for_test, StateMachineSequence, UncallableReason,
 };
 use crate::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CorpusReport, CoverageReport,
-    CoverageRule, CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject,
-    ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions,
-    SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
+    CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, ResponseAssertion,
+    RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions, SchemaConfig,
+    SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
     ToolInvocation, ToolPredicate, TraceEntry,
 };
 use jsonschema::draft202012;
@@ -106,78 +106,6 @@ fn assert_failure_reason_eq(result: &RunResult, expected: &str) {
 
 #[cfg(coverage)]
 fn assert_failure_reason_eq(_result: &RunResult, _expected: &str) {}
-
-#[test]
-fn finalize_run_result_uses_abort_path() {
-    let trace_entry = trace_entry_with(
-        "echo",
-        None,
-        CallToolResult::success(vec![Content::text("ok")]),
-    );
-    let last_trace = Rc::new(RefCell::new(vec![trace_entry]));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new(String::new()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let result = finalize_run_result(
-        Err(TestError::Abort("nope".into())),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(None)),
-        &Rc::new(RefCell::new(None)),
-        &[],
-    );
-
-    #[cfg(coverage)]
-    std::hint::black_box(&result);
-    #[cfg(not(coverage))]
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-    assert_eq!(result.trace.len(), 1);
-    assert!(result.minimized.is_none());
-}
-
-#[test]
-fn finalize_run_result_success_includes_coverage_and_corpus() {
-    let last_trace = Rc::new(RefCell::new(Vec::new()));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new(String::new()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let mut counts = BTreeMap::new();
-    counts.insert("echo".to_string(), 1u64);
-    let coverage = CoverageReport {
-        counts,
-        warnings: Vec::new(),
-    };
-    let corpus = CorpusReport {
-        numbers: vec![Number::from(1)],
-        integers: vec![1],
-        strings: vec!["alpha".to_string()],
-    };
-    let result = finalize_run_result(
-        Ok(()),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(Some(coverage.clone()))),
-        &Rc::new(RefCell::new(Some(corpus.clone()))),
-        &[],
-    );
-
-    assert!(outcome_is_success(&result.outcome));
-    assert!(result.trace.is_empty());
-    let coverage_report = result.coverage.expect("coverage");
-    assert_eq!(coverage_report.counts.get("echo").copied(), Some(1));
-    assert!(coverage_report.warnings.is_empty());
-
-    let corpus_report = result.corpus.expect("corpus");
-    assert_eq!(corpus_report.numbers, corpus.numbers);
-    assert_eq!(corpus_report.integers, corpus.integers);
-    assert_eq!(corpus_report.strings, corpus.strings);
-}
 
 #[test]
 fn outcome_is_success_reports_success_and_failure() {
@@ -1070,37 +998,6 @@ async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
 }
 
 #[test]
-fn finalize_run_result_uses_fail_path() {
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: None,
-    };
-    let trace_entry = trace_entry_with(
-        "echo",
-        None,
-        CallToolResult::success(vec![Content::text("ok")]),
-    );
-    let last_trace = Rc::new(RefCell::new(vec![trace_entry]));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new("failure".to_string()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let result = finalize_run_result(
-        Err(TestError::Fail("nope".into(), vec![invocation])),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(None)),
-        &Rc::new(RefCell::new(None)),
-        &[],
-    );
-
-    assert_failure_reason_eq(&result, "failure");
-    assert!(result.minimized.is_some());
-}
-
-#[test]
 fn finalize_state_machine_result_uses_fail_path() {
     let trace_entry = trace_entry_with(
         "echo",
@@ -1153,29 +1050,6 @@ fn finalize_state_machine_result_skips_minimized_without_invocations() {
 
     assert_failure_reason_eq(&result, "failure");
     assert!(result.minimized.is_none());
-}
-
-#[test]
-fn finalize_run_result_includes_reject_context_on_abort() {
-    clear_reject_context();
-    set_reject_context_for_test("predicate rejected".to_string());
-
-    let last_trace = Rc::new(RefCell::new(Vec::new()));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new("failure".to_string()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let result = finalize_run_result(
-        Err(TestError::Abort("nope".into())),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(None)),
-        &Rc::new(RefCell::new(None)),
-        &[],
-    );
-    assert_failure_reason_contains(&result, "last rejection");
 }
 
 #[test]

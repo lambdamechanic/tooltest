@@ -35,57 +35,6 @@ pub(super) fn failure_result(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn finalize_run_result(
-    run_result: Result<(), TestError<Vec<ToolInvocation>>>,
-    last_trace: &Rc<RefCell<Vec<TraceEntry>>>,
-    last_failure: &Rc<RefCell<FailureContext>>,
-    last_coverage: &Rc<RefCell<Option<CoverageReport>>>,
-    last_corpus: &Rc<RefCell<Option<CorpusReport>>>,
-    warnings: &[RunWarning],
-) -> RunResult {
-    match run_result {
-        Ok(()) => RunResult {
-            outcome: RunOutcome::Success,
-            trace: Vec::new(),
-            minimized: None,
-            warnings: warnings.to_vec(),
-            coverage: last_coverage.borrow().clone(),
-            corpus: last_corpus.borrow().clone(),
-        },
-        Err(TestError::Abort(reason)) => {
-            let mut message = format!("proptest aborted: {reason}");
-            let context = take_reject_context()
-                .map(|context| format!("; last rejection: {context}"))
-                .unwrap_or_default();
-            message.push_str(&context);
-            failure_result(
-                RunFailure::new(message),
-                last_trace.borrow().clone(),
-                None,
-                warnings.to_vec(),
-                last_coverage.borrow().clone(),
-                last_corpus.borrow().clone(),
-            )
-        }
-        Err(TestError::Fail(_reason, sequence)) => {
-            let failure = last_failure.borrow().clone();
-            let trace = failure.trace;
-            let minimized = Some(MinimizedSequence {
-                invocations: sequence,
-            });
-            failure_result(
-                failure.failure,
-                trace,
-                minimized,
-                warnings.to_vec(),
-                failure.coverage,
-                failure.corpus,
-            )
-        }
-    }
-}
-
 fn trace_invocations(trace: &[TraceEntry]) -> Vec<ToolInvocation> {
     trace
         .iter()

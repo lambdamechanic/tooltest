@@ -37,7 +37,7 @@ Direct downloads (stable URLs):
 - `https://github.com/lambdamechanic/tooltest/releases/download/latest/tooltest-macos-arm64`
 - `https://github.com/lambdamechanic/tooltest/releases/download/latest/tooltest-windows-x86_64.exe`
 
-Build from source:
+Install from crates.io:
 
 ```bash
 cargo install tooltest

@@ -101,11 +101,6 @@ impl<'a> CoverageTracker<'a> {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn counts(&self) -> &BTreeMap<String, u64> {
-        &self.counts
-    }
-
     pub(super) fn corpus_report(&self) -> CorpusReport {
         CorpusReport {
             numbers: self.corpus.numbers().to_vec(),

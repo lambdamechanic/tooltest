@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
+use rmcp::model::{ListToolsResult, Tool};
+
 use crate::output_schema::compile_output_schema;
 use crate::schema::parse_list_tools;
 use crate::{JsonObject, RunWarning, RunWarningCode, SchemaConfig};
-use rmcp::model::{ListToolsResult, Tool};
 
 pub(super) fn collect_schema_warnings(tools: &[Tool]) -> Vec<RunWarning> {
     let mut warnings = Vec::new();

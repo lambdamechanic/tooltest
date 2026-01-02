@@ -1,14 +1,34 @@
-use super::*;
-use crate::generator::{clear_reject_context, set_reject_context_for_test, StateMachineSequence};
+use super::assertions::{
+    apply_default_assertions, apply_response_assertions, apply_sequence_assertions,
+    attach_failure_reason, attach_response, evaluate_checks, AssertionPayloads,
+};
+use super::coverage::{map_uncallable_reason, CoverageTracker};
+use super::result::{finalize_state_machine_result, FailureContext};
+use super::schema::{
+    build_output_validators, collect_schema_keyword_warnings, collect_schema_warnings,
+    validate_tools,
+};
+use super::state_machine::execute_state_machine_sequence;
+use super::transport::{run_with_transport, ConnectFuture};
+use super::{run_http, run_stdio, run_with_session};
+use crate::generator::{
+    clear_reject_context, set_reject_context_for_test, StateMachineSequence, UncallableReason,
+};
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, ErrorData, JsonObject, ResponseAssertion, RunWarningCode,
-    SchemaConfig, SequenceAssertion, SessionError, StateMachineConfig, ToolPredicate,
+    CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, ResponseAssertion,
+    RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions, SchemaConfig,
+    SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
+    ToolInvocation, ToolPredicate, TraceEntry,
 };
+use jsonschema::draft202012;
+use proptest::test_runner::TestError;
 use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents};
 use rmcp::transport::Transport;
-use serde_json::{json, Number};
+use serde_json::{json, Number, Value as JsonValue};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -86,78 +106,6 @@ fn assert_failure_reason_eq(result: &RunResult, expected: &str) {
 
 #[cfg(coverage)]
 fn assert_failure_reason_eq(_result: &RunResult, _expected: &str) {}
-
-#[test]
-fn finalize_run_result_uses_abort_path() {
-    let trace_entry = trace_entry_with(
-        "echo",
-        None,
-        CallToolResult::success(vec![Content::text("ok")]),
-    );
-    let last_trace = Rc::new(RefCell::new(vec![trace_entry]));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new(String::new()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let result = finalize_run_result(
-        Err(TestError::Abort("nope".into())),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(None)),
-        &Rc::new(RefCell::new(None)),
-        &[],
-    );
-
-    #[cfg(coverage)]
-    std::hint::black_box(&result);
-    #[cfg(not(coverage))]
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-    assert_eq!(result.trace.len(), 1);
-    assert!(result.minimized.is_none());
-}
-
-#[test]
-fn finalize_run_result_success_includes_coverage_and_corpus() {
-    let last_trace = Rc::new(RefCell::new(Vec::new()));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new(String::new()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let mut counts = BTreeMap::new();
-    counts.insert("echo".to_string(), 1u64);
-    let coverage = CoverageReport {
-        counts,
-        warnings: Vec::new(),
-    };
-    let corpus = CorpusReport {
-        numbers: vec![Number::from(1)],
-        integers: vec![1],
-        strings: vec!["alpha".to_string()],
-    };
-    let result = finalize_run_result(
-        Ok(()),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(Some(coverage.clone()))),
-        &Rc::new(RefCell::new(Some(corpus.clone()))),
-        &[],
-    );
-
-    assert!(outcome_is_success(&result.outcome));
-    assert!(result.trace.is_empty());
-    let coverage_report = result.coverage.expect("coverage");
-    assert_eq!(coverage_report.counts.get("echo").copied(), Some(1));
-    assert!(coverage_report.warnings.is_empty());
-
-    let corpus_report = result.corpus.expect("corpus");
-    assert_eq!(corpus_report.numbers, corpus.numbers);
-    assert_eq!(corpus_report.integers, corpus.integers);
-    assert_eq!(corpus_report.strings, corpus.strings);
-}
 
 #[test]
 fn outcome_is_success_reports_success_and_failure() {
@@ -653,157 +601,6 @@ fn coverage_smoke_for_assert_helpers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_reports_session_error() {
-    let tool = tool_with_schemas(
-        "echo",
-        json!({
-            "type": "object",
-            "properties": { "text": { "type": "string" } },
-            "required": ["text"]
-        }),
-        None,
-    );
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response).with_call_tool_error(ErrorData::new(
-        ErrorCode::INTERNAL_ERROR,
-        "call failed",
-        None,
-    ));
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: None,
-    };
-    let result = execute_sequence(
-        &session,
-        &BTreeMap::new(),
-        &AssertionSet::default(),
-        &[invocation],
-    )
-    .await;
-    let failure = result.expect_err("expected failure");
-    assert!(failure.failure.reason.contains("session error"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_reports_default_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::error(vec![Content::text("boom")]);
-    let transport = RunnerTransport::new(tool, response);
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: None,
-    };
-    let result = execute_sequence(
-        &session,
-        &BTreeMap::new(),
-        &AssertionSet::default(),
-        &[invocation],
-    )
-    .await;
-    let failure = result.expect_err("expected failure");
-    assert!(failure
-        .failure
-        .reason
-        .contains("returned an error response"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_reports_response_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: None,
-    };
-    let assertions = AssertionSet {
-        rules: vec![AssertionRule::Response(ResponseAssertion {
-            tool: None,
-            checks: vec![AssertionCheck {
-                target: AssertionTarget::Input,
-                pointer: "/missing".to_string(),
-                expected: json!(true),
-            }],
-        })],
-    };
-    let result = execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
-    let failure = result.expect_err("expected failure");
-    assert!(failure.failure.reason.contains("assertion pointer"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_reports_sequence_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: None,
-    };
-    let assertions = AssertionSet {
-        rules: vec![AssertionRule::Sequence(SequenceAssertion {
-            checks: vec![AssertionCheck {
-                target: AssertionTarget::Sequence,
-                pointer: "/missing".to_string(),
-                expected: json!(true),
-            }],
-        })],
-    };
-    let result = execute_sequence(&session, &BTreeMap::new(), &assertions, &[invocation]).await;
-    let failure = result.expect_err("expected failure");
-    assert!(failure.failure.reason.contains("assertion pointer"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_succeeds_with_valid_response() {
-    let tool = tool_with_schemas(
-        "echo",
-        json!({ "type": "object" }),
-        Some(json!({
-            "type": "object",
-            "properties": { "status": { "type": "string", "const": "ok" } },
-            "required": ["status"]
-        })),
-    );
-    let response = CallToolResult::structured(json!({ "status": "ok" }));
-    let transport = RunnerTransport::new(tool.clone(), response);
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let validators = build_output_validators(&[tool]).expect("validators");
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-
-    let result = execute_sequence(
-        &session,
-        &validators,
-        &AssertionSet::default(),
-        &[invocation],
-    )
-    .await;
-
-    let trace = result.expect("expected success");
-    assert_eq!(trace.len(), 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_succeeds_with_empty_sequence() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let session = connect_runner_transport(transport).await.expect("connect");
-
-    let result = execute_sequence(&session, &BTreeMap::new(), &AssertionSet::default(), &[]).await;
-
-    let trace = result.expect("expected success");
-    assert!(trace.is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_state_machine_rejects_invalid_schema() {
     let tool = tool_with_schemas(
         "echo",
@@ -1201,37 +998,6 @@ async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
 }
 
 #[test]
-fn finalize_run_result_uses_fail_path() {
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: None,
-    };
-    let trace_entry = trace_entry_with(
-        "echo",
-        None,
-        CallToolResult::success(vec![Content::text("ok")]),
-    );
-    let last_trace = Rc::new(RefCell::new(vec![trace_entry]));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new("failure".to_string()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let result = finalize_run_result(
-        Err(TestError::Fail("nope".into(), vec![invocation])),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(None)),
-        &Rc::new(RefCell::new(None)),
-        &[],
-    );
-
-    assert_failure_reason_eq(&result, "failure");
-    assert!(result.minimized.is_some());
-}
-
-#[test]
 fn finalize_state_machine_result_uses_fail_path() {
     let trace_entry = trace_entry_with(
         "echo",
@@ -1284,29 +1050,6 @@ fn finalize_state_machine_result_skips_minimized_without_invocations() {
 
     assert_failure_reason_eq(&result, "failure");
     assert!(result.minimized.is_none());
-}
-
-#[test]
-fn finalize_run_result_includes_reject_context_on_abort() {
-    clear_reject_context();
-    set_reject_context_for_test("predicate rejected".to_string());
-
-    let last_trace = Rc::new(RefCell::new(Vec::new()));
-    let last_failure = Rc::new(RefCell::new(FailureContext {
-        failure: RunFailure::new("failure".to_string()),
-        trace: Vec::new(),
-        coverage: None,
-        corpus: None,
-    }));
-    let result = finalize_run_result(
-        Err(TestError::Abort("nope".into())),
-        &last_trace,
-        &last_failure,
-        &Rc::new(RefCell::new(None)),
-        &Rc::new(RefCell::new(None)),
-        &[],
-    );
-    assert_failure_reason_contains(&result, "last rejection");
 }
 
 #[test]
@@ -1975,209 +1718,6 @@ fn map_uncallable_reason_maps_variants() {
         map_uncallable_reason(UncallableReason::RequiredValue),
         CoverageWarningReason::MissingRequiredValue
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_with_coverage_reports_session_error() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response).with_call_tool_error(ErrorData::new(
-        ErrorCode::INTERNAL_ERROR,
-        "call failed",
-        None,
-    ));
-    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
-
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-    let result = execute_sequence_with_coverage(
-        &session,
-        &BTreeMap::new(),
-        &AssertionSet { rules: Vec::new() },
-        &[invocation],
-        &mut tracker,
-    )
-    .await;
-
-    assert!(result.is_err());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_with_coverage_reports_response_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
-
-    let assertions = AssertionSet {
-        rules: vec![AssertionRule::Response(ResponseAssertion {
-            tool: Some("echo".to_string()),
-            checks: vec![AssertionCheck {
-                target: AssertionTarget::Input,
-                pointer: "/missing".to_string(),
-                expected: json!(true),
-            }],
-        })],
-    };
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-    let result = execute_sequence_with_coverage(
-        &session,
-        &BTreeMap::new(),
-        &assertions,
-        &[invocation],
-        &mut tracker,
-    )
-    .await;
-
-    assert!(result.is_err());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_with_coverage_reports_sequence_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
-
-    let assertions = AssertionSet {
-        rules: vec![AssertionRule::Sequence(SequenceAssertion {
-            checks: vec![AssertionCheck {
-                target: AssertionTarget::Sequence,
-                pointer: "/missing".to_string(),
-                expected: json!(true),
-            }],
-        })],
-    };
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-    let result = execute_sequence_with_coverage(
-        &session,
-        &BTreeMap::new(),
-        &assertions,
-        &[invocation],
-        &mut tracker,
-    )
-    .await;
-
-    assert!(result.is_err());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_with_coverage_reports_default_assertion_failure() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::error(vec![Content::text("boom")]);
-    let transport = RunnerTransport::new(tool, response);
-    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-
-    let result = execute_sequence_with_coverage(
-        &session,
-        &BTreeMap::new(),
-        &AssertionSet { rules: Vec::new() },
-        &[invocation],
-        &mut tracker,
-    )
-    .await;
-
-    let failure = result.expect_err("expected failure");
-    assert!(failure
-        .failure
-        .reason
-        .contains("returned an error response"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_with_coverage_reports_error_response() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult {
-        content: vec![Content::text("boom")],
-        structured_content: None,
-        is_error: Some(true),
-        meta: None,
-    };
-    let transport = RunnerTransport::new(tool, response);
-    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-
-    let result = execute_sequence_with_coverage(
-        &session,
-        &BTreeMap::new(),
-        &AssertionSet { rules: Vec::new() },
-        &[invocation],
-        &mut tracker,
-    )
-    .await;
-
-    let failure = result.expect_err("expected failure");
-    assert!(failure
-        .failure
-        .reason
-        .contains("returned an error response"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn execute_sequence_with_coverage_succeeds_and_tracks() {
-    let tool = tool_with_schemas(
-        "echo",
-        json!({ "type": "object" }),
-        Some(json!({
-            "type": "object",
-            "properties": { "status": { "type": "string", "const": "ok" } },
-            "required": ["status"]
-        })),
-    );
-    let response = CallToolResult::structured(json!({ "status": "ok" }));
-    let transport = RunnerTransport::new(tool.clone(), response);
-    let session = connect_runner_transport(transport).await.expect("connect");
-    let validators = build_output_validators(&[tool.clone()]).expect("validators");
-    let config = StateMachineConfig::default();
-    let tools = vec![tool];
-    let mut tracker = CoverageTracker::new(&tools, &config);
-    let invocation = ToolInvocation {
-        name: "echo".to_string().into(),
-        arguments: Some(JsonObject::new()),
-    };
-
-    let result = execute_sequence_with_coverage(
-        &session,
-        &validators,
-        &AssertionSet { rules: Vec::new() },
-        &[invocation],
-        &mut tracker,
-    )
-    .await;
-
-    let trace = result.expect("expected success");
-    assert_eq!(trace.len(), 1);
-    assert_eq!(tracker.counts().get("echo").copied(), Some(1));
 }
 
 #[test]

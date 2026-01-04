@@ -221,17 +221,15 @@ async fn calls_hosted_tool() {
 
 ---
 
-## Agent-assisted “fix loop” prompt examples
+## Agent-assisted “fix loop” prompt
 
-Pick one of these, paste it into Codex/Claude (with repo access), and let it iterate until tooltest is clean.
-
-### Codex prompt
+Paste this into your coding agent (with repo access) and let it iterate until tooltest is clean.
 
 ```text
-You are working in this repository.
+You have access to this repository and can run commands.
 Goal: make the repository’s MCP server(s) conform to the MCP spec as exercised by tooltest.
 
-Figure out how to run the MCP server from this repo (stdio or HTTP).
+Figure out how to start the MCP server from this repo (stdio or streamable HTTP).
 
 Run tooltest against it (examples below).
 
@@ -252,28 +250,10 @@ http: tooltest http --url "<server mcp url>"
 Return a short summary of what you changed and why, plus the final passing tooltest output snippet.
 ```
 
-### Claude prompt
-
-```text
-You have access to this repo and can run commands.
-Please make the MCP server(s) in this repository pass tooltest with zero failures.
-
-Process:
-
-Identify how to start the MCP server from the repo (stdio or streamable HTTP).
-
-Run tooltest against it.
-
-Fix the issues reported (protocol violations, tool schema mismatches, error handling, etc.).
-
-Re-run tooltest until it exits successfully.
-
-Use minimal, targeted changes. Avoid breaking tool names/schemas unless necessary.
-```
-
 ---
 
 ## Tips
 
 - If you want deeper coverage, increase the number of generated cases / run modes (when available).
 - If a failure is intermittent, keep the smallest reproduction from the report and turn it into a regression test.
+- You can install the tooltest agent skill with `sk install lambdamechanic/tooltest tooltest-fix-loop`.

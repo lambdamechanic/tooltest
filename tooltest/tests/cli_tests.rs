@@ -380,6 +380,79 @@ fn cli_can_enable_lenient_sourcing_via_flag() {
 }
 
 #[test]
+fn cli_allows_tool_allowlist_match() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--tool-allowlist",
+        "echo",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
+fn cli_rejects_tool_allowlist_miss() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--tool-allowlist",
+        "Echo",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    let reason = payload["outcome"]["reason"]
+        .as_str()
+        .expect("failure reason");
+    assert!(reason.contains("no eligible tools"), "reason: {reason}");
+}
+
+#[test]
+fn cli_rejects_tool_blocklist_match() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--tool-blocklist",
+        "echo",
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    let reason = payload["outcome"]["reason"]
+        .as_str()
+        .expect("failure reason");
+    assert!(reason.contains("no eligible tools"), "reason: {reason}");
+}
+
+#[test]
 fn run_stdio_reports_success_with_env_and_cwd() {
     let Some(server) = test_server() else {
         return;

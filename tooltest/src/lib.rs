@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::ops::RangeInclusive;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
     CoverageWarningReason, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
-    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
+    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolPredicate,
 };
 
 #[derive(Parser)]
@@ -40,6 +41,12 @@ pub struct Cli {
     /// State-machine config as inline JSON or @path to a JSON file.
     #[arg(long, value_name = "JSON|@PATH")]
     pub state_machine_config: Option<String>,
+    /// Allowlist tool names eligible for invocation generation (repeatable).
+    #[arg(long = "tool-allowlist")]
+    pub tool_allowlist: Vec<String>,
+    /// Blocklist tool names excluded from invocation generation (repeatable).
+    #[arg(long = "tool-blocklist")]
+    pub tool_blocklist: Vec<String>,
     /// Emit JSON output instead of human-readable output.
     #[arg(long)]
     pub json: bool,
@@ -145,7 +152,10 @@ pub async fn run(cli: Cli) -> ExitCode {
         state_machine.log_corpus_deltas = true;
     }
     let dump_corpus = state_machine.dump_corpus;
-    let run_config = RunConfig::new().with_state_machine(state_machine);
+    let mut run_config = RunConfig::new().with_state_machine(state_machine);
+    if let Some(predicate) = build_tool_predicate(&cli.tool_allowlist, &cli.tool_blocklist) {
+        run_config = run_config.with_predicate(predicate);
+    }
 
     let result = match cli.command {
         Command::Stdio {
@@ -190,6 +200,27 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
             eprintln!("corpus:\n{payload}");
         }
     }
+}
+
+fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<ToolPredicate> {
+    if allowlist.is_empty() && blocklist.is_empty() {
+        return None;
+    }
+    let allowlist = (!allowlist.is_empty()).then(|| allowlist.to_vec());
+    let blocklist = (!blocklist.is_empty()).then(|| blocklist.to_vec());
+    Some(Arc::new(move |tool_name, _input| {
+        if let Some(allowlist) = allowlist.as_ref() {
+            if !allowlist.iter().any(|entry| entry == tool_name) {
+                return false;
+            }
+        }
+        if let Some(blocklist) = blocklist.as_ref() {
+            if blocklist.iter().any(|entry| entry == tool_name) {
+                return false;
+            }
+        }
+        true
+    }))
 }
 
 pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
@@ -345,6 +376,7 @@ mod tests {
         NumberOrString, PaginatedRequestParam, Tool,
     };
     use rmcp::transport::Transport;
+    use serde_json::json;
     use std::sync::Arc;
     use tooltest_core::{
         list_tools_http, list_tools_stdio, list_tools_with_session, CorpusReport, CoverageReport,
@@ -371,6 +403,22 @@ mod tests {
     fn build_sequence_len_accepts_valid_range() {
         let range = build_sequence_len(1, 3).expect("range");
         assert_eq!(range, 1..=3);
+    }
+
+    #[test]
+    fn build_tool_predicate_blocks_blocklisted_tool() {
+        let predicate = build_tool_predicate(&[], &[String::from("echo")]).expect("predicate");
+
+        assert!(!predicate("echo", &json!({})));
+        assert!(predicate("other", &json!({})));
+    }
+
+    #[test]
+    fn build_tool_predicate_rejects_non_allowlisted_tool() {
+        let predicate = build_tool_predicate(&[String::from("echo")], &[]).expect("predicate");
+
+        assert!(!predicate("other", &json!({})));
+        assert!(predicate("echo", &json!({})));
     }
 
     #[test]
@@ -876,6 +924,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -901,6 +951,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -925,6 +977,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: Some("{bad json}".to_string()),
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -948,6 +1002,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -971,6 +1027,8 @@ mod tests {
             log_corpus_deltas: true,
             no_lenient_sourcing: true,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -994,6 +1052,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: true,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1017,6 +1077,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: true,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1040,6 +1102,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1063,6 +1127,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1086,6 +1152,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
@@ -1111,6 +1179,8 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),

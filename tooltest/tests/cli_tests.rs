@@ -473,6 +473,7 @@ fn cli_rejects_tool_blocklist_match() {
 }
 
 #[test]
+
 fn cli_rejects_pre_run_hook_failure_with_details() {
     let Some(server) = test_server() else {
         return;
@@ -625,6 +626,7 @@ fn cli_runs_pre_run_hook_before_validation() {
 }
 
 #[test]
+||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
 fn run_stdio_reports_success_with_env_and_cwd() {
     let Some(server) = test_server() else {
         return;

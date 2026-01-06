@@ -253,6 +253,20 @@ pub enum AssertionTarget {
     Sequence,
 }
 
+/// Command executed before each proptest case.
+#[derive(Clone, Debug)]
+pub struct PreRunCommand {
+    /// argv array for the command (command + args).
+    pub argv: Vec<String>,
+}
+
+impl PreRunCommand {
+    /// Creates a pre-run command from argv.
+    pub fn new(argv: Vec<String>) -> Self {
+        Self { argv }
+    }
+}
+
 /// Top-level configuration for executing a tooltest run.
 #[derive(Clone)]
 pub struct RunConfig {
@@ -264,6 +278,8 @@ pub struct RunConfig {
     pub assertions: AssertionSet,
     /// State-machine generator configuration.
     pub state_machine: StateMachineConfig,
+    /// Optional pre-run command hook.
+    pub pre_run_command: Option<PreRunCommand>,
 }
 
 impl RunConfig {
@@ -277,6 +293,7 @@ impl RunConfig {
             predicate: None,
             assertions: AssertionSet::default(),
             state_machine: StateMachineConfig::default(),
+            pre_run_command: None,
         }
     }
 
@@ -303,6 +320,12 @@ impl RunConfig {
         self.state_machine = state_machine;
         self
     }
+
+    /// Sets the pre-run command hook.
+    pub fn with_pre_run_command(mut self, pre_run_command: PreRunCommand) -> Self {
+        self.pre_run_command = Some(pre_run_command);
+        self
+    }
 }
 
 impl Default for RunConfig {
@@ -318,6 +341,7 @@ impl fmt::Debug for RunConfig {
             .field("predicate", &self.predicate.is_some())
             .field("assertions", &self.assertions)
             .field("state_machine", &self.state_machine)
+            .field("pre_run_command", &self.pre_run_command.is_some())
             .finish()
     }
 }

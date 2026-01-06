@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::ops::RangeInclusive;
+use std::process::Command;
 use std::rc::Rc;
 
 use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
+use serde_json::json;
 
 use crate::generator::{clear_reject_context, state_machine_sequence_strategy};
 use crate::{
-    CorpusReport, CoverageReport, RunConfig, RunFailure, RunOutcome, RunResult, SessionDriver,
-    TraceEntry,
+    CorpusReport, CoverageReport, PreRunCommand, RunConfig, RunFailure, RunOutcome, RunResult,
+    SessionDriver, TraceEntry,
 };
 
 use super::assertions::attach_failure_reason;
@@ -15,6 +17,53 @@ use super::coverage::{coverage_failure, CoverageTracker};
 use super::prepare::prepare_run;
 use super::result::{failure_result, finalize_state_machine_result, FailureContext};
 use super::state_machine::execute_state_machine_sequence;
+
+fn run_pre_run_command(command: &PreRunCommand) -> Result<(), RunFailure> {
+    let (program, args) = command.argv.split_first().ok_or_else(|| RunFailure {
+        reason: "pre-run command argv is empty".to_string(),
+        code: Some("pre_run_command_invalid".to_string()),
+        details: Some(json!({
+            "exit_code": null,
+            "stdout": "",
+            "stderr": "pre-run command argv is empty",
+        })),
+    })?;
+
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| RunFailure {
+            reason: format!("pre-run command failed to start: {error}"),
+            code: Some("pre_run_command_failed".to_string()),
+            details: Some(json!({
+                "exit_code": null,
+                "stdout": "",
+                "stderr": error.to_string(),
+            })),
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let code = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Err(RunFailure {
+        reason: format!("pre-run command exited with code {code}"),
+        code: Some("pre_run_command_failed".to_string()),
+        details: Some(json!({
+            "exit_code": output.status.code(),
+            "stdout": stdout,
+            "stderr": stderr,
+        })),
+    })
+}
 
 /// Configuration for proptest-driven run behavior.
 #[derive(Clone, Debug)]
@@ -110,6 +159,21 @@ pub async fn run_with_session(
         }
     };
 
+    if options.cases == 0 {
+        if let Some(command) = &config.pre_run_command {
+            if let Err(failure) = run_pre_run_command(command) {
+                return failure_result(
+                    failure,
+                    prelude_trace.as_ref().clone(),
+                    None,
+                    warnings.as_ref().clone(),
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
     let run_result = runner.run(&strategy, {
         let assertions = assertions.clone();
         let last_trace = last_trace.clone();
@@ -124,6 +188,16 @@ pub async fn run_with_session(
                     let last_coverage = last_coverage.clone();
                     let last_corpus = last_corpus.clone();
                     handle.block_on(async {
+                        if let Some(command) = &config.pre_run_command {
+                            if let Err(failure) = run_pre_run_command(command) {
+                                return Err(FailureContext {
+                                    failure,
+                                    trace: Vec::new(),
+                                    coverage: None,
+                                    corpus: None,
+                                });
+                            }
+                        }
                         let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
                         let min_len = if config.state_machine.coverage_rules.is_empty() {
                             Some(*options.sequence_len.start())

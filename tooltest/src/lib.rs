@@ -8,10 +8,13 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
 
+
     CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
     CoverageWarningReason, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
+    CoverageWarningReason, HttpConfig, RunConfig, RunOutcome, RunResult, RunWarning,
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolPredicate,
 };
 
@@ -52,10 +55,12 @@ pub struct Cli {
     #[arg(long = "tool-blocklist")]
     pub tool_blocklist: Vec<String>,
 
+
     /// Shell command to execute before validation and each run.
     #[arg(long)]
     pub pre_run_hook: Option<String>,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
     /// Emit JSON output instead of human-readable output.
     #[arg(long)]
     pub json: bool,
@@ -163,11 +168,13 @@ pub async fn run(cli: Cli) -> ExitCode {
     let dump_corpus = state_machine.dump_corpus;
     let mut run_config = RunConfig::new().with_state_machine(state_machine);
 
+
     if let Some(hook) = cli.pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
     }
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
     let run_config = RunConfig::new().with_state_machine(state_machine);
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
     if let Some(predicate) = build_tool_predicate(&cli.tool_allowlist, &cli.tool_blocklist) {
         run_config = run_config.with_predicate(predicate);
     }
@@ -942,8 +949,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -972,8 +981,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -1001,8 +1012,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1028,6 +1041,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+
 
             pre_run_hook: None,
             json: false,
@@ -1057,6 +1071,7 @@ mod tests {
             tool_blocklist: Vec::new(),
             pre_run_hook: Some("true".to_string()),
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1083,8 +1098,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1111,8 +1128,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: true,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1139,8 +1158,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: true,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1167,8 +1188,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1195,8 +1218,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1223,8 +1248,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
@@ -1253,8 +1280,10 @@ mod tests {
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
 
+
             pre_run_hook: None,
 ||||||| parent of 9b686ff (Add tool allowlist/blocklist CLI flags)
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
             json: false,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),

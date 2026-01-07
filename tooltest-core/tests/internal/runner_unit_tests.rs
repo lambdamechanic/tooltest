@@ -741,6 +741,7 @@ async fn run_with_session_reports_pre_run_hook_failure_during_execution() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+
 async fn run_with_session_applies_pre_run_hook_env() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
@@ -759,6 +760,7 @@ async fn run_with_session_applies_pre_run_hook_env() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+||||||| parent of 1f42e8d (Add pre-run hook support and docs)
 async fn run_with_session_reports_invalid_output_schema() {
     let tool = tool_with_schemas(
         "echo",

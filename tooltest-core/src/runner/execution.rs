@@ -12,6 +12,7 @@ use crate::{
 
 use super::assertions::attach_failure_reason;
 use super::coverage::{coverage_failure, CoverageTracker};
+use super::pre_run::run_pre_run_hook;
 use super::prepare::prepare_run;
 use super::result::{failure_result, finalize_state_machine_result, FailureContext};
 use super::state_machine::execute_state_machine_sequence;
@@ -124,6 +125,14 @@ pub async fn run_with_session(
                     let last_coverage = last_coverage.clone();
                     let last_corpus = last_corpus.clone();
                     handle.block_on(async {
+                        if let Err(failure) = run_pre_run_hook(config).await {
+                            return Err(FailureContext {
+                                failure,
+                                trace: Vec::new(),
+                                coverage: None,
+                                corpus: None,
+                            });
+                        }
                         let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
                         let min_len = if config.state_machine.coverage_rules.is_empty() {
                             Some(*options.sequence_len.start())

@@ -143,13 +143,19 @@ pub fn tool_stub() -> Tool {
         input_schema.insert("required".to_string(), json!(["value"]));
     }
     let input_schema = serde_json::Value::Object(input_schema);
-    let output_schema = json!({
-        "type": "object",
-        "properties": {
-            "status": { "type": "string", "const": "ok" }
-        },
-        "required": ["status"]
-    });
+    let output_schema = if env::var_os("TOOLTEST_INVALID_OUTPUT_SCHEMA").is_some() {
+        json!({
+            "type": "string"
+        })
+    } else {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "const": "ok" }
+            },
+            "required": ["status"]
+        })
+    };
     Tool {
         name: "echo".to_string().into(),
         title: None,

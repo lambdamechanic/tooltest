@@ -453,6 +453,158 @@ fn cli_rejects_tool_blocklist_match() {
 }
 
 #[test]
+fn cli_rejects_pre_run_hook_failure_with_details() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--pre-run-hook",
+        r#"echo pre-run-out; echo pre-run-err 1>&2; exit 7"#,
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    assert_eq!(payload["outcome"]["code"], "pre_run_hook_failed");
+    let details = &payload["outcome"]["details"];
+    assert_eq!(details["exit_code"], 7);
+    let stdout = details["stdout"].as_str().unwrap_or("");
+    let stderr = details["stderr"].as_str().unwrap_or("");
+    assert!(stdout.contains("pre-run-out"), "stdout: {stdout}");
+    assert!(stderr.contains("pre-run-err"), "stderr: {stderr}");
+}
+
+#[test]
+fn cli_rejects_pre_run_hook_start_failure() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--pre-run-hook",
+        "echo ok",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "PATH=",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    assert_eq!(payload["outcome"]["code"], "pre_run_hook_failed");
+    let reason = payload["outcome"]["reason"].as_str().unwrap_or("");
+    assert!(
+        reason.contains("pre-run hook failed to start"),
+        "reason: {reason}"
+    );
+    let details = &payload["outcome"]["details"];
+    assert!(details["exit_code"].is_null());
+}
+
+#[test]
+fn cli_reports_pre_run_hook_failure_during_execution() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let dir = temp_dir("pre-run-fail-late");
+    fs::create_dir_all(&dir).expect("create dir");
+    let marker = dir.join("hook-marker");
+    let hook = format!(
+        "if [ -f \"{marker}\" ]; then echo pre-run-err 1>&2; exit 9; fi; touch \"{marker}\"",
+        marker = marker.display()
+    );
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--pre-run-hook",
+        &hook,
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    assert_eq!(payload["outcome"]["code"], "pre_run_hook_failed");
+    let details = &payload["outcome"]["details"];
+    assert_eq!(details["exit_code"], 9);
+    assert!(marker.exists(), "pre-run hook did not create marker");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cli_pre_run_hook_inherits_stdio_env_and_cwd() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let cwd = temp_dir("pre-run-hook");
+    fs::create_dir_all(&cwd).expect("create cwd");
+    let cwd_string = cwd.to_string_lossy().into_owned();
+    let hook = r#"test "$HOOK_ENV" = "expected" && test "$(pwd)" = "$HOOK_CWD""#;
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--pre-run-hook",
+        hook,
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "HOOK_ENV=expected",
+        "--env",
+        &format!("HOOK_CWD={cwd_string}"),
+        "--cwd",
+        &cwd_string,
+    ]);
+    let _ = fs::remove_dir_all(&cwd);
+
+    assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
+fn cli_runs_pre_run_hook_before_validation() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let dir = temp_dir("pre-run-before-validation");
+    fs::create_dir_all(&dir).expect("create dir");
+    let marker = dir.join("hook-ran");
+    let hook = format!("printf 'hook' > \"{}\"", marker.display());
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--pre-run-hook",
+        &hook,
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_INVALID_OUTPUT_SCHEMA=1",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
+    assert!(marker.exists(), "pre-run hook did not create marker");
+}
+
+#[test]
 fn run_stdio_reports_success_with_env_and_cwd() {
     let Some(server) = test_server() else {
         return;

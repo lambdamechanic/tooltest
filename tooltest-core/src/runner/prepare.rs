@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{RunConfig, RunFailure, RunResult, RunWarning, SessionDriver, Tool, TraceEntry};
 
+use super::pre_run::run_pre_run_hook;
 use super::result::failure_result;
 use super::schema::{build_output_validators, collect_schema_warnings, validate_tools};
 
@@ -31,6 +32,17 @@ pub(super) async fn prepare_run(
             ));
         }
     };
+
+    if let Err(failure) = run_pre_run_hook(config).await {
+        return Err(failure_result(
+            failure,
+            prelude_trace.clone(),
+            None,
+            Vec::new(),
+            None,
+            None,
+        ));
+    }
 
     let tools = match validate_tools(tools, &config.schema) {
         Ok(tools) => tools,

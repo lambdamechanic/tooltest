@@ -16,6 +16,7 @@ const EXPECTATION_ENV_KEYS: &[&str] = &[
     "EXPECT_ARG",
     "EXPECT_CWD",
     "FORCE_CWD_ERROR",
+    "TOOLTEST_INVALID_OUTPUT_SCHEMA",
     "TOOLTEST_REQUIRE_VALUE",
     "TOOLTEST_VALUE_TYPE",
 ];
@@ -333,6 +334,17 @@ fn tool_stub_requires_value_when_env_set() {
         .get("required")
         .and_then(|value| value.as_array());
     assert!(required.is_some());
+}
+
+#[test]
+fn tool_stub_uses_invalid_output_schema_when_env_set() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_INVALID_OUTPUT_SCHEMA", "1".to_string());
+    let tool = tool_stub();
+    let output_schema = tool.output_schema.as_ref().expect("output schema");
+    let output_type = output_schema.get("type").and_then(|value| value.as_str());
+    assert_eq!(output_type, Some("string"));
 }
 
 #[test]

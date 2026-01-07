@@ -159,6 +159,33 @@ impl StdioConfig {
     }
 }
 
+/// Configuration for a pre-run hook command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreRunHook {
+    /// Shell command string to execute before each run and validation.
+    pub command: String,
+    /// Environment variables to add or override for the hook process.
+    pub env: BTreeMap<String, String>,
+    /// Optional working directory for the hook process.
+    pub cwd: Option<String>,
+}
+
+impl PreRunHook {
+    /// Creates a pre-run hook with default env and cwd settings.
+    pub fn new(command: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            env: BTreeMap::new(),
+            cwd: None,
+        }
+    }
+
+    fn apply_stdio_context(&mut self, endpoint: &StdioConfig) {
+        self.env = endpoint.env.clone();
+        self.cwd = endpoint.cwd.clone();
+    }
+}
+
 /// Configuration for an HTTP-based MCP endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HttpConfig {
@@ -264,6 +291,8 @@ pub struct RunConfig {
     pub assertions: AssertionSet,
     /// State-machine generator configuration.
     pub state_machine: StateMachineConfig,
+    /// Optional pre-run hook to execute before validation and each case.
+    pub pre_run_hook: Option<PreRunHook>,
 }
 
 impl RunConfig {
@@ -277,6 +306,7 @@ impl RunConfig {
             predicate: None,
             assertions: AssertionSet::default(),
             state_machine: StateMachineConfig::default(),
+            pre_run_hook: None,
         }
     }
 
@@ -303,6 +333,18 @@ impl RunConfig {
         self.state_machine = state_machine;
         self
     }
+
+    /// Sets the pre-run hook for this run.
+    pub fn with_pre_run_hook(mut self, hook: PreRunHook) -> Self {
+        self.pre_run_hook = Some(hook);
+        self
+    }
+
+    pub(crate) fn apply_stdio_pre_run_context(&mut self, endpoint: &StdioConfig) {
+        if let Some(hook) = self.pre_run_hook.as_mut() {
+            hook.apply_stdio_context(endpoint);
+        }
+    }
 }
 
 impl Default for RunConfig {
@@ -318,6 +360,7 @@ impl fmt::Debug for RunConfig {
             .field("predicate", &self.predicate.is_some())
             .field("assertions", &self.assertions)
             .field("state_machine", &self.state_machine)
+            .field("pre_run_hook", &self.pre_run_hook.is_some())
             .finish()
     }
 }

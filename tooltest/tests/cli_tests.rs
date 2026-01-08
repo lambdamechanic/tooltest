@@ -8,6 +8,8 @@ fn run_tooltest(args: &[&str]) -> Output {
     if args.iter().any(|arg| *arg == "stdio") {
         full_args.push("--env");
         full_args.push("LLVM_PROFILE_FILE=/dev/null");
+        full_args.push("--env");
+        full_args.push("TOOLTEST_TEST_SERVER_ALLOW_STDIN=1");
     }
     Command::new(tooltest)
         .args(full_args)
@@ -644,6 +646,8 @@ fn run_stdio_reports_success_with_env_and_cwd() {
             "--env",
             &format!("EXPECT_CWD={}", cwd.display()),
             "--env",
+            "TOOLTEST_TEST_SERVER_ALLOW_STDIN=1",
+            "--env",
             "LLVM_PROFILE_FILE=/dev/null",
             "--cwd",
             &cwd.to_string_lossy(),
@@ -663,7 +667,8 @@ fn test_server_exits_on_expectation_failure() {
         .env("EXPECT_ARG", "missing-arg")
         .output()
         .expect("run test server");
-    assert_eq!(output.status.code(), Some(2));
+    let expected = if cfg!(coverage) { Some(101) } else { Some(2) };
+    assert_eq!(output.status.code(), expected);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("tooltest_test_server"));
 }
@@ -678,7 +683,8 @@ fn test_server_exits_on_forced_cwd_error() {
         .env("FORCE_CWD_ERROR", "1")
         .output()
         .expect("run test server");
-    assert_eq!(output.status.code(), Some(2));
+    let expected = if cfg!(coverage) { Some(101) } else { Some(2) };
+    assert_eq!(output.status.code(), expected);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("failed to read cwd"));
 }

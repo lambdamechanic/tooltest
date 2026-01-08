@@ -1,6 +1,6 @@
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, HttpConfig, PreRunCommand, ResponseAssertion, RunConfig,
+    CoverageWarningReason, ErrorCode, HttpConfig, PreRunHook, ResponseAssertion, RunConfig,
     RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig,
     TraceEntry,
 };
@@ -149,14 +149,33 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
     let driver = connect_runner_transport(transport).await.expect("connect");
 
     let path = temp_hook_path("per-case");
-    let hook = PreRunCommand::new(vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        format!("printf 'hook\\n' >> {}", path.display()),
-    ]);
-    let config = RunConfig::new().with_pre_run_command(hook);
+    let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
+    let config = RunConfig::new().with_pre_run_hook(hook);
     let options = RunnerOptions {
         cases: 2,
+        sequence_len: 1..=1,
+    };
+
+    let result = crate::run_with_session(&driver, &config, options).await;
+
+    assert!(matches!(result.outcome, RunOutcome::Success));
+    let contents = fs::read_to_string(&path).expect("read hook log");
+    assert_eq!(contents.lines().count(), 3);
+    let _ = fs::remove_file(&path);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let path = temp_hook_path("zero-case");
+    let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
+    let config = RunConfig::new().with_pre_run_hook(hook);
+    let options = RunnerOptions {
+        cases: 0,
         sequence_len: 1..=1,
     };
 
@@ -169,45 +188,14 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let path = temp_hook_path("zero-case");
-    let hook = PreRunCommand::new(vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        format!("printf 'hook\\n' >> {}", path.display()),
-    ]);
-    let config = RunConfig::new().with_pre_run_command(hook);
-    let options = RunnerOptions {
-        cases: 0,
-        sequence_len: 1..=1,
-    };
-
-    let result = crate::run_with_session(&driver, &config, options).await;
-
-    assert!(matches!(result.outcome, RunOutcome::Success));
-    let contents = fs::read_to_string(&path).expect("read hook log");
-    assert_eq!(contents.lines().count(), 1);
-    let _ = fs::remove_file(&path);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_pre_run_hook_failure_details() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let hook = PreRunCommand::new(vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        "echo hook-out; echo hook-err 1>&2; exit 7".to_string(),
-    ]);
-    let config = RunConfig::new().with_pre_run_command(hook);
+    let hook = PreRunHook::new("echo hook-out; echo hook-err 1>&2; exit 7");
+    let config = RunConfig::new().with_pre_run_hook(hook);
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -217,7 +205,7 @@ async fn run_with_session_reports_pre_run_hook_failure_details() {
 
     match result.outcome {
         RunOutcome::Failure(failure) => {
-            assert_eq!(failure.code.as_deref(), Some("pre_run_command_failed"));
+            assert_eq!(failure.code.as_deref(), Some("pre_run_hook_failed"));
             let details = failure.details.expect("details");
             assert_eq!(
                 details.get("exit_code").and_then(|value| value.as_i64()),
@@ -239,14 +227,16 @@ async fn run_with_session_reports_pre_run_hook_failure_details() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_pre_run_hook_invalid_argv() {
+async fn run_with_session_reports_pre_run_hook_start_error() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let hook = PreRunCommand::new(Vec::new());
-    let config = RunConfig::new().with_pre_run_command(hook);
+    let missing_cwd = temp_hook_path("missing-hook-cwd");
+    let mut hook = PreRunHook::new("echo ok");
+    hook.cwd = Some(missing_cwd.to_string_lossy().into_owned());
+    let config = RunConfig::new().with_pre_run_hook(hook);
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -256,32 +246,8 @@ async fn run_with_session_reports_pre_run_hook_invalid_argv() {
 
     match result.outcome {
         RunOutcome::Failure(failure) => {
-            assert_eq!(failure.code.as_deref(), Some("pre_run_command_invalid"));
-            assert_eq!(failure.reason, "pre-run command argv is empty");
-        }
-        _ => panic!("expected failure"),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_pre_run_hook_spawn_error() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
-
-    let hook = PreRunCommand::new(vec!["/nope/tooltest-missing-command".to_string()]);
-    let config = RunConfig::new().with_pre_run_command(hook);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
-
-    let result = crate::run_with_session(&driver, &config, options).await;
-
-    match result.outcome {
-        RunOutcome::Failure(failure) => {
-            assert_eq!(failure.code.as_deref(), Some("pre_run_command_failed"));
+            assert_eq!(failure.code.as_deref(), Some("pre_run_hook_failed"));
+            assert!(failure.reason.contains("failed to start"));
             let details = failure.details.expect("details");
             let stderr = details
                 .get("stderr")
@@ -300,12 +266,12 @@ async fn run_with_session_reports_pre_run_hook_failure_for_zero_case_runs() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let hook = PreRunCommand::new(vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        "exit 3".to_string(),
-    ]);
-    let config = RunConfig::new().with_pre_run_command(hook);
+    let marker = temp_hook_path("zero-case-fail");
+    let hook = PreRunHook::new(format!(
+        "if [ -f \"{marker}\" ]; then exit 3; else printf 'hook' > \"{marker}\"; fi",
+        marker = marker.display()
+    ));
+    let config = RunConfig::new().with_pre_run_hook(hook);
     let options = RunnerOptions {
         cases: 0,
         sequence_len: 1..=1,
@@ -315,7 +281,7 @@ async fn run_with_session_reports_pre_run_hook_failure_for_zero_case_runs() {
 
     match result.outcome {
         RunOutcome::Failure(failure) => {
-            assert_eq!(failure.code.as_deref(), Some("pre_run_command_failed"));
+            assert_eq!(failure.code.as_deref(), Some("pre_run_hook_failed"));
             let details = failure.details.expect("details");
             assert_eq!(
                 details.get("exit_code").and_then(|value| value.as_i64()),
@@ -324,6 +290,7 @@ async fn run_with_session_reports_pre_run_hook_failure_for_zero_case_runs() {
         }
         _ => panic!("expected failure"),
     }
+    let _ = fs::remove_file(marker);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -333,12 +300,8 @@ async fn run_with_session_reports_pre_run_hook_signal_exit() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let hook = PreRunCommand::new(vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        "kill -9 $$".to_string(),
-    ]);
-    let config = RunConfig::new().with_pre_run_command(hook);
+    let hook = PreRunHook::new("kill -9 $$");
+    let config = RunConfig::new().with_pre_run_hook(hook);
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -348,8 +311,13 @@ async fn run_with_session_reports_pre_run_hook_signal_exit() {
 
     match result.outcome {
         RunOutcome::Failure(failure) => {
-            assert_eq!(failure.code.as_deref(), Some("pre_run_command_failed"));
-            assert!(failure.reason.contains("unknown"));
+            assert_eq!(failure.code.as_deref(), Some("pre_run_hook_failed"));
+            assert_eq!(failure.reason, "pre-run hook failed");
+            let details = failure.details.expect("details");
+            assert!(details
+                .get("signal")
+                .and_then(|value| value.as_i64())
+                .is_some());
         }
         _ => panic!("expected failure"),
     }

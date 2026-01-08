@@ -1026,6 +1026,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_applies_pre_run_hook_and_tool_filter() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: vec!["echo".to_string()],
+            tool_blocklist: Vec::new(),
+            pre_run_hook: Some("true".to_string()),
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
     async fn run_applies_state_machine_overrides() {
         let cli = Cli {
             cases: 1,

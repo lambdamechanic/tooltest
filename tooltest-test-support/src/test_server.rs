@@ -11,12 +11,50 @@ use rmcp::model::{
 use serde_json::json;
 
 pub fn run_main() {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let mut lines = stdin.lock().lines();
-    if let Err(message) = run(&mut lines, &mut stdout) {
-        eprintln!("tooltest_test_server: {message}");
+    run_main_with_exit(default_exit);
+}
+
+fn default_exit(message: String) {
+    eprintln!("tooltest_test_server: {message}");
+    #[cfg(not(coverage))]
+    {
+        if env::var("TOOLTEST_TEST_SERVER_NO_EXIT").is_ok() {
+            panic!("tooltest_test_server: {message}");
+        }
         std::process::exit(2);
+    }
+    #[cfg(coverage)]
+    {
+        panic!("tooltest_test_server: {message}");
+    }
+}
+
+#[cfg(not(coverage))]
+fn stdin_lines() -> Box<dyn Iterator<Item = io::Result<String>>> {
+    let stdin = io::stdin();
+    Box::new(stdin.lock().lines())
+}
+
+fn run_main_with_exit(exit: impl FnOnce(String)) {
+    let mut stdout = io::stdout();
+    let use_empty_stdin = env::var("TOOLTEST_TEST_SERVER_NO_STDIN").is_ok();
+    let mut lines: Box<dyn Iterator<Item = io::Result<String>>>;
+    if use_empty_stdin {
+        lines = Box::new(std::iter::empty());
+    } else if let Ok(stdin_payload) = env::var("TOOLTEST_TEST_SERVER_STDIN") {
+        lines = Box::new(io::Cursor::new(stdin_payload).lines());
+    } else {
+        #[cfg(coverage)]
+        {
+            lines = Box::new(std::iter::empty());
+        }
+        #[cfg(not(coverage))]
+        {
+            lines = stdin_lines();
+        }
+    }
+    if let Err(message) = run(&mut lines, &mut stdout) {
+        exit(message);
     }
 }
 

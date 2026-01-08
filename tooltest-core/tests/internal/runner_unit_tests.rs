@@ -741,6 +741,24 @@ async fn run_with_session_reports_pre_run_hook_failure_during_execution() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_applies_pre_run_hook_env() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let mut hook = PreRunHook::new("test \"$HOOK_ENV\" = \"ok\"");
+    hook.env.insert("HOOK_ENV".to_string(), "ok".to_string());
+    let config = RunConfig::new().with_pre_run_hook(hook);
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    assert_success(&result);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_invalid_output_schema() {
     let tool = tool_with_schemas(
         "echo",

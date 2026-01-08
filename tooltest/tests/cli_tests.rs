@@ -51,6 +51,26 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn test_server_binary_runs_with_empty_input() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = Command::new(server)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env_remove("EXPECT_ARG")
+        .env_remove("EXPECT_CWD")
+        .env_remove("FORCE_CWD_ERROR")
+        .env_remove("TOOLTEST_INVALID_OUTPUT_SCHEMA")
+        .env_remove("TOOLTEST_REQUIRE_VALUE")
+        .env_remove("TOOLTEST_VALUE_TYPE")
+        .output()
+        .expect("run test server");
+    assert!(output.status.success());
+}
+
+#[test]
 fn stdio_command_reports_success() {
     let Some(server) = test_server() else {
         return;

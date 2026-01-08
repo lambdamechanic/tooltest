@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::ops::RangeInclusive;
 use std::process::ExitCode;
@@ -228,16 +228,18 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
     if allowlist.is_empty() && blocklist.is_empty() {
         return None;
     }
-    let allowlist = (!allowlist.is_empty()).then(|| allowlist.to_vec());
-    let blocklist = (!blocklist.is_empty()).then(|| blocklist.to_vec());
+    let allowlist =
+        (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
+    let blocklist =
+        (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
     Some(Arc::new(move |tool_name, _input| {
         if let Some(allowlist) = allowlist.as_ref() {
-            if !allowlist.iter().any(|entry| entry == tool_name) {
+            if !allowlist.contains(tool_name) {
                 return false;
             }
         }
         if let Some(blocklist) = blocklist.as_ref() {
-            if blocklist.iter().any(|entry| entry == tool_name) {
+            if blocklist.contains(tool_name) {
                 return false;
             }
         }

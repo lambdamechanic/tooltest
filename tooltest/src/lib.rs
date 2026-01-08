@@ -244,6 +244,9 @@ pub fn parse_pre_run_hook(raw: &str) -> Result<PreRunCommand, String> {
     if argv.is_empty() {
         return Err("pre-run-hook must be a non-empty JSON array".to_string());
     }
+    if argv.iter().any(|arg| arg.is_empty()) {
+        return Err("pre-run-hook argv entries must be non-empty strings".to_string());
+    }
     Ok(PreRunCommand::new(argv))
 }
 
@@ -466,6 +469,12 @@ mod tests {
     fn parse_pre_run_hook_rejects_empty_argv() {
         let error = parse_pre_run_hook("[]").expect_err("error");
         assert!(error.contains("pre-run-hook must be a non-empty JSON array"));
+    }
+
+    #[test]
+    fn parse_pre_run_hook_rejects_empty_argv_entry() {
+        let error = parse_pre_run_hook(r#"[""]"#).expect_err("error");
+        assert!(error.contains("pre-run-hook argv entries must be non-empty strings"));
     }
 
     #[test]

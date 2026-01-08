@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -82,12 +83,15 @@ fn stdio_server_config() -> Option<StdioConfig> {
 }
 
 fn temp_hook_path(tag: &str) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let mut path = std::env::temp_dir();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    path.push(format!("tooltest-pre-run-{tag}-{nanos}"));
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    path.push(format!("tooltest-pre-run-{tag}-{pid}-{nanos}-{counter}"));
     path
 }
 

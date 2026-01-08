@@ -111,6 +111,21 @@ pub async fn run_with_session(
         }
     };
 
+    if options.cases == 0 {
+        if let Some(command) = &config.pre_run_command {
+            if let Err(failure) = run_pre_run_command(command) {
+                return failure_result(
+                    failure,
+                    prelude_trace.as_ref().clone(),
+                    None,
+                    warnings.as_ref().clone(),
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
     let run_result = runner.run(&strategy, {
         let assertions = assertions.clone();
         let last_trace = last_trace.clone();

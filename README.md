@@ -181,6 +181,15 @@ Log newly mined corpus values after each tool response (stderr):
 --log-corpus-deltas
 ```
 
+### Pre-run command hook
+
+Run a command before each proptest case to reset external state. The hook expects a JSON argv array.
+Non-zero exit codes fail the run and include stdout/stderr in the failure details.
+
+```bash
+--pre-run-hook '["/bin/sh","-c","./scripts/reset-state.sh"]'
+```
+
 ---
 
 ## Hosted MCP integration tests

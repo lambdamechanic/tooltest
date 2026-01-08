@@ -61,17 +61,38 @@ else
   exit 1
 fi
 
-if [ -f "${tmp_dir}/${asset}.sha256" ]; then
+verify_checksum() {
+  local checksum_file="$1"
+  local target_file="$2"
+  if [ ! -f "${checksum_file}" ]; then
+    echo "Checksum file not found; skipping verification." >&2
+    return 0
+  fi
+
+  local expected
+  expected="$(awk 'NF {print $1; exit}' "${checksum_file}")"
+  if [ -z "${expected}" ]; then
+    echo "Checksum file missing hash; skipping verification." >&2
+    return 0
+  fi
+
+  local actual=""
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "${tmp_dir}" && sha256sum -c "${asset}.sha256")
+    actual="$(sha256sum "${target_file}" | awk '{print $1}')"
   elif command -v shasum >/dev/null 2>&1; then
-    (cd "${tmp_dir}" && shasum -a 256 -c "${asset}.sha256")
+    actual="$(shasum -a 256 "${target_file}" | awk '{print $1}')"
   else
     echo "Checksum verification skipped (sha256sum/shasum not found)." >&2
+    return 0
   fi
-else
-  echo "Checksum file not found; skipping verification." >&2
-fi
+
+  if [ "${expected}" != "${actual}" ]; then
+    echo "Checksum verification failed for ${target_file}." >&2
+    exit 1
+  fi
+}
+
+verify_checksum "${tmp_dir}/${asset}.sha256" "${tmp_dir}/${asset}"
 
 mkdir -p "${INSTALL_DIR}"
 if [ ! -w "${INSTALL_DIR}" ]; then

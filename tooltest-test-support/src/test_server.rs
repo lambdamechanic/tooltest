@@ -29,7 +29,6 @@ fn default_exit(message: String) {
     }
 }
 
-#[cfg(not(coverage))]
 fn stdin_lines() -> Box<dyn Iterator<Item = io::Result<String>>> {
     let stdin = io::stdin();
     Box::new(stdin.lock().lines())
@@ -38,23 +37,65 @@ fn stdin_lines() -> Box<dyn Iterator<Item = io::Result<String>>> {
 fn run_main_with_exit(exit: impl FnOnce(String)) {
     let mut stdout = io::stdout();
     let use_empty_stdin = env::var("TOOLTEST_TEST_SERVER_NO_STDIN").is_ok();
-    let mut lines: Box<dyn Iterator<Item = io::Result<String>>>;
-    if use_empty_stdin {
-        lines = Box::new(std::iter::empty());
-    } else if let Ok(stdin_payload) = env::var("TOOLTEST_TEST_SERVER_STDIN") {
-        lines = Box::new(io::Cursor::new(stdin_payload).lines());
-    } else {
-        #[cfg(coverage)]
-        {
-            lines = Box::new(std::iter::empty());
-        }
-        #[cfg(not(coverage))]
-        {
-            lines = stdin_lines();
-        }
-    }
+    let stdin_payload = env::var("TOOLTEST_TEST_SERVER_STDIN").ok();
+    let allow_stdin = env::var("TOOLTEST_TEST_SERVER_ALLOW_STDIN").is_ok();
+    let mut lines = select_lines(use_empty_stdin, stdin_payload, allow_stdin);
     if let Err(message) = run(&mut lines, &mut stdout) {
         exit(message);
+    }
+}
+
+fn select_lines(
+    use_empty_stdin: bool,
+    stdin_payload: Option<String>,
+    allow_stdin: bool,
+) -> Box<dyn Iterator<Item = io::Result<String>>> {
+    if use_empty_stdin {
+        return Box::new(std::iter::empty());
+    }
+    if let Some(stdin_payload) = stdin_payload {
+        return Box::new(io::Cursor::new(stdin_payload).lines());
+    }
+    #[cfg(coverage)]
+    {
+        if allow_stdin {
+            return stdin_lines();
+        }
+        return Box::new(std::iter::empty());
+    }
+    #[cfg(not(coverage))]
+    {
+        let _ = allow_stdin;
+        stdin_lines()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_lines;
+
+    #[test]
+    fn select_lines_accepts_stdin_when_allowed() {
+        let _ = select_lines(false, None, true);
+    }
+
+    #[test]
+    fn select_lines_returns_empty_iterator_when_disabled() {
+        let mut lines = select_lines(true, None, false);
+        assert!(lines.next().is_none());
+    }
+
+    #[test]
+    fn select_lines_returns_empty_iterator_when_stdin_blocked() {
+        let mut lines = select_lines(false, None, false);
+        assert!(lines.next().is_none());
+    }
+
+    #[test]
+    fn select_lines_uses_inline_payload_when_provided() {
+        let mut lines = select_lines(false, Some("ok\n".to_string()), false);
+        let line = lines.next().expect("line").expect("line ok");
+        assert_eq!(line, "ok");
     }
 }
 

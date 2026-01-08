@@ -10,9 +10,18 @@
         "owner": "lambdamechanic",
         "repo": "skills",
         "addedAt": "2025-12-21T06:14:11.669570466+00:00"
+      },
+      {
+        "key": "github.com/steveyegge/beads",
+        "alias": "steveyegge/beads",
+        "url": "https://github.com/steveyegge/beads",
+        "host": "github.com",
+        "owner": "steveyegge",
+        "repo": "beads",
+        "addedAt": "2026-01-07T01:30:28.788496405+00:00"
       }
     ],
-    "updatedAt": "2025-12-21T06:14:11.669577206+00:00"
+    "updatedAt": "2026-01-07T01:30:28.788497244+00:00"
   },
   "skills": [
     {
@@ -24,16 +33,6 @@
       "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
       "digest": "sha256:e55d56c0d6ada889023ea4248d10629fcc557ffa4f899f619faa0c9c36be8cd5",
       "installedAt": "2025-12-21T06:15:20.118065049+00:00"
-    },
-    {
-      "installName": "bd-workflow",
-      "source": {
-        "repoKey": "github.com/lambdamechanic/skills",
-        "skillPath": "bd-workflow"
-      },
-      "commit": "e73f2173b93a3a70281020bba727ee3e2dc8e4b4",
-      "digest": "sha256:42892feebcaa6afb7796284d24efc75fc1c591c95c593e18661d94b3372f5780",
-      "installedAt": "2025-12-21T06:15:31.186555771+00:00"
     },
     {
       "installName": "testing-patterns",
@@ -64,7 +63,17 @@
       "commit": "509fc6aae0c2daa6bcb2d65fc7908f77a307734a",
       "digest": "sha256:b31dd800f1ce006dd354ceace83ef202a1840f73ac0041bad8d5802a51b3a873",
       "installedAt": "2025-12-30T11:04:57.691441996+00:00"
+    },
+    {
+      "installName": "beads",
+      "source": {
+        "repoKey": "github.com/steveyegge/beads",
+        "skillPath": "skills/beads"
+      },
+      "commit": "c43682f5b602c61928866e8ef4b175ecc29e025e",
+      "digest": "sha256:6855a41a6254fdb722019ca9fc8bce9835c3a41aeaabb05d6d6fa5ce68b2f4ae",
+      "installedAt": "2026-01-07T01:30:28.785666298+00:00"
     }
   ],
-  "generatedAt": "2025-12-30T11:04:57.691445054+00:00"
+  "generatedAt": "2026-01-07T01:30:56.560550652+00:00"
 }

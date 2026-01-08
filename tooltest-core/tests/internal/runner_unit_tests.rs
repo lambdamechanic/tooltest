@@ -16,9 +16,9 @@ use crate::generator::{
 };
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, ResponseAssertion,
-    RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions, SchemaConfig,
-    SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
+    CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, PreRunHook,
+    ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions,
+    SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
     ToolInvocation, ToolPredicate, TraceEntry,
 };
 use jsonschema::draft202012;
@@ -28,8 +28,12 @@ use rmcp::transport::Transport;
 use serde_json::{json, Number, Value as JsonValue};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
 
@@ -64,6 +68,17 @@ fn connect_result(result: Result<SessionDriver, SessionError>) -> ConnectFuture<
 
 fn is_list_tools(entry: &TraceEntry) -> bool {
     matches!(entry, TraceEntry::ListTools { .. })
+}
+
+fn temp_path(name: &str) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("tooltest-core-{name}-{pid}-{nanos}-{counter}"))
 }
 
 #[cfg(not(coverage))]
@@ -675,6 +690,76 @@ async fn run_with_session_reports_list_tools_error() {
 
     let result = run_with_session(&session, &RunConfig::new(), RunnerOptions::default()).await;
     assert_failure_reason_contains(&result, "failed to list tools");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_pre_run_hook_failure_before_validation() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new().with_pre_run_hook(PreRunHook::new("exit 7"));
+
+    let result = run_with_session(&session, &config, RunnerOptions::default()).await;
+    assert_failure_reason_contains(&result, "pre-run hook failed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_pre_run_hook_start_failure() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let missing_cwd = temp_path("missing-pre-run-cwd");
+    let mut hook = PreRunHook::new("echo ok");
+    hook.cwd = Some(missing_cwd.to_string_lossy().into_owned());
+    let config = RunConfig::new().with_pre_run_hook(hook);
+
+    let result = run_with_session(&session, &config, RunnerOptions::default()).await;
+    assert_failure_reason_contains(&result, "pre-run hook failed to start");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_pre_run_hook_failure_during_execution() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object", "properties": {} }), None);
+    let response = CallToolResult::structured(json!({ "value": 1 }));
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let dir = temp_path("pre-run-fail-late");
+    fs::create_dir_all(&dir).expect("create dir");
+    let marker = dir.join("hook-marker");
+    let hook = PreRunHook::new(format!(
+        "if [ -f \"{path}\" ]; then exit 9; fi; : > \"{path}\"",
+        path = marker.display()
+    ));
+    let config = RunConfig::new().with_pre_run_hook(hook);
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    assert_failure_reason_contains(&result, "pre-run hook failed");
+    assert!(marker.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_applies_pre_run_hook_env() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let mut hook = PreRunHook::new("test \"$HOOK_ENV\" = \"ok\"");
+    hook.env.insert("HOOK_ENV".to_string(), "ok".to_string());
+    let config = RunConfig::new().with_pre_run_hook(hook);
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    assert_success(&result);
 }
 
 #[tokio::test(flavor = "multi_thread")]

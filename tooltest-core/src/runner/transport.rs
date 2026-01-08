@@ -17,10 +17,12 @@ pub async fn run_stdio(
     config: &RunConfig,
     options: RunnerOptions,
 ) -> RunResult {
+    let mut config = config.clone();
+    config.apply_stdio_pre_run_context(endpoint);
     run_with_transport(
         Box::pin(SessionDriver::connect_stdio(endpoint)),
         "stdio",
-        config,
+        &config,
         options,
     )
     .await

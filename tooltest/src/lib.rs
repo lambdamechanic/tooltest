@@ -1,13 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::ops::RangeInclusive;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
-    CoverageWarningReason, HttpConfig, PreRunCommand, RunConfig, RunOutcome, RunResult, RunWarning,
-    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig,
+    CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
+    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolPredicate,
 };
 
 #[derive(Parser)]
@@ -40,8 +41,15 @@ pub struct Cli {
     /// State-machine config as inline JSON or @path to a JSON file.
     #[arg(long, value_name = "JSON|@PATH")]
     pub state_machine_config: Option<String>,
-    /// Command to run before each proptest case (JSON argv).
-    #[arg(long = "pre-run-hook", value_name = "JSON")]
+    /// Allowlist tool names eligible for invocation generation (repeatable).
+    #[arg(long = "tool-allowlist")]
+    pub tool_allowlist: Vec<String>,
+    /// Blocklist tool names excluded from invocation generation (repeatable).
+    #[arg(long = "tool-blocklist")]
+    pub tool_blocklist: Vec<String>,
+
+    /// Shell command to execute before validation and each run.
+    #[arg(long)]
     pub pre_run_hook: Option<String>,
     /// Emit JSON output instead of human-readable output.
     #[arg(long)]
@@ -149,12 +157,11 @@ pub async fn run(cli: Cli) -> ExitCode {
     }
     let dump_corpus = state_machine.dump_corpus;
     let mut run_config = RunConfig::new().with_state_machine(state_machine);
-    if let Some(raw) = cli.pre_run_hook.as_deref() {
-        let pre_run_command = match parse_pre_run_hook(raw) {
-            Ok(command) => command,
-            Err(message) => return error_exit(&message, cli.json),
-        };
-        run_config = run_config.with_pre_run_command(pre_run_command);
+    if let Some(hook) = cli.pre_run_hook.as_ref() {
+        run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
+    }
+    if let Some(predicate) = build_tool_predicate(&cli.tool_allowlist, &cli.tool_blocklist) {
+        run_config = run_config.with_predicate(predicate);
     }
 
     let result = match cli.command {
@@ -202,6 +209,29 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
     }
 }
 
+fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<ToolPredicate> {
+    if allowlist.is_empty() && blocklist.is_empty() {
+        return None;
+    }
+    let allowlist =
+        (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
+    let blocklist =
+        (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
+    Some(Arc::new(move |tool_name, _input| {
+        if let Some(allowlist) = allowlist.as_ref() {
+            if !allowlist.contains(tool_name) {
+                return false;
+            }
+        }
+        if let Some(blocklist) = blocklist.as_ref() {
+            if blocklist.contains(tool_name) {
+                return false;
+            }
+        }
+        true
+    }))
+}
+
 pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
     if min_len == 0 {
         return Err("min-sequence-len must be at least 1".to_string());
@@ -236,18 +266,6 @@ pub fn parse_state_machine_config(raw: &str) -> Result<StateMachineConfig, Strin
     let input: StateMachineConfigInput = serde_json::from_str(&payload)
         .map_err(|error| format!("invalid state-machine-config: {error}"))?;
     Ok(input.into())
-}
-
-pub fn parse_pre_run_hook(raw: &str) -> Result<PreRunCommand, String> {
-    let argv: Vec<String> =
-        serde_json::from_str(raw).map_err(|error| format!("invalid pre-run-hook: {error}"))?;
-    if argv.is_empty() {
-        return Err("pre-run-hook must be a non-empty JSON array".to_string());
-    }
-    if argv.iter().any(|arg| arg.is_empty()) {
-        return Err("pre-run-hook argv entries must be non-empty strings".to_string());
-    }
-    Ok(PreRunCommand::new(argv))
 }
 
 #[derive(Serialize)]
@@ -367,6 +385,7 @@ mod tests {
         NumberOrString, PaginatedRequestParam, Tool,
     };
     use rmcp::transport::Transport;
+    use serde_json::json;
     use std::sync::Arc;
     use tooltest_core::{
         list_tools_http, list_tools_stdio, list_tools_with_session, CorpusReport, CoverageReport,
@@ -393,6 +412,22 @@ mod tests {
     fn build_sequence_len_accepts_valid_range() {
         let range = build_sequence_len(1, 3).expect("range");
         assert_eq!(range, 1..=3);
+    }
+
+    #[test]
+    fn build_tool_predicate_blocks_blocklisted_tool() {
+        let predicate = build_tool_predicate(&[], &[String::from("echo")]).expect("predicate");
+
+        assert!(!predicate("echo", &json!({})));
+        assert!(predicate("other", &json!({})));
+    }
+
+    #[test]
+    fn build_tool_predicate_rejects_non_allowlisted_tool() {
+        let predicate = build_tool_predicate(&[String::from("echo")], &[]).expect("predicate");
+
+        assert!(!predicate("other", &json!({})));
+        assert!(predicate("echo", &json!({})));
     }
 
     #[test]
@@ -448,33 +483,6 @@ mod tests {
         let path = dir.join("tooltest-missing.json");
         let error = parse_state_machine_config(&format!("@{}", path.display())).expect_err("error");
         assert!(error.contains("failed to read state-machine-config"));
-    }
-
-    #[test]
-    fn parse_pre_run_hook_accepts_json_argv() {
-        let command = parse_pre_run_hook(r#"["/bin/echo","ok"]"#).expect("command");
-        assert_eq!(
-            command.argv,
-            vec!["/bin/echo".to_string(), "ok".to_string()]
-        );
-    }
-
-    #[test]
-    fn parse_pre_run_hook_rejects_invalid_json() {
-        let error = parse_pre_run_hook("{bad json}").expect_err("error");
-        assert!(error.contains("invalid pre-run-hook"));
-    }
-
-    #[test]
-    fn parse_pre_run_hook_rejects_empty_argv() {
-        let error = parse_pre_run_hook("[]").expect_err("error");
-        assert!(error.contains("pre-run-hook must be a non-empty JSON array"));
-    }
-
-    #[test]
-    fn parse_pre_run_hook_rejects_empty_argv_entry() {
-        let error = parse_pre_run_hook(r#"[""]"#).expect_err("error");
-        assert!(error.contains("pre-run-hook argv entries must be non-empty strings"));
     }
 
     #[test]
@@ -682,20 +690,6 @@ mod tests {
                 auth_token: None,
             }
         );
-    }
-
-    #[test]
-    fn cli_parses_pre_run_hook() {
-        let cli = Cli::parse_from([
-            "tooltest",
-            "--pre-run-hook",
-            r#"["/bin/echo","ok"]"#,
-            "http",
-            "--url",
-            "http://example.test/mcp",
-        ]);
-
-        assert_eq!(cli.pre_run_hook.as_deref(), Some(r#"["/bin/echo","ok"]"#));
     }
 
     #[test]
@@ -939,6 +933,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Stdio {
@@ -965,6 +962,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Stdio {
@@ -990,6 +990,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: Some("{bad json}".to_string()),
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Http {
@@ -1000,54 +1003,6 @@ mod tests {
 
         let exit = run(cli).await;
         assert_eq!(exit, ExitCode::from(2));
-    }
-
-    #[tokio::test]
-    async fn run_exits_on_invalid_pre_run_hook() {
-        let cli = Cli {
-            cases: 1,
-            min_sequence_len: 1,
-            max_sequence_len: 1,
-            lenient_sourcing: false,
-            mine_text: false,
-            dump_corpus: false,
-            log_corpus_deltas: false,
-            no_lenient_sourcing: false,
-            state_machine_config: None,
-            pre_run_hook: Some("[]".to_string()),
-            json: false,
-            command: Command::Http {
-                url: "http://127.0.0.1:0/mcp".to_string(),
-                auth_token: None,
-            },
-        };
-
-        let exit = run(cli).await;
-        assert_eq!(exit, ExitCode::from(2));
-    }
-
-    #[tokio::test]
-    async fn run_accepts_pre_run_hook() {
-        let cli = Cli {
-            cases: 1,
-            min_sequence_len: 1,
-            max_sequence_len: 1,
-            lenient_sourcing: false,
-            mine_text: false,
-            dump_corpus: false,
-            log_corpus_deltas: false,
-            no_lenient_sourcing: false,
-            state_machine_config: None,
-            pre_run_hook: Some(r#"["/bin/true"]"#.to_string()),
-            json: false,
-            command: Command::Http {
-                url: "http://127.0.0.1:0/mcp".to_string(),
-                auth_token: None,
-            },
-        };
-
-        let exit = run(cli).await;
-        assert_eq!(exit, ExitCode::from(1));
     }
 
     #[tokio::test]
@@ -1062,7 +1017,36 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_applies_pre_run_hook_and_tool_filter() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: vec!["echo".to_string()],
+            tool_blocklist: Vec::new(),
+            pre_run_hook: Some("true".to_string()),
             json: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1086,6 +1070,9 @@ mod tests {
             log_corpus_deltas: true,
             no_lenient_sourcing: true,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Http {
@@ -1110,6 +1097,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: true,
             command: Command::Http {
@@ -1134,6 +1124,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: true,
             command: Command::Http {
@@ -1158,6 +1151,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Http {
@@ -1182,6 +1178,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Http {
@@ -1206,6 +1205,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Stdio {
@@ -1232,6 +1234,9 @@ mod tests {
             log_corpus_deltas: false,
             no_lenient_sourcing: false,
             state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+
             pre_run_hook: None,
             json: false,
             command: Command::Stdio {

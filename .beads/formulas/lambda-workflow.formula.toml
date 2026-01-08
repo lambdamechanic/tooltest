@@ -1,0 +1,61 @@
+formula = "lambda-workflow"
+description = "End-to-end Lambda delivery workflow"
+version = 1
+type = "workflow"
+
+[vars.issue_id]
+description = "bd issue id (e.g., bd-abc123)"
+required = true
+
+[vars.branch]
+description = "Feature branch name"
+required = true
+
+[vars.ci_run_id]
+description = "GitHub Actions run id for CI"
+required = true
+
+[[steps]]
+id = "select-claim"
+title = "Select & claim work ({{issue_id}})"
+type = "task"
+
+[[steps]]
+id = "kickoff-draft"
+title = "Kick off & draft PR ({{branch}})"
+type = "task"
+needs = ["sync-after-claim"]
+
+[[steps]]
+id = "sync-after-claim"
+title = "bd sync after claim"
+type = "task"
+needs = ["select-claim"]
+
+[[steps]]
+id = "build-validate"
+title = "Build & validate (tests, notes)"
+type = "task"
+needs = ["kickoff-draft"]
+
+[[steps]]
+id = "land-plane"
+title = "Land the plane (ready PR, QA)"
+type = "task"
+needs = ["build-validate"]
+
+[[steps]]
+id = "wait-ci"
+title = "Wait for CI build to complete (run {{ci_run_id}})"
+type = "gate"
+needs = ["land-plane"]
+
+[steps.gate]
+await = "gh:run:{{ci_run_id}}"
+timeout = "48h"
+
+[[steps]]
+id = "close-loop"
+title = "Close the loop (bd close + cleanup)"
+type = "task"
+needs = ["wait-ci"]

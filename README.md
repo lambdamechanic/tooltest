@@ -132,6 +132,18 @@ Or override it on the CLI:
 
 CLI flags take precedence over the JSON config.
 
+### Tool filters and pre-run hook
+
+Filter eligible tools by name (exact, case-sensitive) using `--tool-allowlist` and
+`--tool-blocklist`. These flags only affect invocation generation and are separate from
+`coverage_allowlist`/`coverage_blocklist` in the state-machine config, which only affect
+coverage warnings and validation.
+
+Run a shell command before tool schema validation and before every generated sequence (including
+shrink/minimization) using `--pre-run-hook "<shell command>"`. If the hook exits non-zero, the run
+fails with `code: pre_run_hook_failed` and structured details (exit code, stdout, stderr, signal).
+For stdio runs, the hook uses the same `--env` and `--cwd` settings as the MCP server process.
+
 ### Seed data
 
 Seed the corpus with known values (strings or numbers) using inline JSON:

@@ -7,7 +7,7 @@ use rmcp::model::{
     JsonRpcVersion2_0, ListToolsRequest, PingRequest, RequestId,
 };
 use tooltest_test_support::test_server::{
-    current_dir, handle_message, list_tools_response, run, run_server, tool_stub,
+    current_dir, handle_message, list_tools_response, run, run_main, run_server, tool_stub,
     validate_expectations, write_response,
 };
 
@@ -16,7 +16,11 @@ const EXPECTATION_ENV_KEYS: &[&str] = &[
     "EXPECT_ARG",
     "EXPECT_CWD",
     "FORCE_CWD_ERROR",
+    "TOOLTEST_INVALID_OUTPUT_SCHEMA",
     "TOOLTEST_REQUIRE_VALUE",
+    "TOOLTEST_TEST_SERVER_NO_EXIT",
+    "TOOLTEST_TEST_SERVER_NO_STDIN",
+    "TOOLTEST_TEST_SERVER_STDIN",
     "TOOLTEST_VALUE_TYPE",
 ];
 
@@ -245,6 +249,41 @@ fn run_succeeds_with_empty_input() {
 }
 
 #[test]
+fn run_main_succeeds_with_empty_input() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1".to_string());
+    run_main();
+}
+
+#[test]
+fn run_main_accepts_in_memory_stdin() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_STDIN", "".to_string());
+    run_main();
+}
+
+#[test]
+#[cfg(coverage)]
+fn run_main_succeeds_with_default_stdin_in_coverage() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    run_main();
+}
+
+#[test]
+fn run_main_reports_failure_without_exiting() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _no_exit = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_EXIT", "1".to_string());
+    let _no_stdin = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1".to_string());
+    let _missing_arg = EnvGuard::set("EXPECT_ARG", "missing-arg".to_string());
+    let result = std::panic::catch_unwind(|| run_main());
+    assert!(result.is_err());
+}
+
+#[test]
 fn handle_message_ignores_unhandled_requests() {
     let request = ClientRequest::PingRequest(PingRequest::default());
     let message = ClientJsonRpcMessage::Request(JsonRpcRequest {
@@ -333,6 +372,17 @@ fn tool_stub_requires_value_when_env_set() {
         .get("required")
         .and_then(|value| value.as_array());
     assert!(required.is_some());
+}
+
+#[test]
+fn tool_stub_uses_invalid_output_schema_when_env_set() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_INVALID_OUTPUT_SCHEMA", "1".to_string());
+    let tool = tool_stub();
+    let output_schema = tool.output_schema.as_ref().expect("output schema");
+    let output_type = output_schema.get("type").and_then(|value| value.as_str());
+    assert_eq!(output_type, Some("string"));
 }
 
 #[test]

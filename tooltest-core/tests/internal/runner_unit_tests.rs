@@ -32,6 +32,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
@@ -70,11 +71,14 @@ fn is_list_tools(entry: &TraceEntry) -> bool {
 }
 
 fn temp_path(name: &str) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    std::env::temp_dir().join(format!("tooltest-core-{name}-{nanos}"))
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("tooltest-core-{name}-{pid}-{nanos}-{counter}"))
 }
 
 #[cfg(not(coverage))]

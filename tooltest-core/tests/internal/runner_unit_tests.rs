@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};

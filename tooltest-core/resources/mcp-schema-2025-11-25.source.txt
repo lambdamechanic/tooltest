@@ -1,0 +1,5 @@
+version=2025-11-25
+ref=b438f606619b0a4ca395026470e665d95bc5a31e
+source_url=https://raw.githubusercontent.com/modelcontextprotocol/specification/b438f606619b0a4ca395026470e665d95bc5a31e/schema/2025-11-25/schema.json
+sha256=1ffe4c5577974012f5fa02af14ea88df4b7146679df1abaaad497c8d9230ca8a
+retrieved_at=2026-01-13T04:38:56Z

@@ -1,12 +1,11 @@
 use std::io::{self, BufRead, Write};
 
 use rmcp::model::{
-    CallToolResult, ClientJsonRpcMessage, ClientRequest, JsonRpcMessage, ServerJsonRpcMessage, Tool,
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
+    JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
+    Tool,
 };
 use serde_json::json;
-use tooltest_test_support::{
-    call_tool_response, init_response, list_tools_response, tool_with_schemas,
-};
 
 #[cfg(test)]
 #[path = "../../tests/internal/stdio_test_server_tests.rs"]
@@ -82,4 +81,61 @@ fn tool_stub() -> Tool {
 
 fn tool_response() -> CallToolResult {
     CallToolResult::structured(json!({ "status": "ok" }))
+}
+
+fn tool_with_schemas(
+    name: &str,
+    input_schema: serde_json::Value,
+    output_schema: Option<serde_json::Value>,
+) -> Tool {
+    Tool {
+        name: name.to_string().into(),
+        title: None,
+        description: None,
+        input_schema: std::sync::Arc::new(
+            input_schema
+                .as_object()
+                .cloned()
+                .expect("input schema object"),
+        ),
+        output_schema: output_schema.map(|schema| {
+            std::sync::Arc::new(schema.as_object().cloned().expect("output schema object"))
+        }),
+        annotations: None,
+        icons: None,
+        meta: None,
+    }
+}
+
+fn call_tool_response(id: RequestId, response: CallToolResult) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::CallToolResult(response),
+    })
+}
+
+fn list_tools_response(id: RequestId, tools: Vec<Tool>) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::ListToolsResult(rmcp::model::ListToolsResult {
+            tools,
+            next_cursor: None,
+            meta: None,
+        }),
+    })
+}
+
+fn init_response(id: RequestId) -> ServerJsonRpcMessage {
+    ServerJsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: JsonRpcVersion2_0,
+        id,
+        result: ServerResult::InitializeResult(InitializeResult {
+            protocol_version: ServerInfo::default().protocol_version,
+            capabilities: ServerInfo::default().capabilities,
+            server_info: ServerInfo::default().server_info,
+            instructions: None,
+        }),
+    })
 }

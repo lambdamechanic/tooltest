@@ -70,7 +70,10 @@ fn select_lines(
     }
 }
 
-fn run(lines: &mut dyn Iterator<Item = io::Result<String>>, stdout: &mut dyn Write) -> Result<(), String> {
+fn run(
+    lines: &mut dyn Iterator<Item = io::Result<String>>,
+    stdout: &mut dyn Write,
+) -> Result<(), String> {
     validate_expectations()?;
     run_server(lines, stdout);
     Ok(())

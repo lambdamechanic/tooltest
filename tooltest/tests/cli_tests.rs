@@ -1,5 +1,6 @@
 use std::fs;
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn run_tooltest(args: &[&str]) -> Output {
@@ -36,9 +37,36 @@ fn run_tooltest_json_allow_failure(args: &[&str]) -> (Output, serde_json::Value)
 }
 
 fn test_server() -> Option<&'static str> {
-    let server = option_env!("CARGO_BIN_EXE_tooltest_test_server")?;
-    if std::path::Path::new(server).exists() {
-        Some(server)
+    static SERVER_PATH: OnceLock<String> = OnceLock::new();
+    let path = SERVER_PATH.get_or_init(|| {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.parent().expect("workspace root");
+        let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+        let target_dir = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| workspace_root.join("target"));
+        let server_path = target_dir.join(&profile).join(format!(
+            "tooltest_test_server{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        if !server_path.exists() {
+            let mut cmd = Command::new("cargo");
+            cmd.arg("build")
+                .arg("-p")
+                .arg("tooltest-test-support")
+                .arg("--bin")
+                .arg("tooltest_test_server")
+                .current_dir(workspace_root);
+            if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+                cmd.arg("--target-dir").arg(target_dir);
+            }
+            let status = cmd.status().expect("build tooltest_test_server");
+            assert!(status.success(), "failed to build tooltest_test_server");
+        }
+        server_path.to_string_lossy().to_string()
+    });
+    if std::path::Path::new(path).exists() {
+        Some(path.as_str())
     } else {
         None
     }

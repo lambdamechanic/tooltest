@@ -6,6 +6,7 @@
 *.tmp
 *.swp
 .DS_Store
+.beads/*
 .beads/beads.base.jsonl
 .beads/beads.left.jsonl
 .beads/beads.base.meta.json

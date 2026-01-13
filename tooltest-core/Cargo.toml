@@ -8,7 +8,7 @@ repository.workspace = true
 readme = "README.md"
 
 [features]
-stdio-test-server = ["dep:tooltest-test-support"]
+stdio-test-server = []
 
 [[bin]]
 name = "stdio_test_server"
@@ -30,13 +30,12 @@ regex-syntax = "0.8"
 rslint_regex = "0.3"
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 nonempty = "0.10"
-tooltest-test-support = { path = "../tooltest-test-support", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 axum = "0.7"
 schemars = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tooltest-test-support = { path = "../tooltest-test-support", version = "0.1.0" }
+tooltest-test-support = { path = "../tooltest-test-support" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }

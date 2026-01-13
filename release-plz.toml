@@ -2,6 +2,16 @@
 release_always = true
 
 [[package]]
+name = "tooltest"
+release = true
+publish = true
+
+[[package]]
+name = "tooltest-core"
+release = true
+publish = true
+
+[[package]]
 name = "tooltest-test-support"
 release = false
 publish = false

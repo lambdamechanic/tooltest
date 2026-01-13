@@ -6,11 +6,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[[bin]]
-name = "tooltest_test_server"
-path = "src/bin/tooltest_test_server.rs"
-test = false
-
 [dependencies]
 rmcp = { workspace = true, features = ["client"] }
 serde_json = "1"

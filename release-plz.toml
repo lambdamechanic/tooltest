@@ -4,3 +4,4 @@ release_always = true
 [[package]]
 name = "tooltest-test-support"
 release = false
+publish = false

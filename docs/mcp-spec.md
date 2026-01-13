@@ -9,7 +9,7 @@ This repo contains the:
 - Official MCP documentation
 
 The schema is [defined in TypeScript](schema/2025-11-25/schema.ts) first, but
-[made available as JSON Schema](schema/2025-11-25/schema.json) as well, for wider
+[made available as JSON Schema](https://github.com/modelcontextprotocol/specification/tree/main/schema/2025-11-25) as well, for wider
 compatibility.
 
 The official MCP documentation is built using Mintlify and available at

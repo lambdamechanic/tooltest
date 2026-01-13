@@ -10,7 +10,10 @@ use crate::{SchemaConfig, SchemaVersion};
 
 const SUPPORTED_SCHEMA_VERSION: &str = "2025-11-25";
 const DEFAULT_SCHEMA_ID: &str = "https://json-schema.org/draft/2020-12/schema";
-const MCP_SCHEMA: &str = include_str!("../../docs/mcp-spec/2025-11-25/schema/schema.json");
+const MCP_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/resources/mcp-schema-2025-11-25.json"
+));
 static LIST_TOOLS_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 static CALL_TOOL_REQUEST_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 /// Errors produced while parsing MCP schema data.

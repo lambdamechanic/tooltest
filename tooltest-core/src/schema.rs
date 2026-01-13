@@ -12,6 +12,7 @@ const SUPPORTED_SCHEMA_VERSION: &str = "2025-11-25";
 const DEFAULT_SCHEMA_ID: &str = "https://json-schema.org/draft/2020-12/schema";
 // Source: https://github.com/modelcontextprotocol/specification/tree/main/schema/2025-11-25
 // Update: run `scripts/update-mcp-schema.sh 2025-11-25`.
+// Provenance: see tooltest-core/resources/mcp-schema-2025-11-25.source.txt.
 const MCP_SCHEMA: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/resources/mcp-schema-2025-11-25.json"

@@ -213,7 +213,12 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
     }
 }
 
-fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<ToolPredicate> {
+struct ToolFilterSets {
+    allowlist: Option<HashSet<String>>,
+    blocklist: Option<HashSet<String>>,
+}
+
+fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilterSets> {
     if allowlist.is_empty() && blocklist.is_empty() {
         return None;
     }
@@ -221,6 +226,16 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
         (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
     let blocklist =
         (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
+    Some(ToolFilterSets {
+        allowlist,
+        blocklist,
+    })
+}
+
+fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<ToolPredicate> {
+    let sets = build_tool_filter_sets(allowlist, blocklist)?;
+    let allowlist = sets.allowlist;
+    let blocklist = sets.blocklist;
     Some(Arc::new(move |tool_name, _input| {
         if let Some(allowlist) = allowlist.as_ref() {
             if !allowlist.contains(tool_name) {
@@ -237,13 +252,9 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
 }
 
 fn build_tool_filter(allowlist: &[String], blocklist: &[String]) -> Option<ToolNamePredicate> {
-    if allowlist.is_empty() && blocklist.is_empty() {
-        return None;
-    }
-    let allowlist =
-        (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
-    let blocklist =
-        (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
+    let sets = build_tool_filter_sets(allowlist, blocklist)?;
+    let allowlist = sets.allowlist;
+    let blocklist = sets.blocklist;
     Some(Arc::new(move |tool_name| {
         if let Some(allowlist) = allowlist.as_ref() {
             if !allowlist.contains(tool_name) {

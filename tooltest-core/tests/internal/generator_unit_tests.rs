@@ -570,7 +570,7 @@ fn property_strategy_from_corpus_lenient_invalid_numeric_schema_reports_missing_
 }
 
 #[test]
-fn property_strategy_from_corpus_lenient_invalid_string_schema_reports_missing_required() {
+fn property_strategy_from_corpus_lenient_invalid_string_pattern_reports_missing_required() {
     let tool = tool_with_schema("echo", json!({ "type": "object" }));
     let corpus = ValueCorpus::default();
     let schema = json!({ "type": "string", "pattern": "(" })

@@ -1,12 +1,15 @@
 use std::io::{self, Write};
 use std::sync::Mutex;
 
+#[path = "../src/test_server.rs"]
+mod test_server;
+
 use rmcp::model::{
     CallToolRequest, CallToolRequestParam, ClientJsonRpcMessage, ClientNotification, ClientRequest,
     Extensions, InitializeRequest, InitializeRequestParam, InitializedNotification, JsonRpcRequest,
     JsonRpcVersion2_0, ListToolsRequest, PingRequest, RequestId,
 };
-use tooltest_test_support::test_server::{
+use test_server::{
     current_dir, handle_message, list_tools_response, run, run_main, run_server, tool_stub,
     validate_expectations, write_response,
 };
@@ -279,7 +282,7 @@ fn run_main_reports_failure_without_exiting() {
     let _no_exit = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_EXIT", "1".to_string());
     let _no_stdin = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1".to_string());
     let _missing_arg = EnvGuard::set("EXPECT_ARG", "missing-arg".to_string());
-    let result = std::panic::catch_unwind(|| run_main());
+    let result = std::panic::catch_unwind(run_main);
     assert!(result.is_err());
 }
 

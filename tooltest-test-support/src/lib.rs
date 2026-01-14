@@ -10,7 +10,6 @@ use rmcp::transport::Transport;
 use serde_json::json;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-pub mod test_server;
 
 pub fn tool_with_schemas(
     name: &str,

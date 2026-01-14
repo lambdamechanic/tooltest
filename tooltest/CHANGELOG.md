@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.1.0...tooltest-v0.2.0) - 2026-01-14
+
+### Other
+
+- Merge pull request #52 from lambdamechanic/tooltest-6wn
+
 ## [0.1.0](https://github.com/lambdamechanic/tooltest/releases/tag/tooltest-v0.1.0) - 2026-01-05
 
 ### Other

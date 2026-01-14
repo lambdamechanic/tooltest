@@ -807,7 +807,7 @@ async fn run_with_session_excludes_error_responses_from_coverage() {
     )
     .await;
 
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(matches!(result.outcome, RunOutcome::Success));
     let coverage = result.coverage.expect("coverage");
     assert_eq!(coverage.counts.get("echo").copied(), Some(0));
 }
@@ -997,15 +997,16 @@ async fn run_with_session_reports_no_eligible_tools() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_tool_error_response() {
+async fn run_with_session_reports_tool_error_response_when_forbidden() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new().with_in_band_error_forbidden(true);
 
     let result = crate::run_with_session(
         &driver,
-        &RunConfig::new(),
+        &config,
         RunnerOptions {
             cases: 1,
             sequence_len: 1..=1,

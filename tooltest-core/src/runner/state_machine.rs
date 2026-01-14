@@ -24,6 +24,7 @@ pub(super) async fn execute_state_machine_sequence(
     tracker: &mut CoverageTracker<'_>,
     predicate: Option<&ToolPredicate>,
     min_len: Option<usize>,
+    in_band_error_forbidden: bool,
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
@@ -75,7 +76,9 @@ pub(super) async fn execute_state_machine_sequence(
             tracker.mine_response(invocation.name.as_ref(), &response);
         }
 
-        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+        if let Some(reason) =
+            apply_default_assertions(&invocation, &response, validators, in_band_error_forbidden)
+        {
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {

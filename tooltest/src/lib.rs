@@ -48,6 +48,9 @@ pub struct Cli {
     /// Blocklist tool names excluded from invocation generation (repeatable).
     #[arg(long = "tool-blocklist")]
     pub tool_blocklist: Vec<String>,
+    /// Fail the run when a tool result reports `isError = true`.
+    #[arg(long)]
+    pub in_band_error_forbidden: bool,
 
     /// Shell command to execute before validation and each run.
     #[arg(long)]
@@ -160,6 +163,9 @@ pub async fn run(cli: Cli) -> ExitCode {
     let mut run_config = RunConfig::new().with_state_machine(state_machine);
     if let Some(hook) = cli.pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
+    }
+    if cli.in_band_error_forbidden {
+        run_config = run_config.with_in_band_error_forbidden(true);
     }
     if let Some(filters) = build_tool_filters(&cli.tool_allowlist, &cli.tool_blocklist) {
         run_config = run_config
@@ -968,6 +974,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -997,6 +1004,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -1025,6 +1033,7 @@ mod tests {
             state_machine_config: Some("{bad json}".to_string()),
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -1052,6 +1061,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -1079,6 +1089,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: vec!["echo".to_string()],
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
             pre_run_hook: Some("true".to_string()),
             json: false,
             command: Command::Http {
@@ -1105,6 +1116,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -1132,6 +1144,7 @@ mod tests {
             state_machine_config: Some(r#"{"seed_numbers":[1]}"#.to_string()),
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: true,
@@ -1159,6 +1172,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: true,
@@ -1186,6 +1200,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -1213,6 +1228,35 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_applies_in_band_error_forbidden_flag() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: true,
 
             pre_run_hook: None,
             json: false,
@@ -1240,6 +1284,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,
@@ -1269,6 +1314,7 @@ mod tests {
             state_machine_config: None,
             tool_allowlist: Vec::new(),
             tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
 
             pre_run_hook: None,
             json: false,

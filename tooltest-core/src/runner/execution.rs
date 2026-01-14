@@ -37,9 +37,9 @@ impl Default for RunnerOptions {
 
 /// Execute a tooltest run using a pre-initialized session.
 ///
-/// Runs apply default assertions that fail on error responses and validate
-/// structured output against declared output schemas, plus any user-supplied
-/// assertion rules.
+/// Runs apply default assertions that fail on MCP protocol errors, schema-invalid
+/// responses, and (when configured) tool result error responses, plus any
+/// user-supplied assertion rules.
 ///
 /// Requires a multi-thread Tokio runtime; current-thread runtimes are rejected.
 pub async fn run_with_session(
@@ -161,6 +161,7 @@ pub async fn run_with_session(
                             &mut tracker,
                             config.predicate.as_ref(),
                             min_len,
+                            config.in_band_error_forbidden,
                         )
                         .await;
                         let (report, corpus_report) = {

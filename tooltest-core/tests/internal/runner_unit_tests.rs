@@ -139,8 +139,23 @@ fn apply_default_assertions_reports_tool_error() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result = apply_default_assertions(invocation, response.expect("response"), &validators);
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, true);
     assert!(result.is_some());
+}
+
+#[test]
+fn apply_default_assertions_allows_tool_error_when_allowed() {
+    let entry = trace_entry_with(
+        "echo",
+        None,
+        CallToolResult::error(vec![Content::text("boom")]),
+    );
+    let validators = BTreeMap::new();
+    let (invocation, response) = entry.as_tool_call().expect("tool call");
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
+    assert!(result.is_none());
 }
 
 #[test]
@@ -159,7 +174,8 @@ fn apply_default_assertions_reports_missing_structured_content() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result = apply_default_assertions(invocation, response.expect("response"), &validators);
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_some());
 }
 
@@ -179,7 +195,8 @@ fn apply_default_assertions_reports_schema_violation() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result = apply_default_assertions(invocation, response.expect("response"), &validators);
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_some());
 }
 
@@ -199,7 +216,8 @@ fn apply_default_assertions_accepts_valid_structured_content() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result = apply_default_assertions(invocation, response.expect("response"), &validators);
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_none());
 }
 
@@ -212,7 +230,8 @@ fn apply_default_assertions_skips_when_missing_validator() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result = apply_default_assertions(invocation, response.expect("response"), &validators);
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_none());
 }
 
@@ -833,12 +852,13 @@ async fn run_with_session_reports_legacy_failure_path() {
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new().with_in_band_error_forbidden(true);
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
     };
 
-    let result = run_with_session(&session, &RunConfig::new(), options).await;
+    let result = run_with_session(&session, &config, options).await;
     assert_failure(&result);
 }
 
@@ -864,7 +884,7 @@ async fn run_with_session_state_machine_reports_default_assertion_failure() {
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new();
+    let config = RunConfig::new().with_in_band_error_forbidden(true);
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -872,6 +892,22 @@ async fn run_with_session_state_machine_reports_default_assertion_failure() {
 
     let result = run_with_session(&session, &config, options).await;
     assert_failure_reason_contains(&result, "returned an error response");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_state_machine_allows_in_band_error_by_default() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::error(vec![Content::text("boom")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new();
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    assert_success(&result);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -939,6 +975,7 @@ async fn execute_state_machine_sequence_breaks_when_no_callable_tools() {
         &mut tracker,
         None,
         None,
+        false,
     )
     .await;
     let trace = result.expect("expected success");
@@ -964,6 +1001,7 @@ async fn execute_state_machine_sequence_reports_generation_error() {
         &mut tracker,
         None,
         None,
+        false,
     )
     .await;
     let failure = result.expect_err("expected failure");
@@ -994,6 +1032,7 @@ async fn execute_state_machine_sequence_reports_session_error() {
         &mut tracker,
         None,
         Some(1),
+        false,
     )
     .await;
     let failure = result.expect_err("expected failure");
@@ -1029,6 +1068,43 @@ async fn execute_state_machine_sequence_reports_response_assertion_failure() {
         &mut tracker,
         None,
         Some(1),
+        false,
+    )
+    .await;
+    let failure = result.expect_err("expected failure");
+    assert!(failure.failure.reason.contains("assertion pointer"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn execute_state_machine_sequence_reports_response_assertion_failure_on_error_response() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::error(vec![Content::text("boom")]);
+    let transport = RunnerTransport::new(tool.clone(), response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let tools = vec![tool];
+    let sequence = StateMachineSequence { seeds: vec![0] };
+    let assertions = AssertionSet {
+        rules: vec![AssertionRule::Response(ResponseAssertion {
+            tool: None,
+            checks: vec![AssertionCheck {
+                target: AssertionTarget::Output,
+                pointer: "/missing".to_string(),
+                expected: json!(true),
+            }],
+        })],
+    };
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+
+    let result = execute_state_machine_sequence(
+        &session,
+        &tools,
+        &BTreeMap::new(),
+        &assertions,
+        &sequence,
+        &mut tracker,
+        None,
+        Some(1),
+        false,
     )
     .await;
     let failure = result.expect_err("expected failure");
@@ -1063,6 +1139,7 @@ async fn execute_state_machine_sequence_reports_sequence_assertion_failure() {
         &mut tracker,
         None,
         Some(1),
+        false,
     )
     .await;
     let failure = result.expect_err("expected failure");
@@ -1096,6 +1173,7 @@ async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
         &mut tracker,
         None,
         Some(1),
+        false,
     )
     .await;
     let failure = result.expect_err("expected failure");

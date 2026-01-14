@@ -458,6 +458,22 @@ mod tests {
     }
 
     #[test]
+    fn build_tool_filter_blocks_blocklisted_tool() {
+        let filter = build_tool_filter(&[], &[String::from("echo")]).expect("filter");
+
+        assert!(!filter("echo"));
+        assert!(filter("other"));
+    }
+
+    #[test]
+    fn build_tool_filter_rejects_non_allowlisted_tool() {
+        let filter = build_tool_filter(&[String::from("echo")], &[]).expect("filter");
+
+        assert!(!filter("other"));
+        assert!(filter("echo"));
+    }
+
+    #[test]
     fn parse_env_vars_rejects_missing_equals() {
         let error = parse_env_vars(vec!["NOPE".to_string()]).expect_err("error");
         assert!(error.contains("invalid env entry"));

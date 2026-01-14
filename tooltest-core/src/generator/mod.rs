@@ -550,6 +550,18 @@ fn property_strategy_from_corpus(
     tool: &Tool,
     lenient_sourcing: bool,
 ) -> PropertyOutcome {
+    if schema.get("enum").is_some() {
+        return match schema_value_strategy(schema, tool) {
+            Ok(strategy) => PropertyOutcome::Include(strategy),
+            Err(_) => {
+                if required {
+                    PropertyOutcome::MissingRequired
+                } else {
+                    PropertyOutcome::Omit
+                }
+            }
+        };
+    }
     match schema_type_hint(schema) {
         Some(SchemaType::String) => {
             let values = corpus
@@ -698,6 +710,12 @@ pub(crate) fn uncallable_reason(
         let Some(schema_object) = schema_value.as_object() else {
             return Some(UncallableReason::RequiredValue);
         };
+        if schema_object.get("enum").is_some() {
+            if schema_value_strategy(schema_object, tool).is_err() {
+                return Some(UncallableReason::RequiredValue);
+            }
+            continue;
+        }
         let reason = match schema_type_hint(schema_object) {
             Some(SchemaType::String) => {
                 let has_match = corpus

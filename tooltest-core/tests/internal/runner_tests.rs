@@ -1,3 +1,4 @@
+use crate::generator::{invocation_from_corpus_seeded, ValueCorpus};
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, HttpConfig, PreRunHook, ResponseAssertion, RunConfig,
@@ -18,6 +19,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -468,6 +470,51 @@ async fn run_with_session_supports_state_machine_generator() {
     assert!(result.trace.is_empty());
     let coverage = result.coverage.expect("coverage");
     assert_eq!(coverage.counts.get("echo").copied(), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_generates_all_enum_values() {
+    let tool = tool_with_schemas(
+        "automation_script",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "enum": ["shell", "ruby", "powershell", "batch"]
+                }
+            },
+            "required": ["language"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool.clone(), response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let corpus = ValueCorpus::default();
+    let mut seen = HashSet::new();
+    for seed in 0..20u64 {
+        let invocation = invocation_from_corpus_seeded(&[tool.clone()], None, &corpus, false, seed)
+            .expect("invocation")
+            .expect("callable");
+        let args = invocation.arguments.as_ref().expect("arguments");
+        let language = args
+            .get("language")
+            .and_then(|value| value.as_str())
+            .expect("language");
+        seen.insert(language.to_string());
+
+        let entry = driver.send_tool_call(invocation).await.expect("tool call");
+        assert!(entry.as_tool_call().is_some());
+    }
+
+    for expected in ["shell", "ruby", "powershell", "batch"] {
+        assert!(
+            seen.contains(expected),
+            "expected language {expected} in {seen:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

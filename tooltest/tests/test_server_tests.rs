@@ -7,11 +7,13 @@ mod test_server;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParam, ClientJsonRpcMessage, ClientNotification, ClientRequest,
     Extensions, InitializeRequest, InitializeRequestParam, InitializedNotification, JsonRpcRequest,
-    JsonRpcVersion2_0, ListToolsRequest, PingRequest, RequestId,
+    JsonRpcVersion2_0, ListToolsRequest, PingRequest, RequestId, ServerJsonRpcMessage,
+    ServerResult,
 };
+use serde_json::json;
 use test_server::{
-    current_dir, handle_message, list_tools_response, run, run_main, run_server, tool_stub,
-    validate_expectations, write_response,
+    current_dir, handle_message, invalid_tool_stub, list_tools_response, run, run_main, run_server,
+    tool_stub, validate_expectations, write_response,
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -24,6 +26,8 @@ const EXPECTATION_ENV_KEYS: &[&str] = &[
     "TOOLTEST_TEST_SERVER_NO_EXIT",
     "TOOLTEST_TEST_SERVER_NO_STDIN",
     "TOOLTEST_TEST_SERVER_STDIN",
+    "TOOLTEST_TEST_SERVER_EXTRA_TOOL",
+    "TOOLTEST_TEST_SERVER_INVALID_TOOL",
     "TOOLTEST_VALUE_TYPE",
 ];
 
@@ -132,6 +136,24 @@ fn initialize_line() -> String {
     serde_json::to_string(&message).expect("serialize request")
 }
 
+fn list_tools_message() -> ClientJsonRpcMessage {
+    serde_json::from_str(&list_tools_line()).expect("list tools message")
+}
+
+fn tools_from_list_response(response: ServerJsonRpcMessage) -> Vec<String> {
+    match response {
+        ServerJsonRpcMessage::Response(response) => match response.result {
+            ServerResult::ListToolsResult(result) => result
+                .tools
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+            other => panic!("unexpected result: {other:?}"),
+        },
+        other => panic!("unexpected message: {other:?}"),
+    }
+}
+
 #[test]
 fn main_reports_expectation_failure() {
     let _lock = ENV_LOCK.lock().expect("lock env");
@@ -220,6 +242,34 @@ fn validate_expectations_rejects_invalid_value_type() {
     let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "nope".to_string());
     let result = validate_expectations();
     assert!(result.is_err());
+}
+
+#[test]
+fn handle_message_includes_extra_tool_from_env() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_EXTRA_TOOL", "extra".to_string());
+    let response = handle_message(list_tools_message()).expect("response");
+    let tools = tools_from_list_response(response);
+    assert!(tools.contains(&"extra".to_string()));
+    assert!(tools.contains(&"echo".to_string()));
+}
+
+#[test]
+fn handle_message_includes_invalid_tool_when_enabled() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_INVALID_TOOL", "1".to_string());
+    let response = handle_message(list_tools_message()).expect("response");
+    let tools = tools_from_list_response(response);
+    assert!(tools.contains(&"invalid".to_string()));
+    assert!(tools.contains(&"echo".to_string()));
+}
+
+#[test]
+fn invalid_tool_stub_builds_string_input_schema() {
+    let tool = invalid_tool_stub("bad");
+    assert_eq!(tool.input_schema.get("type"), Some(&json!("string")));
 }
 
 #[test]
@@ -339,6 +389,8 @@ fn run_server_handles_call_tool_request() {
 
 #[test]
 fn run_server_handles_list_tools_request() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
     let mut lines = vec![Ok(list_tools_line())].into_iter();
     let mut output = Vec::new();
     run_server(&mut lines, &mut output);

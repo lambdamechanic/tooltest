@@ -351,6 +351,19 @@ fn schema_value_strategy_rejects_invalid_pattern() {
 }
 
 #[test]
+fn property_strategy_from_corpus_lenient_invalid_string_pattern_reports_missing_required() {
+    let tool = tool_with_schema("echo", json!({ "type": "object" }));
+    let corpus = ValueCorpus::default();
+    let schema = json!({ "type": "string", "pattern": "(" })
+        .as_object()
+        .cloned()
+        .expect("schema");
+
+    let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool, true);
+    assert!(outcome_is_missing_required(&outcome));
+}
+
+#[test]
 fn schema_value_strategy_rejects_invalid_ref() {
     let tool = tool_with_schema("echo", json!({ "type": "object" }));
     let schema = json!({ "$ref": "#/missing" })
@@ -520,6 +533,16 @@ fn property_strategy_from_corpus_handles_invalid_schema() {
 }
 
 #[test]
+fn property_strategy_from_corpus_omits_optional_empty_enum() {
+    let tool = tool_with_schema("echo", json!({ "type": "object" }));
+    let corpus = ValueCorpus::default();
+    let schema = json!({ "enum": [] }).as_object().cloned().expect("schema");
+    let outcome = property_strategy_from_corpus(&schema, false, &corpus, &tool, false);
+    assert!(outcome_is_omit(&outcome));
+    assert!(!outcome_is_include(&outcome));
+}
+
+#[test]
 fn property_strategy_from_corpus_reports_invalid_numeric_bounds() {
     let tool = tool_with_schema("echo", json!({ "type": "object" }));
     let corpus = ValueCorpus::default();
@@ -670,6 +693,82 @@ fn uncallable_reason_reports_missing_variants() {
         uncallable_reason(&required_tool, &corpus, false),
         Some(UncallableReason::RequiredValue)
     );
+}
+
+#[test]
+fn uncallable_reason_accepts_enum_required_values() {
+    let enum_tool = tool_with_schema(
+        "enumy",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "enum": ["shell", "ruby", "powershell", "batch"]
+                }
+            },
+            "required": ["language"]
+        }),
+    );
+    let corpus = ValueCorpus::default();
+
+    assert_eq!(uncallable_reason(&enum_tool, &corpus, false), None);
+}
+
+#[test]
+fn uncallable_reason_rejects_empty_enum_required_values() {
+    let enum_tool = tool_with_schema(
+        "enumy",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": { "enum": [] }
+            },
+            "required": ["language"]
+        }),
+    );
+    let corpus = ValueCorpus::default();
+
+    assert_eq!(
+        uncallable_reason(&enum_tool, &corpus, false),
+        Some(UncallableReason::RequiredValue)
+    );
+}
+
+#[test]
+fn uncallable_reason_rejects_invalid_enum_schema() {
+    let enum_tool = tool_with_schema(
+        "enumy",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": { "enum": "shell" }
+            },
+            "required": ["language"]
+        }),
+    );
+    let corpus = ValueCorpus::default();
+
+    assert_eq!(
+        uncallable_reason(&enum_tool, &corpus, false),
+        Some(UncallableReason::RequiredValue)
+    );
+}
+
+#[test]
+fn uncallable_reason_ignores_optional_empty_enum() {
+    let enum_tool = tool_with_schema(
+        "enumy",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": { "enum": [] }
+            }
+        }),
+    );
+    let corpus = ValueCorpus::default();
+
+    assert_eq!(uncallable_reason(&enum_tool, &corpus, false), None);
 }
 
 #[test]

@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
     CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
-    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolPredicate,
+    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolNamePredicate,
+    ToolPredicate,
 };
 
 #[derive(Parser)]
@@ -160,8 +161,10 @@ pub async fn run(cli: Cli) -> ExitCode {
     if let Some(hook) = cli.pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
     }
-    if let Some(predicate) = build_tool_predicate(&cli.tool_allowlist, &cli.tool_blocklist) {
-        run_config = run_config.with_predicate(predicate);
+    if let Some(filters) = build_tool_filters(&cli.tool_allowlist, &cli.tool_blocklist) {
+        run_config = run_config
+            .with_predicate(filters.predicate)
+            .with_tool_filter(filters.name_predicate);
     }
 
     let result = match cli.command {
@@ -209,7 +212,17 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
     }
 }
 
-fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<ToolPredicate> {
+struct ToolFilterSets {
+    allowlist: Option<HashSet<String>>,
+    blocklist: Option<HashSet<String>>,
+}
+
+struct ToolFilters {
+    predicate: ToolPredicate,
+    name_predicate: ToolNamePredicate,
+}
+
+fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilterSets> {
     if allowlist.is_empty() && blocklist.is_empty() {
         return None;
     }
@@ -217,7 +230,17 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
         (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
     let blocklist =
         (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
-    Some(Arc::new(move |tool_name, _input| {
+    Some(ToolFilterSets {
+        allowlist,
+        blocklist,
+    })
+}
+
+fn build_tool_filters(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilters> {
+    let sets = build_tool_filter_sets(allowlist, blocklist)?;
+    let allowlist = sets.allowlist;
+    let blocklist = sets.blocklist;
+    let name_predicate: ToolNamePredicate = Arc::new(move |tool_name| {
         if let Some(allowlist) = allowlist.as_ref() {
             if !allowlist.contains(tool_name) {
                 return false;
@@ -229,7 +252,13 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
             }
         }
         true
-    }))
+    });
+    let predicate_name = Arc::clone(&name_predicate);
+    let predicate: ToolPredicate = Arc::new(move |tool_name, _input| predicate_name(tool_name));
+    Some(ToolFilters {
+        predicate,
+        name_predicate,
+    })
 }
 
 pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
@@ -415,19 +444,23 @@ mod tests {
     }
 
     #[test]
-    fn build_tool_predicate_blocks_blocklisted_tool() {
-        let predicate = build_tool_predicate(&[], &[String::from("echo")]).expect("predicate");
+    fn build_tool_filters_block_blocklisted_tool() {
+        let filters = build_tool_filters(&[], &[String::from("echo")]).expect("filters");
 
-        assert!(!predicate("echo", &json!({})));
-        assert!(predicate("other", &json!({})));
+        assert!(!(filters.predicate)("echo", &json!({})));
+        assert!(!(filters.name_predicate)("echo"));
+        assert!((filters.predicate)("other", &json!({})));
+        assert!((filters.name_predicate)("other"));
     }
 
     #[test]
-    fn build_tool_predicate_rejects_non_allowlisted_tool() {
-        let predicate = build_tool_predicate(&[String::from("echo")], &[]).expect("predicate");
+    fn build_tool_filters_reject_non_allowlisted_tool() {
+        let filters = build_tool_filters(&[String::from("echo")], &[]).expect("filters");
 
-        assert!(!predicate("other", &json!({})));
-        assert!(predicate("echo", &json!({})));
+        assert!(!(filters.predicate)("other", &json!({})));
+        assert!(!(filters.name_predicate)("other"));
+        assert!((filters.predicate)("echo", &json!({})));
+        assert!((filters.name_predicate)("echo"));
     }
 
     #[test]

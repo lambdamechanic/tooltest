@@ -19,7 +19,7 @@ use crate::{
     CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, PreRunHook,
     ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions,
     SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
-    ToolInvocation, ToolPredicate, TraceEntry,
+    ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry,
 };
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
@@ -791,6 +791,29 @@ async fn run_with_session_reports_no_eligible_tools_with_predicate() {
 
     let result = run_with_session(&session, &config, RunnerOptions::default()).await;
     assert_failure_reason_contains(&result, "no eligible tools to generate");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_no_eligible_tools_with_name_filter() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let predicate: ToolNamePredicate = Arc::new(|_name| false);
+    let config = RunConfig::new().with_tool_filter(predicate);
+
+    let result = run_with_session(&session, &config, RunnerOptions::default()).await;
+    assert_failure_reason_contains(&result, "filtered out by the tool filter");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_reports_no_tools_from_server() {
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new_with_tools(Vec::new(), response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+
+    let result = run_with_session(&session, &RunConfig::new(), RunnerOptions::default()).await;
+    assert_failure_reason_contains(&result, "server returned no tools");
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -197,6 +197,7 @@ pub struct HttpConfig {
 
 /// Predicate callback used to decide whether a tool invocation is eligible.
 pub type ToolPredicate = Arc<dyn Fn(&str, &JsonValue) -> bool + Send + Sync>;
+pub type ToolNamePredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Declarative JSON assertion DSL container.
 ///
@@ -287,6 +288,8 @@ pub struct RunConfig {
     pub schema: SchemaConfig,
     /// Optional predicate to filter eligible tools.
     pub predicate: Option<ToolPredicate>,
+    /// Optional predicate to filter eligible tools by name.
+    pub tool_filter: Option<ToolNamePredicate>,
     /// Assertion rules to evaluate during the run.
     pub assertions: AssertionSet,
     /// State-machine generator configuration.
@@ -304,6 +307,7 @@ impl RunConfig {
         Self {
             schema: SchemaConfig::default(),
             predicate: None,
+            tool_filter: None,
             assertions: AssertionSet::default(),
             state_machine: StateMachineConfig::default(),
             pre_run_hook: None,
@@ -319,6 +323,12 @@ impl RunConfig {
     /// Sets the tool predicate used for eligibility filtering.
     pub fn with_predicate(mut self, predicate: ToolPredicate) -> Self {
         self.predicate = Some(predicate);
+        self
+    }
+
+    /// Sets the tool name predicate used for eligibility filtering.
+    pub fn with_tool_filter(mut self, predicate: ToolNamePredicate) -> Self {
+        self.tool_filter = Some(predicate);
         self
     }
 
@@ -358,6 +368,7 @@ impl fmt::Debug for RunConfig {
         f.debug_struct("RunConfig")
             .field("schema", &self.schema)
             .field("predicate", &self.predicate.is_some())
+            .field("tool_filter", &self.tool_filter.is_some())
             .field("assertions", &self.assertions)
             .field("state_machine", &self.state_machine)
             .field("pre_run_hook", &self.pre_run_hook.is_some())

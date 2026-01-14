@@ -32,7 +32,6 @@ pub(super) async fn prepare_run(
             ));
         }
     };
-
     if let Err(failure) = run_pre_run_hook(config).await {
         return Err(failure_result(
             failure,
@@ -73,10 +72,38 @@ pub(super) async fn prepare_run(
         }
     };
 
+    let original_count = tools.len();
+    let tools = filter_tools(tools, config.tool_filter.as_ref());
+    if tools.is_empty() {
+        let reason = if original_count == 0 {
+            "server returned no tools".to_string()
+        } else {
+            format!("all {original_count} tools were filtered out by the tool filter")
+        };
+        return Err(failure_result(
+            RunFailure::new(format!("no eligible tools to generate ({reason})")),
+            prelude_trace.clone(),
+            None,
+            warnings.clone(),
+            None,
+            None,
+        ));
+    }
+
     Ok(PreparedRun {
         tools,
         warnings,
         validators,
         prelude_trace,
     })
+}
+
+fn filter_tools(tools: Vec<Tool>, predicate: Option<&crate::ToolNamePredicate>) -> Vec<Tool> {
+    let Some(predicate) = predicate else {
+        return tools;
+    };
+    tools
+        .into_iter()
+        .filter(|tool| predicate(tool.name.as_ref()))
+        .collect()
 }

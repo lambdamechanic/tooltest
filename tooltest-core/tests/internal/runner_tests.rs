@@ -18,6 +18,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -468,6 +469,71 @@ async fn run_with_session_supports_state_machine_generator() {
     assert!(result.trace.is_empty());
     let coverage = result.coverage.expect("coverage");
     assert_eq!(coverage.counts.get("echo").copied(), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_generates_all_enum_values() {
+    let tool = tool_with_schemas(
+        "automation_script",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "enum": ["shell", "ruby", "powershell", "batch"]
+                }
+            },
+            "required": ["language"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let assertions = AssertionSet {
+        rules: vec![AssertionRule::Sequence(SequenceAssertion {
+            checks: vec![AssertionCheck {
+                target: AssertionTarget::Sequence,
+                pointer: "/force_failure".to_string(),
+                expected: json!(true),
+            }],
+        })],
+    };
+    let config = RunConfig::new().with_assertions(assertions);
+    let result = crate::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 20..=20,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+
+    let mut seen = HashSet::new();
+    let tool_calls: Vec<_> = result
+        .trace
+        .iter()
+        .filter_map(|entry| entry.as_tool_call().map(|(invocation, _)| invocation))
+        .collect();
+    assert_eq!(tool_calls.len(), 20);
+    for invocation in tool_calls {
+        let args = invocation.arguments.as_ref().expect("arguments");
+        let language = args
+            .get("language")
+            .and_then(|value| value.as_str())
+            .expect("language");
+        seen.insert(language.to_string());
+    }
+
+    for expected in ["shell", "ruby", "powershell", "batch"] {
+        assert!(
+            seen.contains(expected),
+            "expected language {expected} in {seen:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

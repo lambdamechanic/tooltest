@@ -8,13 +8,9 @@ repository.workspace = true
 readme = "README.md"
 exclude = ["src/bin/stdio_test_server.rs"]
 
-[features]
-stdio-test-server = []
-
 [[bin]]
 name = "stdio_test_server"
 path = "src/bin/stdio_test_server.rs"
-required-features = ["stdio-test-server"]
 test = false
 
 [dependencies]

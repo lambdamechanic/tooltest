@@ -13,9 +13,6 @@ name = "tooltest"
 path = "src/main.rs"
 test = false
 
-[features]
-cli-test-server = []
-
 [[bin]]
 name = "tooltest_test_server"
 path = "src/bin/tooltest_test_server.rs"

@@ -39,7 +39,7 @@ jobs:
       - name: Rust clippy
         run: cargo clippy --workspace -- -D warnings
       - name: Rust coverage
-        run: cargo llvm-cov --workspace --fail-under-lines 95 --features tooltest/cli-test-server
+        run: cargo llvm-cov --workspace --fail-under-lines 95
 
   release-build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

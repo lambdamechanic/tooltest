@@ -423,6 +423,52 @@ fn cli_allows_tool_allowlist_match() {
 }
 
 #[test]
+fn cli_allows_tool_allowlist_with_extra_tools() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--tool-allowlist",
+        "echo",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha",
+    ]);
+
+    assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
+fn cli_allows_tool_allowlist_with_invalid_extra_tools() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let payload = run_tooltest_json(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--tool-allowlist",
+        "echo",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_INVALID_TOOL=1",
+    ]);
+
+    assert_eq!(payload["outcome"]["status"], "success");
+}
+
+#[test]
 fn cli_rejects_tool_allowlist_miss() {
     let Some(server) = test_server() else {
         return;

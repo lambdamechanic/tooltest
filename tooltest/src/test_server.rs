@@ -197,7 +197,15 @@ pub fn handle_message(message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMess
         JsonRpcMessage::Request(request) => match &request.request {
             ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
             ClientRequest::ListToolsRequest(_) => {
-                Some(list_tools_response(request.id.clone(), vec![tool_stub()]))
+                let mut tools = Vec::new();
+                if let Ok(extra_tool) = env::var("TOOLTEST_TEST_SERVER_EXTRA_TOOL") {
+                    tools.push(tool_stub_with_name(&extra_tool));
+                }
+                if env::var_os("TOOLTEST_TEST_SERVER_INVALID_TOOL").is_some() {
+                    tools.push(invalid_tool_stub("invalid"));
+                }
+                tools.push(tool_stub());
+                Some(list_tools_response(request.id.clone(), tools))
             }
             ClientRequest::CallToolRequest(_) => {
                 Some(call_tool_response(request.id.clone(), tool_response()))
@@ -209,6 +217,10 @@ pub fn handle_message(message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMess
 }
 
 pub fn tool_stub() -> Tool {
+    tool_stub_with_name("echo")
+}
+
+pub fn tool_stub_with_name(name: &str) -> Tool {
     let value_type = env::var("TOOLTEST_VALUE_TYPE").unwrap_or_else(|_| "string".to_string());
     let mut input_schema = serde_json::Map::new();
     input_schema.insert("type".to_string(), json!("object"));
@@ -236,7 +248,7 @@ pub fn tool_stub() -> Tool {
         })
     };
     Tool {
-        name: "echo".to_string().into(),
+        name: name.to_string().into(),
         title: None,
         description: None,
         input_schema: Arc::new(
@@ -250,6 +262,38 @@ pub fn tool_stub() -> Tool {
                 .as_object()
                 .cloned()
                 .expect("output schema object"),
+        )),
+        annotations: None,
+        icons: None,
+        meta: None,
+    }
+}
+
+pub fn invalid_tool_stub(name: &str) -> Tool {
+    let input_schema = json!({
+        "type": "string"
+    });
+    Tool {
+        name: name.to_string().into(),
+        title: None,
+        description: None,
+        input_schema: Arc::new(
+            input_schema
+                .as_object()
+                .cloned()
+                .expect("input schema object"),
+        ),
+        output_schema: Some(Arc::new(
+            json!({
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string", "const": "ok" }
+                },
+                "required": ["status"]
+            })
+            .as_object()
+            .cloned()
+            .expect("output schema object"),
         )),
         annotations: None,
         icons: None,

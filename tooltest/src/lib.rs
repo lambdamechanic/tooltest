@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
     CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
-    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolPredicate,
+    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolNamePredicate,
+    ToolPredicate,
 };
 
 #[derive(Parser)]
@@ -163,6 +164,9 @@ pub async fn run(cli: Cli) -> ExitCode {
     if let Some(predicate) = build_tool_predicate(&cli.tool_allowlist, &cli.tool_blocklist) {
         run_config = run_config.with_predicate(predicate);
     }
+    if let Some(tool_filter) = build_tool_filter(&cli.tool_allowlist, &cli.tool_blocklist) {
+        run_config = run_config.with_tool_filter(tool_filter);
+    }
 
     let result = match cli.command {
         Command::Stdio {
@@ -218,6 +222,29 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
     let blocklist =
         (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
     Some(Arc::new(move |tool_name, _input| {
+        if let Some(allowlist) = allowlist.as_ref() {
+            if !allowlist.contains(tool_name) {
+                return false;
+            }
+        }
+        if let Some(blocklist) = blocklist.as_ref() {
+            if blocklist.contains(tool_name) {
+                return false;
+            }
+        }
+        true
+    }))
+}
+
+fn build_tool_filter(allowlist: &[String], blocklist: &[String]) -> Option<ToolNamePredicate> {
+    if allowlist.is_empty() && blocklist.is_empty() {
+        return None;
+    }
+    let allowlist =
+        (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
+    let blocklist =
+        (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
+    Some(Arc::new(move |tool_name| {
         if let Some(allowlist) = allowlist.as_ref() {
             if !allowlist.contains(tool_name) {
                 return false;

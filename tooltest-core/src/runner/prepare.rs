@@ -32,6 +32,7 @@ pub(super) async fn prepare_run(
             ));
         }
     };
+    let tools = filter_tools(tools, config.tool_filter.as_ref());
 
     if let Err(failure) = run_pre_run_hook(config).await {
         return Err(failure_result(
@@ -79,4 +80,14 @@ pub(super) async fn prepare_run(
         validators,
         prelude_trace,
     })
+}
+
+fn filter_tools(tools: Vec<Tool>, predicate: Option<&crate::ToolNamePredicate>) -> Vec<Tool> {
+    let Some(predicate) = predicate else {
+        return tools;
+    };
+    tools
+        .into_iter()
+        .filter(|tool| predicate(tool.name.as_ref()))
+        .collect()
 }

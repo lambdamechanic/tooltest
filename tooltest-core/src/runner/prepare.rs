@@ -32,18 +32,6 @@ pub(super) async fn prepare_run(
             ));
         }
     };
-    let tools = filter_tools(tools, config.tool_filter.as_ref());
-    if tools.is_empty() {
-        return Err(failure_result(
-            RunFailure::new("no eligible tools to generate".to_string()),
-            prelude_trace.clone(),
-            None,
-            Vec::new(),
-            None,
-            None,
-        ));
-    }
-
     if let Err(failure) = run_pre_run_hook(config).await {
         return Err(failure_result(
             failure,
@@ -83,6 +71,18 @@ pub(super) async fn prepare_run(
             ))
         }
     };
+
+    let tools = filter_tools(tools, config.tool_filter.as_ref());
+    if tools.is_empty() {
+        return Err(failure_result(
+            RunFailure::new("no eligible tools to generate".to_string()),
+            prelude_trace.clone(),
+            None,
+            warnings.clone(),
+            None,
+            None,
+        ));
+    }
 
     Ok(PreparedRun {
         tools,

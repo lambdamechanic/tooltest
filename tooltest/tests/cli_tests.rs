@@ -446,11 +446,11 @@ fn cli_allows_tool_allowlist_with_extra_tools() {
 }
 
 #[test]
-fn cli_allows_tool_allowlist_with_invalid_extra_tools() {
+fn cli_rejects_tool_allowlist_with_invalid_extra_tools() {
     let Some(server) = test_server() else {
         return;
     };
-    let payload = run_tooltest_json(&[
+    let (output, payload) = run_tooltest_json_allow_failure(&[
         "--json",
         "--cases",
         "1",
@@ -465,7 +465,8 @@ fn cli_allows_tool_allowlist_with_invalid_extra_tools() {
         "TOOLTEST_TEST_SERVER_INVALID_TOOL=1",
     ]);
 
-    assert_eq!(payload["outcome"]["status"], "success");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(payload["outcome"]["status"], "failure");
 }
 
 #[test]

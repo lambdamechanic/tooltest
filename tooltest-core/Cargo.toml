@@ -6,6 +6,7 @@ license.workspace = true
 description = "Core runner for MCP conformance testing."
 repository.workspace = true
 readme = "README.md"
+exclude = ["src/bin/stdio_test_server.rs"]
 
 [features]
 stdio-test-server = []

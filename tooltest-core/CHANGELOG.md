@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.2.0...tooltest-core-v0.3.0) - 2026-01-14
+
+### Other
+
+- Merge pull request #54 from lambdamechanic/tooltest-suz
+
 ## [0.2.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.1.0...tooltest-core-v0.2.0) - 2026-01-14
 
 ### Other

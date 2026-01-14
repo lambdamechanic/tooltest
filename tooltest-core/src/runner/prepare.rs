@@ -78,7 +78,7 @@ pub(super) async fn prepare_run(
         let reason = if original_count == 0 {
             "server returned no tools".to_string()
         } else {
-            format!("all {original_count} tools were filtered out by the tool name predicate")
+            format!("all {original_count} tools were filtered out by the tool filter")
         };
         return Err(failure_result(
             RunFailure::new(format!("no eligible tools to generate ({reason})")),

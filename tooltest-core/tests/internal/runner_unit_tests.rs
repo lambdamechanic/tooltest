@@ -803,7 +803,7 @@ async fn run_with_session_reports_no_eligible_tools_with_name_filter() {
     let config = RunConfig::new().with_tool_filter(predicate);
 
     let result = run_with_session(&session, &config, RunnerOptions::default()).await;
-    assert_failure_reason_contains(&result, "filtered out by the tool name predicate");
+    assert_failure_reason_contains(&result, "filtered out by the tool filter");
 }
 
 #[tokio::test(flavor = "multi_thread")]

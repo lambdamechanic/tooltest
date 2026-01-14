@@ -1,4 +1,3 @@
-use crate::generator::{invocation_from_corpus_seeded, ValueCorpus};
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, HttpConfig, PreRunHook, ResponseAssertion, RunConfig,
@@ -489,24 +488,44 @@ async fn run_with_session_generates_all_enum_values() {
         None,
     );
     let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool.clone(), response);
+    let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let corpus = ValueCorpus::default();
+    let assertions = AssertionSet {
+        rules: vec![AssertionRule::Sequence(SequenceAssertion {
+            checks: vec![AssertionCheck {
+                target: AssertionTarget::Sequence,
+                pointer: "/force_failure".to_string(),
+                expected: json!(true),
+            }],
+        })],
+    };
+    let config = RunConfig::new().with_assertions(assertions);
+    let result = crate::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 20..=20,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+
     let mut seen = HashSet::new();
-    for seed in 0..20u64 {
-        let invocation = invocation_from_corpus_seeded(&[tool.clone()], None, &corpus, false, seed)
-            .expect("invocation")
-            .expect("callable");
+    let tool_calls: Vec<_> = result
+        .trace
+        .iter()
+        .filter_map(|entry| entry.as_tool_call().map(|(invocation, _)| invocation))
+        .collect();
+    assert_eq!(tool_calls.len(), 20);
+    for invocation in tool_calls {
         let args = invocation.arguments.as_ref().expect("arguments");
         let language = args
             .get("language")
             .and_then(|value| value.as_str())
             .expect("language");
         seen.insert(language.to_string());
-
-        let entry = driver.send_tool_call(invocation).await.expect("tool call");
-        assert!(entry.as_tool_call().is_some());
     }
 
     for expected in ["shell", "ruby", "powershell", "batch"] {

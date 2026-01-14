@@ -34,6 +34,7 @@ tooltest-core = { path = "../tooltest-core", version = "0.1.0" }
 [dev-dependencies]
 serde_json = "1"
 tooltest-test-support = { path = "../tooltest-test-support" }
+toml = "0.8"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)'] }

@@ -72,10 +72,16 @@ pub(super) async fn prepare_run(
         }
     };
 
+    let original_count = tools.len();
     let tools = filter_tools(tools, config.tool_filter.as_ref());
     if tools.is_empty() {
+        let reason = if original_count == 0 {
+            "server returned no tools".to_string()
+        } else {
+            format!("all {original_count} tools were filtered out by the tool name predicate")
+        };
         return Err(failure_result(
-            RunFailure::new("no eligible tools to generate".to_string()),
+            RunFailure::new(format!("no eligible tools to generate ({reason})")),
             prelude_trace.clone(),
             None,
             warnings.clone(),

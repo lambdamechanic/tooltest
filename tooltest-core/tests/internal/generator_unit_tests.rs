@@ -756,6 +756,22 @@ fn uncallable_reason_rejects_invalid_enum_schema() {
 }
 
 #[test]
+fn uncallable_reason_ignores_optional_empty_enum() {
+    let enum_tool = tool_with_schema(
+        "enumy",
+        json!({
+            "type": "object",
+            "properties": {
+                "language": { "enum": [] }
+            }
+        }),
+    );
+    let corpus = ValueCorpus::default();
+
+    assert_eq!(uncallable_reason(&enum_tool, &corpus, false), None);
+}
+
+#[test]
 fn uncallable_reason_lenient_schema_error_reports_required_value() {
     let string_tool = tool_with_schema(
         "stringy",

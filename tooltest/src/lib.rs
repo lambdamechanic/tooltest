@@ -161,11 +161,10 @@ pub async fn run(cli: Cli) -> ExitCode {
     if let Some(hook) = cli.pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
     }
-    if let Some(predicate) = build_tool_predicate(&cli.tool_allowlist, &cli.tool_blocklist) {
-        run_config = run_config.with_predicate(predicate);
-    }
-    if let Some(tool_filter) = build_tool_filter(&cli.tool_allowlist, &cli.tool_blocklist) {
-        run_config = run_config.with_tool_filter(tool_filter);
+    if let Some(filters) = build_tool_filters(&cli.tool_allowlist, &cli.tool_blocklist) {
+        run_config = run_config
+            .with_predicate(filters.predicate)
+            .with_tool_filter(filters.name_predicate);
     }
 
     let result = match cli.command {
@@ -218,6 +217,11 @@ struct ToolFilterSets {
     blocklist: Option<HashSet<String>>,
 }
 
+struct ToolFilters {
+    predicate: ToolPredicate,
+    name_predicate: ToolNamePredicate,
+}
+
 fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilterSets> {
     if allowlist.is_empty() && blocklist.is_empty() {
         return None;
@@ -232,11 +236,11 @@ fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<
     })
 }
 
-fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<ToolPredicate> {
+fn build_tool_filters(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilters> {
     let sets = build_tool_filter_sets(allowlist, blocklist)?;
     let allowlist = sets.allowlist;
     let blocklist = sets.blocklist;
-    Some(Arc::new(move |tool_name, _input| {
+    let name_predicate: ToolNamePredicate = Arc::new(move |tool_name| {
         if let Some(allowlist) = allowlist.as_ref() {
             if !allowlist.contains(tool_name) {
                 return false;
@@ -248,26 +252,13 @@ fn build_tool_predicate(allowlist: &[String], blocklist: &[String]) -> Option<To
             }
         }
         true
-    }))
-}
-
-fn build_tool_filter(allowlist: &[String], blocklist: &[String]) -> Option<ToolNamePredicate> {
-    let sets = build_tool_filter_sets(allowlist, blocklist)?;
-    let allowlist = sets.allowlist;
-    let blocklist = sets.blocklist;
-    Some(Arc::new(move |tool_name| {
-        if let Some(allowlist) = allowlist.as_ref() {
-            if !allowlist.contains(tool_name) {
-                return false;
-            }
-        }
-        if let Some(blocklist) = blocklist.as_ref() {
-            if blocklist.contains(tool_name) {
-                return false;
-            }
-        }
-        true
-    }))
+    });
+    let predicate_name = Arc::clone(&name_predicate);
+    let predicate: ToolPredicate = Arc::new(move |tool_name, _input| predicate_name(tool_name));
+    Some(ToolFilters {
+        predicate,
+        name_predicate,
+    })
 }
 
 pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
@@ -453,35 +444,23 @@ mod tests {
     }
 
     #[test]
-    fn build_tool_predicate_blocks_blocklisted_tool() {
-        let predicate = build_tool_predicate(&[], &[String::from("echo")]).expect("predicate");
+    fn build_tool_filters_block_blocklisted_tool() {
+        let filters = build_tool_filters(&[], &[String::from("echo")]).expect("filters");
 
-        assert!(!predicate("echo", &json!({})));
-        assert!(predicate("other", &json!({})));
+        assert!(!(filters.predicate)("echo", &json!({})));
+        assert!(!(filters.name_predicate)("echo"));
+        assert!((filters.predicate)("other", &json!({})));
+        assert!((filters.name_predicate)("other"));
     }
 
     #[test]
-    fn build_tool_predicate_rejects_non_allowlisted_tool() {
-        let predicate = build_tool_predicate(&[String::from("echo")], &[]).expect("predicate");
+    fn build_tool_filters_reject_non_allowlisted_tool() {
+        let filters = build_tool_filters(&[String::from("echo")], &[]).expect("filters");
 
-        assert!(!predicate("other", &json!({})));
-        assert!(predicate("echo", &json!({})));
-    }
-
-    #[test]
-    fn build_tool_filter_blocks_blocklisted_tool() {
-        let filter = build_tool_filter(&[], &[String::from("echo")]).expect("filter");
-
-        assert!(!filter("echo"));
-        assert!(filter("other"));
-    }
-
-    #[test]
-    fn build_tool_filter_rejects_non_allowlisted_tool() {
-        let filter = build_tool_filter(&[String::from("echo")], &[]).expect("filter");
-
-        assert!(!filter("other"));
-        assert!(filter("echo"));
+        assert!(!(filters.predicate)("other", &json!({})));
+        assert!(!(filters.name_predicate)("other"));
+        assert!((filters.predicate)("echo", &json!({})));
+        assert!((filters.name_predicate)("echo"));
     }
 
     #[test]

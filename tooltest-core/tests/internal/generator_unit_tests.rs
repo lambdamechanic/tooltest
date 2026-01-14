@@ -351,6 +351,19 @@ fn schema_value_strategy_rejects_invalid_pattern() {
 }
 
 #[test]
+fn property_strategy_from_corpus_lenient_invalid_string_pattern_reports_missing_required() {
+    let tool = tool_with_schema("echo", json!({ "type": "object" }));
+    let corpus = ValueCorpus::default();
+    let schema = json!({ "type": "string", "pattern": "(" })
+        .as_object()
+        .cloned()
+        .expect("schema");
+
+    let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool, true);
+    assert!(outcome_is_missing_required(&outcome));
+}
+
+#[test]
 fn schema_value_strategy_rejects_invalid_ref() {
     let tool = tool_with_schema("echo", json!({ "type": "object" }));
     let schema = json!({ "$ref": "#/missing" })
@@ -567,19 +580,6 @@ fn property_strategy_from_corpus_lenient_invalid_numeric_schema_reports_missing_
 
     let number_outcome = property_strategy_from_corpus(&number_schema, true, &corpus, &tool, true);
     assert!(outcome_is_missing_required(&number_outcome));
-}
-
-#[test]
-fn property_strategy_from_corpus_lenient_invalid_string_pattern_reports_missing_required() {
-    let tool = tool_with_schema("echo", json!({ "type": "object" }));
-    let corpus = ValueCorpus::default();
-    let schema = json!({ "type": "string", "pattern": "(" })
-        .as_object()
-        .cloned()
-        .expect("schema");
-
-    let outcome = property_strategy_from_corpus(&schema, true, &corpus, &tool, true);
-    assert!(outcome_is_missing_required(&outcome));
 }
 
 #[test]

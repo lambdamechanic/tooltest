@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.3.0...tooltest-core-v0.4.0) - 2026-01-15
+
+### Other
+
+- Merge pull request #56 from lambdamechanic/pr/in-band-error-flag
+
 ## [0.3.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.2.0...tooltest-core-v0.3.0) - 2026-01-14
 
 ### Other

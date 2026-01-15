@@ -15,7 +15,7 @@ pub(super) fn apply_default_assertions(
 ) -> Option<String> {
     if response.is_error.unwrap_or(false) && in_band_error_forbidden {
         return Some(format!(
-            "tool '{}' returned an error response",
+            "tool '{}' returned an error response (isError=true), which is forbidden by configuration",
             invocation.name.as_ref()
         ));
     }

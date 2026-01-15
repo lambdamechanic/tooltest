@@ -15,7 +15,7 @@ use super::coverage::{coverage_failure, CoverageTracker};
 use super::pre_run::run_pre_run_hook;
 use super::prepare::prepare_run;
 use super::result::{failure_result, finalize_state_machine_result, FailureContext};
-use super::state_machine::execute_state_machine_sequence;
+use super::state_machine::{execute_state_machine_sequence, StateMachineExecution};
 
 /// Configuration for proptest-driven run behavior.
 #[derive(Clone, Debug)]
@@ -152,18 +152,18 @@ pub async fn run_with_session(
                         } else {
                             None
                         };
-                        let result = execute_state_machine_sequence(
+                        let execution = StateMachineExecution {
                             session,
-                            &tools,
-                            &validators,
-                            &assertions,
-                            &sequence,
-                            &mut tracker,
-                            config.predicate.as_ref(),
+                            tools: &tools,
+                            validators: &validators,
+                            assertions: &assertions,
+                            predicate: config.predicate.as_ref(),
                             min_len,
-                            config.in_band_error_forbidden,
-                        )
-                        .await;
+                            in_band_error_forbidden: config.in_band_error_forbidden,
+                        };
+                        let result =
+                            execute_state_machine_sequence(&sequence, &execution, &mut tracker)
+                                .await;
                         let (report, corpus_report) = {
                             let mut aggregate = aggregate_tracker.borrow_mut();
                             aggregate.merge_from(&tracker);

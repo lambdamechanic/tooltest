@@ -8,7 +8,7 @@ use super::schema::{
     build_output_validators, collect_schema_keyword_warnings, collect_schema_warnings,
     validate_tools,
 };
-use super::state_machine::execute_state_machine_sequence;
+use super::state_machine::{execute_state_machine_sequence, StateMachineExecution};
 use super::transport::{run_with_transport, ConnectFuture};
 use super::{run_http, run_stdio, run_with_session};
 use crate::generator::{
@@ -23,7 +23,9 @@ use crate::{
 };
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
-use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents};
+use rmcp::model::{
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents, Tool,
+};
 use rmcp::transport::Transport;
 use serde_json::{json, Number, Value as JsonValue};
 use std::cell::RefCell;
@@ -49,6 +51,29 @@ fn trace_entry_with(name: &str, args: Option<JsonValue>, response: CallToolResul
         },
         response,
     )
+}
+
+async fn execute_sequence_for_test(
+    session: &SessionDriver,
+    tools: &[Tool],
+    validators: &BTreeMap<String, jsonschema::Validator>,
+    assertions: &AssertionSet,
+    sequence: &StateMachineSequence,
+    tracker: &mut CoverageTracker<'_>,
+    predicate: Option<&ToolPredicate>,
+    min_len: Option<usize>,
+    in_band_error_forbidden: bool,
+) -> Result<Vec<TraceEntry>, FailureContext> {
+    let execution = StateMachineExecution {
+        session,
+        tools,
+        validators,
+        assertions,
+        predicate,
+        min_len,
+        in_band_error_forbidden,
+    };
+    execute_state_machine_sequence(sequence, &execution, tracker).await
 }
 
 async fn connect_runner_transport(
@@ -891,7 +916,10 @@ async fn run_with_session_state_machine_reports_default_assertion_failure() {
     };
 
     let result = run_with_session(&session, &config, options).await;
-    assert_failure_reason_contains(&result, "returned an error response");
+    assert_failure_reason_contains(
+        &result,
+        "returned an error response (isError=true), which is forbidden by configuration",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -966,7 +994,7 @@ async fn execute_state_machine_sequence_breaks_when_no_callable_tools() {
     let sequence = StateMachineSequence { seeds: vec![1, 2] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -992,7 +1020,7 @@ async fn execute_state_machine_sequence_reports_generation_error() {
     let sequence = StateMachineSequence { seeds: vec![0] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1023,7 +1051,7 @@ async fn execute_state_machine_sequence_reports_session_error() {
     let sequence = StateMachineSequence { seeds: vec![0] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1059,7 +1087,7 @@ async fn execute_state_machine_sequence_reports_response_assertion_failure() {
     };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1095,7 +1123,7 @@ async fn execute_state_machine_sequence_reports_response_assertion_failure_on_er
     };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1130,7 +1158,7 @@ async fn execute_state_machine_sequence_reports_sequence_assertion_failure() {
     };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),
@@ -1164,7 +1192,7 @@ async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
     let sequence = StateMachineSequence { seeds: vec![0] };
     let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
 
-    let result = execute_state_machine_sequence(
+    let result = execute_sequence_for_test(
         &session,
         &tools,
         &BTreeMap::new(),

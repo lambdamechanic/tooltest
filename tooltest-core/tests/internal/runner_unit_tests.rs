@@ -939,6 +939,53 @@ async fn run_with_session_state_machine_allows_in_band_error_by_default() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_state_machine_requires_structured_content_on_error_with_schema() {
+    let output_schema = json!({
+        "type": "object",
+        "properties": { "error": { "type": "string" } },
+        "required": ["error"]
+    });
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), Some(output_schema));
+    let response = CallToolResult::error(vec![Content::text("boom")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new();
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    assert_failure_reason_contains(&result, "returned no structured_content");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_state_machine_accepts_structured_content_on_error_with_schema() {
+    let output_schema = json!({
+        "type": "object",
+        "properties": { "error": { "type": "string" } },
+        "required": ["error"]
+    });
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), Some(output_schema));
+    let response = CallToolResult {
+        content: vec![Content::text("boom")],
+        structured_content: Some(json!({ "error": "boom" })),
+        is_error: Some(true),
+        meta: None,
+    };
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new();
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    assert_success(&result);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_state_machine_min_calls_per_tool_failure() {
     let tool = tool_with_schemas("echo", json!({ "type": "object", "properties": {} }), None);
     let response = CallToolResult::structured(json!({ "value": 1 }));

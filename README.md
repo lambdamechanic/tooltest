@@ -150,6 +150,12 @@ Tool responses with `isError = true` are allowed by default and do not fail the 
 the previous behavior, pass `--in-band-error-forbidden`. MCP protocol errors (JSON-RPC errors) and
 schema-invalid responses still fail the run.
 
+Static checks (like output schema validation) always apply. If a tool advertises an output schema,
+error responses are expected to include `structuredContent` that conforms to that schema. The MCP
+spec describes `CallToolResult.structuredContent` as optional and says that if an output schema is
+defined it SHOULD conform to the schema; tooltest treats missing or invalid structured content as
+schema-invalid, even for `isError` results (see `docs/mcp-spec/2025-11-25/schema.mdx`).
+
 ### Seed data
 
 Seed the corpus with known values (strings or numbers) using inline JSON:

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.3.0...tooltest-v0.4.0) - 2026-01-15
+
+### Other
+
+- bd daemon sync: 2026-01-15 12:45:30
+
 ## [0.3.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.2.0...tooltest-v0.3.0) - 2026-01-14
 
 ### Other

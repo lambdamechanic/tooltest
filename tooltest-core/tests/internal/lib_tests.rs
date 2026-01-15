@@ -44,11 +44,13 @@ fn run_config_builders_wire_fields() {
     let config = RunConfig::new()
         .with_schema(schema.clone())
         .with_predicate(predicate)
-        .with_assertions(assertions.clone());
+        .with_assertions(assertions.clone())
+        .with_in_band_error_forbidden(true);
 
     assert_eq!(config.schema, schema);
     assert!(config.predicate.is_some());
     assert_eq!(config.assertions.rules.len(), 1);
+    assert!(config.in_band_error_forbidden);
     let predicate = config.predicate.as_ref().expect("predicate set");
     assert!(predicate("search", &json!({"query": "hello"})));
     assert!(!predicate("search", &json!({"query": "nope"})));
@@ -69,6 +71,10 @@ fn run_config_default_matches_new() {
     assert_eq!(
         config.assertions.rules.len(),
         default_config.assertions.rules.len()
+    );
+    assert_eq!(
+        config.in_band_error_forbidden,
+        default_config.in_band_error_forbidden
     );
 }
 

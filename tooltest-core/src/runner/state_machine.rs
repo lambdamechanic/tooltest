@@ -14,24 +14,28 @@ use super::assertions::{
 use super::coverage::CoverageTracker;
 use super::result::FailureContext;
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct StateMachineExecution<'a> {
+    pub(super) session: &'a SessionDriver,
+    pub(super) tools: &'a [Tool],
+    pub(super) validators: &'a BTreeMap<String, jsonschema::Validator>,
+    pub(super) assertions: &'a AssertionSet,
+    pub(super) predicate: Option<&'a ToolPredicate>,
+    pub(super) min_len: Option<usize>,
+    pub(super) in_band_error_forbidden: bool,
+}
+
 pub(super) async fn execute_state_machine_sequence(
-    session: &SessionDriver,
-    tools: &[Tool],
-    validators: &BTreeMap<String, jsonschema::Validator>,
-    assertions: &AssertionSet,
     sequence: &StateMachineSequence,
+    execution: &StateMachineExecution<'_>,
     tracker: &mut CoverageTracker<'_>,
-    predicate: Option<&ToolPredicate>,
-    min_len: Option<usize>,
 ) -> Result<Vec<TraceEntry>, FailureContext> {
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
     let mut invocation_count = 0usize;
     for seed in &sequence.seeds {
         let invocation = match invocation_from_corpus_seeded(
-            tools,
-            predicate,
+            execution.tools,
+            execution.predicate,
             tracker.corpus(),
             tracker.lenient_sourcing(),
             *seed,
@@ -53,7 +57,7 @@ pub(super) async fn execute_state_machine_sequence(
 
         invocation_count += 1;
         trace.push(TraceEntry::tool_call(invocation.clone()));
-        let entry = match session.send_tool_call(invocation.clone()).await {
+        let entry = match execution.session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
             Err(error) => {
                 attach_failure_reason(&mut trace, format!("session error: {error:?}"));
@@ -75,7 +79,12 @@ pub(super) async fn execute_state_machine_sequence(
             tracker.mine_response(invocation.name.as_ref(), &response);
         }
 
-        if let Some(reason) = apply_default_assertions(&invocation, &response, validators) {
+        if let Some(reason) = apply_default_assertions(
+            &invocation,
+            &response,
+            execution.validators,
+            execution.in_band_error_forbidden,
+        ) {
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
@@ -86,7 +95,9 @@ pub(super) async fn execute_state_machine_sequence(
             });
         }
 
-        if let Some(reason) = apply_response_assertions(assertions, &invocation, &response) {
+        if let Some(reason) =
+            apply_response_assertions(execution.assertions, &invocation, &response)
+        {
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
             return Err(FailureContext {
@@ -98,7 +109,7 @@ pub(super) async fn execute_state_machine_sequence(
         }
     }
 
-    if let Some(min_len) = min_len {
+    if let Some(min_len) = execution.min_len {
         if invocation_count < min_len {
             let reason = format!(
                 "state-machine generator failed to reach minimum sequence length ({min_len})"
@@ -113,7 +124,7 @@ pub(super) async fn execute_state_machine_sequence(
         }
     }
 
-    if let Some(reason) = apply_sequence_assertions(assertions, &full_trace) {
+    if let Some(reason) = apply_sequence_assertions(execution.assertions, &full_trace) {
         attach_failure_reason(&mut trace, reason.clone());
         return Err(FailureContext {
             failure: RunFailure::new(reason),

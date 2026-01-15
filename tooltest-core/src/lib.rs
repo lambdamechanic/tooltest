@@ -201,8 +201,8 @@ pub type ToolNamePredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Declarative JSON assertion DSL container.
 ///
-/// Runs also apply default assertions that fail on tool error responses and
-/// validate structured output against declared output schemas.
+/// Runs also apply default assertions that fail on MCP protocol errors,
+/// schema-invalid responses, and (when configured) tool result error responses.
 ///
 /// Example:
 /// ```
@@ -292,6 +292,8 @@ pub struct RunConfig {
     pub tool_filter: Option<ToolNamePredicate>,
     /// Assertion rules to evaluate during the run.
     pub assertions: AssertionSet,
+    /// Whether tool result error responses (`isError`) should fail the run.
+    pub in_band_error_forbidden: bool,
     /// State-machine generator configuration.
     pub state_machine: StateMachineConfig,
     /// Optional pre-run hook to execute before validation and each case.
@@ -309,6 +311,7 @@ impl RunConfig {
             predicate: None,
             tool_filter: None,
             assertions: AssertionSet::default(),
+            in_band_error_forbidden: false,
             state_machine: StateMachineConfig::default(),
             pre_run_hook: None,
         }
@@ -335,6 +338,12 @@ impl RunConfig {
     /// Sets the assertion rules for the run.
     pub fn with_assertions(mut self, assertions: AssertionSet) -> Self {
         self.assertions = assertions;
+        self
+    }
+
+    /// Sets whether tool result error responses (`isError`) should fail the run.
+    pub fn with_in_band_error_forbidden(mut self, forbidden: bool) -> Self {
+        self.in_band_error_forbidden = forbidden;
         self
     }
 
@@ -370,6 +379,7 @@ impl fmt::Debug for RunConfig {
             .field("predicate", &self.predicate.is_some())
             .field("tool_filter", &self.tool_filter.is_some())
             .field("assertions", &self.assertions)
+            .field("in_band_error_forbidden", &self.in_band_error_forbidden)
             .field("state_machine", &self.state_machine)
             .field("pre_run_hook", &self.pre_run_hook.is_some())
             .finish()

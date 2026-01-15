@@ -11,10 +11,11 @@ pub(super) fn apply_default_assertions(
     invocation: &ToolInvocation,
     response: &CallToolResult,
     validators: &BTreeMap<String, jsonschema::Validator>,
+    in_band_error_forbidden: bool,
 ) -> Option<String> {
-    if response.is_error.unwrap_or(false) {
+    if response.is_error.unwrap_or(false) && in_band_error_forbidden {
         return Some(format!(
-            "tool '{}' returned an error response",
+            "tool '{}' returned an error response (isError=true), which is forbidden by configuration",
             invocation.name.as_ref()
         ));
     }

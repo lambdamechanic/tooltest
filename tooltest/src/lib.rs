@@ -49,6 +49,7 @@ pub struct Cli {
     #[arg(long = "tool-blocklist")]
     pub tool_blocklist: Vec<String>,
     /// Fail the run when a tool result reports `isError = true`.
+    /// By default, tool error responses are allowed and do not fail the run.
     #[arg(long)]
     pub in_band_error_forbidden: bool,
 

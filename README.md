@@ -144,6 +144,12 @@ shrink/minimization) using `--pre-run-hook "<shell command>"`. If the hook exits
 fails with `code: pre_run_hook_failed` and structured details (exit code, stdout, stderr, signal).
 For stdio runs, the hook uses the same `--env` and `--cwd` settings as the MCP server process.
 
+### In-band tool errors
+
+Tool responses with `isError = true` are allowed by default and do not fail the run. To preserve
+the previous behavior, pass `--in-band-error-forbidden`. MCP protocol errors (JSON-RPC errors) and
+schema-invalid responses still fail the run.
+
 ### Seed data
 
 Seed the corpus with known values (strings or numbers) using inline JSON:

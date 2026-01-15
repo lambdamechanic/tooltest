@@ -778,7 +778,7 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_excludes_error_responses_from_coverage() {
+async fn run_with_session_allows_error_responses_and_excludes_from_coverage_by_default() {
     let tool = tool_with_schemas(
         "echo",
         json!({

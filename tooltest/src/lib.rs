@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tooltest_core::{
     CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolNamePredicate,
-    ToolPredicate,
+    ToolPredicate, TraceEntry, TraceSink,
 };
 
 #[derive(Parser)]
@@ -59,6 +59,12 @@ pub struct Cli {
     /// Emit JSON output instead of human-readable output.
     #[arg(long)]
     pub json: bool,
+    /// Include tool responses in the trace output.
+    #[arg(long)]
+    pub full_trace: bool,
+    /// Emit all per-case traces to a file (JSON lines).
+    #[arg(long, value_name = "PATH")]
+    pub trace_all: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -161,7 +167,17 @@ pub async fn run(cli: Cli) -> ExitCode {
         state_machine.log_corpus_deltas = true;
     }
     let dump_corpus = state_machine.dump_corpus;
-    let mut run_config = RunConfig::new().with_state_machine(state_machine);
+    let mut run_config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_full_trace(cli.full_trace);
+    if let Some(path) = cli.trace_all.as_ref() {
+        match TraceFileSink::new(path) {
+            Ok(sink) => {
+                run_config = run_config.with_trace_sink(std::sync::Arc::new(sink));
+            }
+            Err(message) => return error_exit(&message, cli.json),
+        }
+    }
     if let Some(hook) = cli.pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
     }
@@ -399,6 +415,7 @@ fn format_coverage_warning_reason(reason: &CoverageWarningReason) -> &'static st
 fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
     match code {
         RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
+        RunWarningCode::MissingStructuredContent => "missing_structured_content",
     }
 }
 
@@ -407,6 +424,43 @@ fn format_run_warning_message(warning: &RunWarning) -> String {
         format!("{} ({tool})", warning.message)
     } else {
         warning.message.clone()
+    }
+}
+
+#[derive(Clone)]
+struct TraceFileSink {
+    path: String,
+}
+
+impl TraceFileSink {
+    fn new(path: &str) -> Result<Self, String> {
+        let path = path.to_string();
+        let header = serde_json::to_string(&serde_json::json!({ "format": "trace_all_v1" }))
+            .map_err(|error| format!("failed to serialize trace header: {error}"))?;
+        let payload = format!("{header}\n");
+        fs::write(&path, payload)
+            .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
+        Ok(Self { path })
+    }
+}
+
+impl TraceSink for TraceFileSink {
+    fn record(&self, case_index: u64, trace: &[TraceEntry]) {
+        let payload = serde_json::json!({
+            "case": case_index,
+            "trace": trace,
+        });
+        if let Ok(line) = serde_json::to_string(&payload) {
+            let _ = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .and_then(|mut file| {
+                    use std::io::Write;
+                    file.write_all(line.as_bytes())?;
+                    file.write_all(b"\n")
+                });
+        }
     }
 }
 
@@ -787,6 +841,7 @@ mod tests {
     fn format_run_result_human_reports_coverage_warnings() {
         let coverage = CoverageReport {
             counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
             warnings: vec![
                 CoverageWarning {
                     tool: "alpha".to_string(),
@@ -899,6 +954,7 @@ mod tests {
     fn format_run_result_human_skips_empty_coverage_warnings() {
         let coverage = CoverageReport {
             counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
             warnings: Vec::new(),
         };
         let result = RunResult {
@@ -979,6 +1035,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1009,6 +1067,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1038,6 +1098,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1066,6 +1128,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1093,6 +1157,8 @@ mod tests {
             in_band_error_forbidden: false,
             pre_run_hook: Some("true".to_string()),
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1121,6 +1187,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1149,6 +1217,8 @@ mod tests {
 
             pre_run_hook: None,
             json: true,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1177,6 +1247,8 @@ mod tests {
 
             pre_run_hook: None,
             json: true,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1205,6 +1277,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1233,6 +1307,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1261,6 +1337,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1289,6 +1367,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
                 args: Vec::new(),
@@ -1319,6 +1399,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
                 args: Vec::new(),

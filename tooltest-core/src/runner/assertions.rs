@@ -4,7 +4,8 @@ use rmcp::model::CallToolResult;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, ToolInvocation, TraceEntry,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, RunWarning, RunWarningCode,
+    ToolInvocation, TraceEntry,
 };
 
 pub(super) fn apply_default_assertions(
@@ -12,6 +13,8 @@ pub(super) fn apply_default_assertions(
     response: &CallToolResult,
     validators: &BTreeMap<String, jsonschema::Validator>,
     in_band_error_forbidden: bool,
+    warnings: &mut Vec<RunWarning>,
+    warned_missing_structured: &mut std::collections::HashSet<String>,
 ) -> Option<String> {
     if response.is_error.unwrap_or(false) && in_band_error_forbidden {
         return Some(format!(
@@ -23,9 +26,16 @@ pub(super) fn apply_default_assertions(
     let tool_name = invocation.name.as_ref();
     let validator = validators.get(tool_name)?;
     let Some(structured) = response.structured_content.as_ref() else {
-        return Some(format!(
-            "tool '{tool_name}' returned no structured_content for output schema"
-        ));
+        if warned_missing_structured.insert(tool_name.to_string()) {
+            warnings.push(RunWarning {
+                code: RunWarningCode::MissingStructuredContent,
+                message: format!(
+                    "tool '{tool_name}' returned no structured_content for output schema"
+                ),
+                tool: Some(tool_name.to_string()),
+            });
+        }
+        return None;
     };
     if let Err(error) = validator.validate(structured) {
         return Some(format!(

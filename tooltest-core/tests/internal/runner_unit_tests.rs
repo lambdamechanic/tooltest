@@ -17,9 +17,9 @@ use crate::generator::{
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, PreRunHook,
-    ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode, RunnerOptions,
-    SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
-    ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry,
+    ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
+    RunnerOptions, SchemaConfig, SequenceAssertion, SessionDriver, SessionError,
+    StateMachineConfig, StdioConfig, ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry,
 };
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
@@ -53,6 +53,10 @@ fn trace_entry_with(name: &str, args: Option<JsonValue>, response: CallToolResul
     )
 }
 
+fn default_assertion_context() -> (Vec<RunWarning>, std::collections::HashSet<String>) {
+    (Vec::new(), std::collections::HashSet::new())
+}
+
 async fn execute_sequence_for_test(
     session: &SessionDriver,
     tools: &[Tool],
@@ -72,6 +76,11 @@ async fn execute_sequence_for_test(
         predicate,
         min_len,
         in_band_error_forbidden,
+        full_trace: false,
+        warnings: Rc::new(RefCell::new(Vec::new())),
+        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        case_index: 0,
+        trace_sink: None,
     };
     execute_state_machine_sequence(sequence, &execution, tracker).await
 }
@@ -164,8 +173,15 @@ fn apply_default_assertions_reports_tool_error() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_default_assertions(invocation, response.expect("response"), &validators, true);
+    let (mut warnings, mut warned) = default_assertion_context();
+    let result = apply_default_assertions(
+        invocation,
+        response.expect("response"),
+        &validators,
+        true,
+        &mut warnings,
+        &mut warned,
+    );
     assert!(result.is_some());
 }
 
@@ -178,8 +194,15 @@ fn apply_default_assertions_allows_tool_error_when_allowed() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_default_assertions(invocation, response.expect("response"), &validators, false);
+    let (mut warnings, mut warned) = default_assertion_context();
+    let result = apply_default_assertions(
+        invocation,
+        response.expect("response"),
+        &validators,
+        false,
+        &mut warnings,
+        &mut warned,
+    );
     assert!(result.is_none());
 }
 
@@ -199,9 +222,18 @@ fn apply_default_assertions_reports_missing_structured_content() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_default_assertions(invocation, response.expect("response"), &validators, false);
-    assert!(result.is_some());
+    let (mut warnings, mut warned) = default_assertion_context();
+    let result = apply_default_assertions(
+        invocation,
+        response.expect("response"),
+        &validators,
+        false,
+        &mut warnings,
+        &mut warned,
+    );
+    assert!(result.is_none());
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].code, RunWarningCode::MissingStructuredContent);
 }
 
 #[test]
@@ -220,8 +252,15 @@ fn apply_default_assertions_reports_schema_violation() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_default_assertions(invocation, response.expect("response"), &validators, false);
+    let (mut warnings, mut warned) = default_assertion_context();
+    let result = apply_default_assertions(
+        invocation,
+        response.expect("response"),
+        &validators,
+        false,
+        &mut warnings,
+        &mut warned,
+    );
     assert!(result.is_some());
 }
 
@@ -241,8 +280,15 @@ fn apply_default_assertions_accepts_valid_structured_content() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_default_assertions(invocation, response.expect("response"), &validators, false);
+    let (mut warnings, mut warned) = default_assertion_context();
+    let result = apply_default_assertions(
+        invocation,
+        response.expect("response"),
+        &validators,
+        false,
+        &mut warnings,
+        &mut warned,
+    );
     assert!(result.is_none());
 }
 
@@ -255,8 +301,15 @@ fn apply_default_assertions_skips_when_missing_validator() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let result =
-        apply_default_assertions(invocation, response.expect("response"), &validators, false);
+    let (mut warnings, mut warned) = default_assertion_context();
+    let result = apply_default_assertions(
+        invocation,
+        response.expect("response"),
+        &validators,
+        false,
+        &mut warnings,
+        &mut warned,
+    );
     assert!(result.is_none());
 }
 

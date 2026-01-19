@@ -20,6 +20,7 @@ pub(super) struct CoverageTracker<'a> {
     tools: &'a [Tool],
     corpus: ValueCorpus,
     counts: BTreeMap<String, u64>,
+    failures: BTreeMap<String, u64>,
     allowlist: Option<Vec<String>>,
     blocklist: Option<Vec<String>>,
     lenient_sourcing: bool,
@@ -66,6 +67,7 @@ impl<'a> CoverageTracker<'a> {
             tools,
             corpus,
             counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
             allowlist: config.coverage_allowlist.clone(),
             blocklist: config.coverage_blocklist.clone(),
             lenient_sourcing: config.lenient_sourcing,
@@ -86,17 +88,23 @@ impl<'a> CoverageTracker<'a> {
         for (tool, count) in &other.counts {
             *self.counts.entry(tool.clone()).or_insert(0) += count;
         }
+        for (tool, count) in &other.failures {
+            *self.failures.entry(tool.clone()).or_insert(0) += count;
+        }
         self.corpus.merge_from(other.corpus());
     }
 
     pub(super) fn report(&self) -> CoverageReport {
         let mut counts = self.counts.clone();
+        let mut failures = self.failures.clone();
         for tool in self.tools {
             counts.entry(tool.name.to_string()).or_insert(0);
+            failures.entry(tool.name.to_string()).or_insert(0);
         }
         counts.insert(LIST_TOOLS_COUNT_LABEL.to_string(), 1);
         CoverageReport {
             counts,
+            failures,
             warnings: self.build_warnings(),
         }
     }
@@ -111,6 +119,10 @@ impl<'a> CoverageTracker<'a> {
 
     pub(super) fn record_success(&mut self, tool: &str) {
         *self.counts.entry(tool.to_string()).or_insert(0) += 1;
+    }
+
+    pub(super) fn record_failure(&mut self, tool: &str) {
+        *self.failures.entry(tool.to_string()).or_insert(0) += 1;
     }
 
     pub(super) fn mine_response(&mut self, tool: &str, response: &CallToolResult) {

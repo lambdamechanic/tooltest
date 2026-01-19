@@ -262,6 +262,67 @@ fn invocation_from_corpus_accepts_predicate() {
 }
 
 #[test]
+fn generator_should_hit_valid_paths_with_enough_seeds_but_can_miss() {
+    let pdf_tool = tool_with_schema(
+        "pdf_tool",
+        json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["extract_text"] },
+                "path": { "type": "string" }
+            },
+            "required": ["operation", "path"]
+        }),
+    );
+    let xlsx_tool = tool_with_schema(
+        "xlsx_tool",
+        json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["read_cells"] },
+                "path": { "type": "string" }
+            },
+            "required": ["operation", "path"]
+        }),
+    );
+    let mut corpus = ValueCorpus::default();
+    let mut strings: Vec<String> = (0..10).map(|idx| format!("junk-{idx}")).collect();
+    strings.push("/tmp/sample.pdf".to_string());
+    strings.push("/tmp/FinancialSample.xlsx".to_string());
+    strings.push("/tmp/sample.docx".to_string());
+    corpus.seed_strings(strings);
+
+    let mut attempts = Vec::new();
+    let mut pdf_hits = 0usize;
+    let mut xlsx_hits = 0usize;
+    for seed in 0..128 {
+        let invocation = invocation_from_corpus_seeded(
+            &[pdf_tool.clone(), xlsx_tool.clone()],
+            None,
+            &corpus,
+            false,
+            seed,
+        )
+        .expect("invocation")
+        .expect("tool invocation");
+        let args = invocation.arguments.expect("arguments");
+        let path = args.get("path").and_then(JsonValue::as_str).expect("path");
+        attempts.push(format!("seed={seed} tool={} path={path}", invocation.name));
+        match invocation.name.as_ref() {
+            "pdf_tool" if path.ends_with(".pdf") => pdf_hits += 1,
+            "xlsx_tool" if path.ends_with(".xlsx") => xlsx_hits += 1,
+            "pdf_tool" | "xlsx_tool" => {}
+            other => panic!("unexpected tool: {other}"),
+        }
+    }
+
+    assert!(
+        pdf_hits > 0 && xlsx_hits > 0,
+        "expected at least one valid path per tool with enough seeds; pdf_hits={pdf_hits} xlsx_hits={xlsx_hits}; attempts={attempts:?}"
+    );
+}
+
+#[test]
 fn invocation_from_corpus_rejects_non_object_property_schema() {
     let tool = tool_with_schema(
         "echo",

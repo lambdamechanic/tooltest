@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tooltest_core::{
     CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
     RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolNamePredicate,
-    ToolPredicate,
+    ToolPredicate, TraceEntry, TraceSink,
 };
 
 #[derive(Parser)]
@@ -59,6 +59,12 @@ pub struct Cli {
     /// Emit JSON output instead of human-readable output.
     #[arg(long)]
     pub json: bool,
+    /// Include tool responses in the trace output.
+    #[arg(long)]
+    pub full_trace: bool,
+    /// Emit all per-case traces to a file (JSON lines).
+    #[arg(long, value_name = "PATH")]
+    pub trace_all: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -161,7 +167,17 @@ pub async fn run(cli: Cli) -> ExitCode {
         state_machine.log_corpus_deltas = true;
     }
     let dump_corpus = state_machine.dump_corpus;
-    let mut run_config = RunConfig::new().with_state_machine(state_machine);
+    let mut run_config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_full_trace(cli.full_trace);
+    if let Some(path) = cli.trace_all.as_ref() {
+        match TraceFileSink::new(path) {
+            Ok(sink) => {
+                run_config = run_config.with_trace_sink(std::sync::Arc::new(sink));
+            }
+            Err(message) => return error_exit(&message, cli.json),
+        }
+    }
     if let Some(hook) = cli.pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
     }
@@ -364,6 +380,14 @@ fn format_run_result_human(result: &RunResult) -> String {
                 ));
             }
         }
+        if coverage.failures.values().any(|count| *count > 0) {
+            output.push_str("Coverage failures:\n");
+            for (tool, count) in &coverage.failures {
+                if *count > 0 {
+                    output.push_str(&format!("- {tool}: {count}\n"));
+                }
+            }
+        }
     }
 
     if !result.warnings.is_empty() {
@@ -399,6 +423,7 @@ fn format_coverage_warning_reason(reason: &CoverageWarningReason) -> &'static st
 fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
     match code {
         RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
+        RunWarningCode::MissingStructuredContent => "missing_structured_content",
     }
 }
 
@@ -410,10 +435,69 @@ fn format_run_warning_message(warning: &RunWarning) -> String {
     }
 }
 
+#[derive(Clone)]
+struct TraceFileSink {
+    path: String,
+    file: std::sync::Arc<std::sync::Mutex<fs::File>>,
+    write_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TraceFileSink {
+    fn new(path: &str) -> Result<Self, String> {
+        let path = path.to_string();
+        let header = serde_json::to_string(&serde_json::json!({ "format": "trace_all_v1" }))
+            .expect("serialize trace header");
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
+        use std::io::Write;
+        file.write_all(header.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
+        Ok(Self {
+            path,
+            file: std::sync::Arc::new(std::sync::Mutex::new(file)),
+            write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+}
+
+impl TraceSink for TraceFileSink {
+    fn record(&self, case_index: u64, trace: &[TraceEntry]) {
+        let payload = serde_json::json!({
+            "case": case_index,
+            "trace": trace,
+        });
+        let line = serde_json::to_string(&payload).expect("serialize trace payload");
+        let mut file = match self.file.lock() {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+        let result = {
+            use std::io::Write;
+            file.write_all(line.as_bytes())
+                .and_then(|()| file.write_all(b"\n"))
+        };
+        if result.is_err()
+            && !self
+                .write_failed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!("failed to append trace output to '{}'", self.path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::CommandFactory;
     use rmcp::model::{
@@ -431,6 +515,17 @@ mod tests {
     use tooltest_test_support::{
         stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
     };
+
+    fn temp_path(name: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("tooltest-{name}-{pid}-{nanos}-{counter}"))
+    }
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -787,6 +882,7 @@ mod tests {
     fn format_run_result_human_reports_coverage_warnings() {
         let coverage = CoverageReport {
             counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
             warnings: vec![
                 CoverageWarning {
                     tool: "alpha".to_string(),
@@ -824,6 +920,31 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_reports_coverage_failures() {
+        let mut failures = BTreeMap::new();
+        failures.insert("alpha".to_string(), 2);
+        failures.insert("beta".to_string(), 0);
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            failures,
+            warnings: Vec::new(),
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: Some(coverage),
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Coverage failures:"));
+        assert!(output.contains("- alpha: 2"));
+        assert!(!output.contains("- beta: 0"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_warnings() {
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -843,6 +964,25 @@ mod tests {
         assert!(output.contains("schema_unsupported_keyword"));
         assert!(output.contains("schema warning"));
         assert!(output.contains("echo"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_missing_structured_warning_code() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::MissingStructuredContent,
+                message: "missing".to_string(),
+                tool: Some("echo".to_string()),
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("missing_structured_content"));
     }
 
     #[test]
@@ -899,6 +1039,7 @@ mod tests {
     fn format_run_result_human_skips_empty_coverage_warnings() {
         let coverage = CoverageReport {
             counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
             warnings: Vec::new(),
         };
         let result = RunResult {
@@ -912,6 +1053,94 @@ mod tests {
 
         let output = format_run_result_human(&result);
         assert!(!output.contains("Coverage warnings:"));
+        assert!(!output.contains("Coverage failures:"));
+    }
+
+    #[test]
+    fn trace_file_sink_writes_header_and_records_trace() {
+        let path = temp_path("trace-all.jsonl");
+        let sink = TraceFileSink::new(path.to_str().expect("path")).expect("trace sink");
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: None,
+        };
+        let trace = vec![TraceEntry::tool_call(invocation)];
+        sink.record(3, &trace);
+
+        let contents = fs::read_to_string(&path).expect("read trace file");
+        let mut lines = contents.lines();
+        let header = lines.next().expect("header");
+        let record = lines.next().expect("record");
+        assert!(header.contains("trace_all_v1"));
+        assert!(record.contains("\"case\":3"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn trace_file_sink_new_fails_for_directory() {
+        let path = temp_path("trace-all-dir");
+        fs::create_dir_all(&path).expect("create dir");
+
+        assert!(TraceFileSink::new(path.to_str().expect("path")).is_err());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trace_file_sink_record_ignores_write_error() {
+        let path = std::path::Path::new("/dev/full");
+        assert!(path.exists());
+        let sink = TraceFileSink {
+            path: path.to_string_lossy().to_string(),
+            file: std::sync::Arc::new(std::sync::Mutex::new(
+                fs::OpenOptions::new().write(true).open(path).expect("open"),
+            )),
+            write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: None,
+        };
+        let trace = vec![TraceEntry::tool_call(invocation)];
+        sink.record(1, &trace);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trace_file_sink_new_reports_header_write_error() {
+        let path = std::path::Path::new("/dev/full");
+        assert!(path.exists());
+
+        assert!(TraceFileSink::new(path.to_str().expect("path")).is_err());
+    }
+
+    #[test]
+    fn trace_file_sink_record_ignores_poisoned_lock() {
+        let path = temp_path("trace-all-poison");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        let file = std::sync::Arc::new(std::sync::Mutex::new(file));
+        let poisoned = file.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoned.lock().expect("lock");
+            panic!("poison lock");
+        });
+
+        let sink = TraceFileSink {
+            path: path.to_string_lossy().to_string(),
+            file,
+            write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: None,
+        };
+        let trace = vec![TraceEntry::tool_call(invocation)];
+        sink.record(1, &trace);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -979,6 +1208,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -989,6 +1220,76 @@ mod tests {
 
         let exit = run(cli).await;
         assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_accepts_trace_all_output() {
+        let trace_path = temp_path("trace-all-ok");
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            trace_all: Some(trace_path.display().to_string()),
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+        assert!(trace_path.exists());
+        let _ = fs::remove_file(trace_path);
+    }
+
+    #[tokio::test]
+    async fn run_exits_on_trace_all_error() {
+        let trace_dir = temp_path("trace-all-run");
+        fs::create_dir_all(&trace_dir).expect("create dir");
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            trace_all: Some(trace_dir.display().to_string()),
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+        let _ = fs::remove_dir_all(trace_dir);
     }
 
     #[tokio::test]
@@ -1009,6 +1310,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1038,6 +1341,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1066,6 +1371,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1093,6 +1400,8 @@ mod tests {
             in_band_error_forbidden: false,
             pre_run_hook: Some("true".to_string()),
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1121,6 +1430,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1149,6 +1460,8 @@ mod tests {
 
             pre_run_hook: None,
             json: true,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1177,6 +1490,8 @@ mod tests {
 
             pre_run_hook: None,
             json: true,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1205,6 +1520,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1233,6 +1550,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1261,6 +1580,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1289,6 +1610,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
                 args: Vec::new(),
@@ -1319,6 +1642,8 @@ mod tests {
 
             pre_run_hook: None,
             json: false,
+            full_trace: false,
+            trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
                 args: Vec::new(),

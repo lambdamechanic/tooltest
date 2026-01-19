@@ -877,6 +877,90 @@ fn state_machine_coverage_warnings_reported() {
 }
 
 #[test]
+fn state_machine_schema_warning_emits_human_warning_code() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_SCHEMA_DEFS_WARNING=1",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("Warnings:"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("schema_unsupported_keyword"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn trace_all_emits_trace_lines() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let dir = temp_dir("trace-all");
+    fs::create_dir_all(&dir).expect("create trace dir");
+    let trace_path = dir.join("trace.jsonl");
+    let trace_path_str = trace_path.to_str().expect("trace path");
+    let output = run_tooltest(&[
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--trace-all",
+        trace_path_str,
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    let trace_contents = fs::read_to_string(&trace_path).expect("read trace file");
+    assert!(
+        trace_contents.contains("\"format\":\"trace_all_v1\""),
+        "trace: {trace_contents}"
+    );
+    assert!(
+        trace_contents.contains("\"case\":0"),
+        "trace: {trace_contents}"
+    );
+    fs::remove_dir_all(&dir).expect("remove trace dir");
+}
+
+#[test]
+fn trace_all_rejects_directory_path() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let dir = temp_dir("trace-all-dir");
+    fs::create_dir_all(&dir).expect("create trace dir");
+    let dir_path = dir.to_str().expect("trace dir path");
+    let output = run_tooltest(&["--trace-all", dir_path, "stdio", "--command", server]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to write trace file"),
+        "stderr: {stderr}"
+    );
+    fs::remove_dir_all(&dir).expect("remove trace dir");
+}
+
+#[test]
 fn state_machine_coverage_validation_failure_emits_details_and_trace() {
     let Some(server) = test_server() else {
         return;

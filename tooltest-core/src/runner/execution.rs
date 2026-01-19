@@ -57,7 +57,8 @@ pub async fn run_with_session(
     let validators = prepared.validators;
 
     let assertions = config.assertions.clone();
-    let warnings = Rc::new(warnings);
+    let warnings = Rc::new(RefCell::new(warnings));
+    let warned_missing_structured = Rc::new(RefCell::new(std::collections::HashSet::new()));
     let aggregate_tools = tools.clone();
     let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> = Rc::new(RefCell::new(
         CoverageTracker::new(&aggregate_tools, &config.state_machine),
@@ -80,7 +81,7 @@ pub async fn run_with_session(
             RunFailure::new("run_with_session requires a multi-thread Tokio runtime".to_string()),
             Vec::new(),
             None,
-            warnings.as_ref().clone(),
+            warnings.borrow().clone(),
             None,
             None,
         );
@@ -104,7 +105,7 @@ pub async fn run_with_session(
                 RunFailure::new(error.to_string()),
                 prelude_trace.as_ref().clone(),
                 None,
-                warnings.as_ref().clone(),
+                warnings.borrow().clone(),
                 None,
                 None,
             )
@@ -117,7 +118,7 @@ pub async fn run_with_session(
                 failure,
                 prelude_trace.as_ref().clone(),
                 None,
-                warnings.as_ref().clone(),
+                warnings.borrow().clone(),
                 None,
                 None,
             );
@@ -132,11 +133,16 @@ pub async fn run_with_session(
         let last_failure = last_failure.clone();
         let validators = validators.clone();
         let aggregate_tracker = aggregate_tracker.clone();
+        let warnings = warnings.clone();
+        let warned_missing_structured = warned_missing_structured.clone();
+        let trace_sink = config.trace_sink.clone();
+        let case_counter = Rc::new(RefCell::new(0u64));
         move |sequence| {
             let execution: Result<Vec<TraceEntry>, FailureContext> =
                 tokio::task::block_in_place(|| {
                     let last_coverage = last_coverage.clone();
                     let last_corpus = last_corpus.clone();
+                    let case_counter = case_counter.clone();
                     handle.block_on(async {
                         if let Err(failure) = run_pre_run_hook(config).await {
                             return Err(FailureContext {
@@ -152,6 +158,12 @@ pub async fn run_with_session(
                         } else {
                             None
                         };
+                        let case_index = {
+                            let mut counter = case_counter.borrow_mut();
+                            let index = *counter;
+                            *counter += 1;
+                            index
+                        };
                         let execution = StateMachineExecution {
                             session,
                             tools: &tools,
@@ -160,6 +172,11 @@ pub async fn run_with_session(
                             predicate: config.predicate.as_ref(),
                             min_len,
                             in_band_error_forbidden: config.in_band_error_forbidden,
+                            full_trace: config.full_trace,
+                            warnings: warnings.clone(),
+                            warned_missing_structured: warned_missing_structured.clone(),
+                            case_index,
+                            trace_sink: trace_sink.clone(),
                         };
                         let result =
                             execute_state_machine_sequence(&sequence, &execution, &mut tracker)
@@ -210,7 +227,7 @@ pub async fn run_with_session(
         &last_failure,
         &last_coverage,
         &last_corpus,
-        warnings.as_ref(),
+        &warnings.borrow(),
     );
     if matches!(run_result.outcome, RunOutcome::Success) {
         if let Err(failure) = aggregate_tracker
@@ -229,7 +246,7 @@ pub async fn run_with_session(
                 coverage_failure(failure),
                 trace,
                 None,
-                warnings.as_ref().clone(),
+                warnings.borrow().clone(),
                 Some(report),
                 corpus_report,
             );

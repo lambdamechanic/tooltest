@@ -298,6 +298,10 @@ pub struct RunConfig {
     pub state_machine: StateMachineConfig,
     /// Optional pre-run hook to execute before validation and each case.
     pub pre_run_hook: Option<PreRunHook>,
+    /// Emit full tool responses in traces instead of compact invocation-only entries.
+    pub full_trace: bool,
+    /// Optional trace sink for streaming per-case traces.
+    pub trace_sink: Option<Arc<dyn TraceSink>>,
 }
 
 impl RunConfig {
@@ -314,6 +318,8 @@ impl RunConfig {
             in_band_error_forbidden: false,
             state_machine: StateMachineConfig::default(),
             pre_run_hook: None,
+            full_trace: false,
+            trace_sink: None,
         }
     }
 
@@ -359,6 +365,18 @@ impl RunConfig {
         self
     }
 
+    /// Enables full trace output with tool responses.
+    pub fn with_full_trace(mut self, enabled: bool) -> Self {
+        self.full_trace = enabled;
+        self
+    }
+
+    /// Sets a trace sink that receives per-case traces.
+    pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {
+        self.trace_sink = Some(sink);
+        self
+    }
+
     pub(crate) fn apply_stdio_pre_run_context(&mut self, endpoint: &StdioConfig) {
         if let Some(hook) = self.pre_run_hook.as_mut() {
             hook.apply_stdio_context(endpoint);
@@ -382,6 +400,7 @@ impl fmt::Debug for RunConfig {
             .field("in_band_error_forbidden", &self.in_band_error_forbidden)
             .field("state_machine", &self.state_machine)
             .field("pre_run_hook", &self.pre_run_hook.is_some())
+            .field("trace_sink", &self.trace_sink.is_some())
             .finish()
     }
 }
@@ -509,11 +528,18 @@ pub struct RunWarning {
     pub tool: Option<String>,
 }
 
+/// Receives per-case traces when enabled.
+pub trait TraceSink: Send + Sync {
+    /// Records a full trace for a single generated case.
+    fn record(&self, case_index: u64, trace: &[TraceEntry]);
+}
+
 /// Structured warning codes for tooltest runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunWarningCode {
     SchemaUnsupportedKeyword,
+    MissingStructuredContent,
 }
 
 /// Warning describing a coverage issue in a state-machine run.
@@ -540,6 +566,8 @@ pub enum CoverageWarningReason {
 pub struct CoverageReport {
     /// Successful tool call counts.
     pub counts: BTreeMap<String, u64>,
+    /// Unsuccessful tool call counts (isError = true).
+    pub failures: BTreeMap<String, u64>,
     /// Coverage warnings for uncallable tools.
     pub warnings: Vec<CoverageWarning>,
 }

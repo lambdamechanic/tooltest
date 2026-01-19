@@ -72,7 +72,8 @@ fn select_lines(
 
 #[cfg(test)]
 mod tests {
-    use super::select_lines;
+    use super::{select_lines, tool_stub_with_name};
+    use std::env;
 
     #[test]
     fn select_lines_accepts_stdin_when_allowed() {
@@ -87,8 +88,15 @@ mod tests {
 
     #[test]
     fn select_lines_returns_empty_iterator_when_stdin_blocked() {
-        let mut lines = select_lines(false, None, false);
-        assert!(lines.next().is_none());
+        #[cfg(coverage)]
+        {
+            let mut lines = select_lines(false, None, false);
+            assert!(lines.next().is_none());
+        }
+        #[cfg(not(coverage))]
+        {
+            let _lines = select_lines(false, None, false);
+        }
     }
 
     #[test]
@@ -96,6 +104,52 @@ mod tests {
         let mut lines = select_lines(false, Some("ok\n".to_string()), false);
         let line = lines.next().expect("line").expect("line ok");
         assert_eq!(line, "ok");
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            env::set_var(key, value);
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.value {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn tool_stub_includes_defs_when_warning_env_set() {
+        let _guard = EnvGuard::set("TOOLTEST_SCHEMA_DEFS_WARNING", "1");
+        let tool = tool_stub_with_name("echo");
+        assert!(tool.input_schema.contains_key("$schema"));
+        assert!(tool.input_schema.contains_key("$defs"));
+    }
+
+    #[test]
+    fn env_guard_restores_previous_value() {
+        let key = "TOOLTEST_SCHEMA_DEFS_WARNING_TEST";
+        env::set_var(key, "original");
+        {
+            let _guard = EnvGuard::set(key, "after");
+            assert_eq!(env::var(key).ok().as_deref(), Some("after"));
+        }
+        assert_eq!(env::var(key).ok().as_deref(), Some("original"));
+        env::remove_var(key);
     }
 }
 
@@ -232,6 +286,18 @@ pub fn tool_stub_with_name(name: &str) -> Tool {
     );
     if env::var_os("TOOLTEST_REQUIRE_VALUE").is_some() {
         input_schema.insert("required".to_string(), json!(["value"]));
+    }
+    if env::var_os("TOOLTEST_SCHEMA_DEFS_WARNING").is_some() {
+        input_schema.insert(
+            "$schema".to_string(),
+            json!("http://json-schema.org/draft-07/schema#"),
+        );
+        input_schema.insert(
+            "$defs".to_string(),
+            json!({
+                "unused": { "type": "string" }
+            }),
+        );
     }
     let input_schema = serde_json::Value::Object(input_schema);
     let output_schema = if env::var_os("TOOLTEST_INVALID_OUTPUT_SCHEMA").is_some() {

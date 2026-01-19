@@ -1168,12 +1168,11 @@ fn run_stdio_success_returns_exit_code_0() {
 }
 
 #[test]
-fn stdio_command_runs_smithery_playground() {
+fn stdio_command_runs_smithery_playwright() {
     if !external_tests_enabled() {
         return;
     }
-    let command_line =
-        "npx @smithery/cli@latest playground @executeautomation/playwright-mcp-server";
+    let command_line = "npx @smithery/cli@latest run @microsoft/playwright-mcp";
     let output = run_tooltest(&[
         "--cases",
         "1",

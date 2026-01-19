@@ -38,6 +38,11 @@ pub(super) async fn execute_state_machine_sequence(
     let mut trace = Vec::new();
     let mut full_trace = Vec::new();
     let mut invocation_count = 0usize;
+    let record_trace = |trace: &[TraceEntry]| {
+        if let Some(sink) = execution.trace_sink.as_ref() {
+            sink.record(execution.case_index, trace);
+        }
+    };
     for seed in &sequence.seeds {
         let invocation = match invocation_from_corpus_seeded(
             execution.tools,
@@ -57,6 +62,7 @@ pub(super) async fn execute_state_machine_sequence(
                 } else {
                     trace.clone()
                 };
+                record_trace(&failure_trace);
                 return Err(FailureContext {
                     failure: RunFailure::new(error.to_string()),
                     trace: failure_trace,
@@ -68,12 +74,16 @@ pub(super) async fn execute_state_machine_sequence(
 
         invocation_count += 1;
         trace.push(TraceEntry::tool_call(invocation.clone()));
+        if execution.full_trace {
+            full_trace.push(TraceEntry::tool_call(invocation.clone()));
+        }
         let entry = match execution.session.send_tool_call(invocation.clone()).await {
             Ok(entry) => entry,
             Err(error) => {
                 let reason = format!("session error: {error:?}");
                 if execution.full_trace {
                     attach_failure_reason(&mut full_trace, reason.clone());
+                    record_trace(&full_trace);
                     return Err(FailureContext {
                         failure: RunFailure::new(reason),
                         trace: full_trace.clone(),
@@ -82,6 +92,7 @@ pub(super) async fn execute_state_machine_sequence(
                     });
                 }
                 attach_failure_reason(&mut trace, reason.clone());
+                record_trace(&trace);
                 return Err(FailureContext {
                     failure: RunFailure::new(reason),
                     trace: trace.clone(),
@@ -94,6 +105,9 @@ pub(super) async fn execute_state_machine_sequence(
         let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
         let invocation = invocation.clone();
         let response = response.expect("tool call response").clone();
+        if execution.full_trace {
+            let _ = full_trace.pop();
+        }
         full_trace.push(entry);
         if response.is_error.unwrap_or(false) {
             tracker.record_failure(invocation.name.as_ref());
@@ -113,6 +127,7 @@ pub(super) async fn execute_state_machine_sequence(
             if execution.full_trace {
                 attach_response(&mut full_trace, response.clone());
                 attach_failure_reason(&mut full_trace, reason.clone());
+                record_trace(&full_trace);
                 return Err(FailureContext {
                     failure: RunFailure::new(reason),
                     trace: full_trace.clone(),
@@ -122,6 +137,7 @@ pub(super) async fn execute_state_machine_sequence(
             }
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
+            record_trace(&trace);
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace: trace.clone(),
@@ -136,6 +152,7 @@ pub(super) async fn execute_state_machine_sequence(
             if execution.full_trace {
                 attach_response(&mut full_trace, response.clone());
                 attach_failure_reason(&mut full_trace, reason.clone());
+                record_trace(&full_trace);
                 return Err(FailureContext {
                     failure: RunFailure::new(reason),
                     trace: full_trace.clone(),
@@ -145,6 +162,7 @@ pub(super) async fn execute_state_machine_sequence(
             }
             attach_response(&mut trace, response.clone());
             attach_failure_reason(&mut trace, reason.clone());
+            record_trace(&trace);
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace: trace.clone(),
@@ -161,6 +179,7 @@ pub(super) async fn execute_state_machine_sequence(
             );
             if execution.full_trace {
                 attach_failure_reason(&mut full_trace, reason.clone());
+                record_trace(&full_trace);
                 return Err(FailureContext {
                     failure: RunFailure::new(reason),
                     trace: full_trace.clone(),
@@ -169,6 +188,7 @@ pub(super) async fn execute_state_machine_sequence(
                 });
             }
             attach_failure_reason(&mut trace, reason.clone());
+            record_trace(&trace);
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace: trace.clone(),
@@ -181,6 +201,7 @@ pub(super) async fn execute_state_machine_sequence(
     if let Some(reason) = apply_sequence_assertions(execution.assertions, &full_trace) {
         if execution.full_trace {
             attach_failure_reason(&mut full_trace, reason.clone());
+            record_trace(&full_trace);
             return Err(FailureContext {
                 failure: RunFailure::new(reason),
                 trace: full_trace.clone(),
@@ -189,6 +210,7 @@ pub(super) async fn execute_state_machine_sequence(
             });
         }
         attach_failure_reason(&mut trace, reason.clone());
+        record_trace(&trace);
         return Err(FailureContext {
             failure: RunFailure::new(reason),
             trace: trace.clone(),

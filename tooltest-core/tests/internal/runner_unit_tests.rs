@@ -1009,7 +1009,13 @@ async fn run_with_session_state_machine_requires_structured_content_on_error_wit
     };
 
     let result = run_with_session(&session, &config, options).await;
-    assert_failure_reason_contains(&result, "returned no structured_content");
+    assert_success(&result);
+    assert!(result.warnings.iter().any(|warning| {
+        warning.code == RunWarningCode::MissingStructuredContent
+            && warning
+                .message
+                .contains("returned no structured_content for output schema")
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread")]

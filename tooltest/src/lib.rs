@@ -380,6 +380,14 @@ fn format_run_result_human(result: &RunResult) -> String {
                 ));
             }
         }
+        if coverage.failures.values().any(|count| *count > 0) {
+            output.push_str("Coverage failures:\n");
+            for (tool, count) in &coverage.failures {
+                if *count > 0 {
+                    output.push_str(&format!("- {tool}: {count}\n"));
+                }
+            }
+        }
     }
 
     if !result.warnings.is_empty() {
@@ -879,6 +887,31 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_reports_coverage_failures() {
+        let mut failures = BTreeMap::new();
+        failures.insert("alpha".to_string(), 2);
+        failures.insert("beta".to_string(), 0);
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            failures,
+            warnings: Vec::new(),
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: Some(coverage),
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Coverage failures:"));
+        assert!(output.contains("- alpha: 2"));
+        assert!(!output.contains("- beta: 0"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_warnings() {
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -968,6 +1001,7 @@ mod tests {
 
         let output = format_run_result_human(&result);
         assert!(!output.contains("Coverage warnings:"));
+        assert!(!output.contains("Coverage failures:"));
     }
 
     #[test]

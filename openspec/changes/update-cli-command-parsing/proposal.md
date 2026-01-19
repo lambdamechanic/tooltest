@@ -7,7 +7,7 @@ The current stdio CLI requires a single executable plus repeated `--arg` flags, 
 - Accept a full shell-style command line in `--command` for stdio runs and parse it into argv.
 - Remove the `--arg` flag from the stdio CLI.
 - Update help text and validation to reflect the new parsing behavior.
-- Add a gated stdio integration test that exercises the Smithery CLI via `npx @smithery/cli@latest run @microsoft/playwright-mcp`.
+- Add a gated stdio integration test that exercises Playwright MCP directly via `npx -y @playwright/mcp@latest`.
 - **BREAKING**: `--arg` is removed; users must include arguments in `--command`.
 
 ## Impact

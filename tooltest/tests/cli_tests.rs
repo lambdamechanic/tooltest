@@ -3,6 +3,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const RUN_EXTERNAL_ENV: &str = "RUN_EXTERNAL_TESTS";
+const EXTERNAL_CASES_ENV: &str = "TOOLTEST_EXTERNAL_CASES";
 
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
@@ -21,6 +22,14 @@ fn run_tooltest(args: &[&str]) -> Output {
 
 fn external_tests_enabled() -> bool {
     std::env::var(RUN_EXTERNAL_ENV).is_ok()
+}
+
+fn external_cases() -> u32 {
+    std::env::var(EXTERNAL_CASES_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(50)
 }
 
 fn run_tooltest_json(args: &[&str]) -> serde_json::Value {
@@ -1168,14 +1177,15 @@ fn run_stdio_success_returns_exit_code_0() {
 }
 
 #[test]
-fn stdio_command_runs_smithery_playwright() {
+fn stdio_command_runs_playwright_mcp() {
     if !external_tests_enabled() {
         return;
     }
-    let command_line = "npx @smithery/cli@latest run @microsoft/playwright-mcp";
+    let cases = external_cases().to_string();
+    let command_line = "npx -y @playwright/mcp@latest";
     let output = run_tooltest(&[
         "--cases",
-        "1",
+        &cases,
         "--max-sequence-len",
         "1",
         "stdio",

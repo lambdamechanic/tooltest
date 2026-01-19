@@ -153,8 +153,9 @@ schema-invalid responses still fail the run.
 Static checks (like output schema validation) always apply. If a tool advertises an output schema,
 error responses are expected to include `structuredContent` that conforms to that schema. The MCP
 spec describes `CallToolResult.structuredContent` as optional and says that if an output schema is
-defined it SHOULD conform to the schema; tooltest treats missing or invalid structured content as
-schema-invalid, even for `isError` results (see `docs/mcp-spec/2025-11-25/schema.mdx`).
+defined it SHOULD conform to the schema; tooltest treats invalid structured content as schema-invalid
+and emits a warning when `structuredContent` is missing (even for `isError` results; see
+`docs/mcp-spec/2025-11-25/schema.mdx`).
 
 ### Seed data
 

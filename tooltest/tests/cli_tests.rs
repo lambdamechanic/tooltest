@@ -2,6 +2,8 @@ use std::fs;
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const RUN_EXTERNAL_ENV: &str = "RUN_EXTERNAL_TESTS";
+
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
     let mut full_args: Vec<&str> = args.to_vec();
@@ -15,6 +17,10 @@ fn run_tooltest(args: &[&str]) -> Output {
         .args(full_args)
         .output()
         .expect("run tooltest")
+}
+
+fn external_tests_enabled() -> bool {
+    std::env::var(RUN_EXTERNAL_ENV).is_ok()
 }
 
 fn run_tooltest_json(args: &[&str]) -> serde_json::Value {
@@ -681,13 +687,13 @@ fn run_stdio_reports_success_with_env_and_cwd() {
     let cwd = temp_dir("run-stdio");
     fs::create_dir_all(&cwd).expect("create cwd");
     let expected_arg = "--expected";
+    let command_line = format!("{server} {expected_arg}");
     let output = Command::new(env!("CARGO_BIN_EXE_tooltest"))
         .args([
             "--json",
             "stdio",
             "--command",
-            server,
-            &format!("--arg={expected_arg}"),
+            &command_line,
             "--env",
             &format!("EXPECT_ARG={expected_arg}"),
             "--env",
@@ -1020,12 +1026,11 @@ fn stdio_command_passes_args() {
     let Some(server) = test_server() else {
         return;
     };
+    let command_line = format!("{server} expected-arg");
     let output = run_tooltest(&[
         "stdio",
         "--command",
-        server,
-        "--arg",
-        "expected-arg",
+        &command_line,
         "--env",
         "EXPECT_ARG=expected-arg",
     ]);
@@ -1160,4 +1165,28 @@ fn run_stdio_success_returns_exit_code_0() {
     let output = run_tooltest(&["stdio", "--command", server]);
 
     assert!(output.status.success());
+}
+
+#[test]
+fn stdio_command_runs_smithery_playground() {
+    if !external_tests_enabled() {
+        return;
+    }
+    let command_line =
+        "npx @smithery/cli@latest playground @executeautomation/playwright-mcp-server";
+    let output = run_tooltest(&[
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        command_line,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

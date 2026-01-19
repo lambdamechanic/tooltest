@@ -7,10 +7,14 @@ use tokio::time::timeout;
 const CASES_PER_TOOL_DEFAULT: usize = 10;
 const CASES_PER_TOOL_ENV: &str = "TOOLTEST_HOSTED_CASES_PER_TOOL";
 const SKIP_ENV: &str = "SKIP_HOSTED_MCP_TESTS";
+const RUN_EXTERNAL_ENV: &str = "RUN_EXTERNAL_TESTS";
 const HOSTED_TOOL_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn skip_hosted_tests() -> bool {
-    env::var(SKIP_ENV).is_ok()
+    if env::var(SKIP_ENV).is_ok() {
+        return true;
+    }
+    env::var(RUN_EXTERNAL_ENV).is_err()
 }
 
 fn cases_per_tool() -> usize {

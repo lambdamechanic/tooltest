@@ -111,12 +111,9 @@ impl From<StateMachineConfigInput> for StateMachineConfig {
 pub enum Command {
     /// Run against a stdio MCP endpoint.
     Stdio {
-        /// Command to execute.
+        /// Shell command line to execute.
         #[arg(long)]
         command: String,
-        /// Command arguments (repeatable).
-        #[arg(long = "arg")]
-        args: Vec<String>,
         /// Environment variables (KEY=VALUE).
         #[arg(long = "env")]
         env: Vec<String>,
@@ -191,14 +188,13 @@ pub async fn run(cli: Cli) -> ExitCode {
     }
 
     let result = match cli.command {
-        Command::Stdio {
-            command,
-            args,
-            env,
-            cwd,
-        } => {
+        Command::Stdio { command, env, cwd } => {
             let env = match parse_env_vars(env) {
                 Ok(env) => env,
+                Err(message) => return error_exit(&message, cli.json),
+            };
+            let (command, args) = match parse_stdio_command_line(&command) {
+                Ok(parts) => parts,
                 Err(message) => return error_exit(&message, cli.json),
             };
             let config = StdioConfig {
@@ -233,6 +229,17 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
             eprintln!("corpus:\n{payload}");
         }
     }
+}
+
+fn parse_stdio_command_line(command_line: &str) -> Result<(String, Vec<String>), String> {
+    let parts =
+        shell_words::split(command_line).map_err(|error| format!("invalid --command: {error}"))?;
+    let mut iter = parts.into_iter();
+    let command = iter
+        .next()
+        .ok_or_else(|| "invalid --command: expected a command to execute".to_string())?;
+    let args = iter.collect();
+    Ok((command, args))
 }
 
 struct ToolFilterSets {
@@ -762,11 +769,30 @@ mod tests {
             cli.command,
             Command::Stdio {
                 command: "server".to_string(),
-                args: Vec::new(),
                 env: Vec::new(),
                 cwd: None,
             }
         );
+    }
+
+    #[test]
+    fn parse_stdio_command_line_preserves_quotes() {
+        let (command, args) =
+            parse_stdio_command_line("server \"two three\" four").expect("parse command");
+        assert_eq!(command, "server");
+        assert_eq!(args, vec!["two three".to_string(), "four".to_string()]);
+    }
+
+    #[test]
+    fn parse_stdio_command_line_rejects_invalid_input() {
+        let error = parse_stdio_command_line("server \"unterminated").unwrap_err();
+        assert!(error.contains("invalid --command"), "error: {error}");
+    }
+
+    #[test]
+    fn parse_stdio_command_line_rejects_empty_command() {
+        let error = parse_stdio_command_line("").unwrap_err();
+        assert!(error.contains("expected a command"));
     }
 
     #[test]
@@ -1212,7 +1238,6 @@ mod tests {
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
-                args: Vec::new(),
                 env: Vec::new(),
                 cwd: None,
             },
@@ -1245,7 +1270,6 @@ mod tests {
             trace_all: Some(trace_path.display().to_string()),
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
-                args: Vec::new(),
                 env: Vec::new(),
                 cwd: None,
             },
@@ -1281,7 +1305,6 @@ mod tests {
             trace_all: Some(trace_dir.display().to_string()),
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
-                args: Vec::new(),
                 env: Vec::new(),
                 cwd: None,
             },
@@ -1314,8 +1337,38 @@ mod tests {
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
-                args: Vec::new(),
                 env: vec!["NOPE".to_string()],
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[tokio::test]
+    async fn run_stdio_rejects_invalid_command_line() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            trace_all: None,
+            command: Command::Stdio {
+                command: "tooltest \"unterminated".to_string(),
+                env: Vec::new(),
                 cwd: None,
             },
         };
@@ -1614,7 +1667,6 @@ mod tests {
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
-                args: Vec::new(),
                 env: vec!["FOO=bar".to_string()],
                 cwd: None,
             },
@@ -1646,7 +1698,6 @@ mod tests {
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
-                args: Vec::new(),
                 env: vec!["NOPE".to_string()],
                 cwd: None,
             },

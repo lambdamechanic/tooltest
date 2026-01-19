@@ -47,7 +47,9 @@ cargo install tooltest
 
 ```bash
 tooltest stdio --command ./path/to/your-mcp-server
-# optional: --arg ..., --env KEY=VALUE, --cwd /somewhere
+# optional: --env KEY=VALUE, --cwd /somewhere
+# include args by quoting the full command line:
+# tooltest stdio --command "./path/to/your-mcp-server --flag value"
 ```
 
 ### Test a Streamable HTTP MCP endpoint
@@ -207,7 +209,15 @@ Non-zero exit codes fail the run and include stdout/stderr in the failure detail
 
 ## Hosted MCP integration tests
 
-By default the hosted MCP integration test runs and exercises the three public MCP servers used for validation. To skip it:
+Hosted MCP integration tests are opt-in and exercise the public MCP servers used for validation. To run them:
+
+```bash
+RUN_EXTERNAL_TESTS=1 cargo test -p tooltest-core --test hosted_mcp_tests
+```
+
+RUN_EXTERNAL_TESTS=1 also enables external CLI tests (e.g., Smithery playground) in the tooltest crate.
+
+To skip (or keep disabled in CI), set:
 
 ```bash
 SKIP_HOSTED_MCP_TESTS=1 cargo test -p tooltest-core --test hosted_mcp_tests

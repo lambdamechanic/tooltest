@@ -3,9 +3,15 @@ use std::sync::Arc;
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CallToolRequestParam,
     CallToolResult, CoverageRule, PreRunHook, ResponseAssertion, RunConfig, SchemaConfig,
-    SchemaVersion, StateMachineConfig, StdioConfig, ToolPredicate, TraceEntry,
+    SchemaVersion, StateMachineConfig, StdioConfig, ToolPredicate, TraceEntry, TraceSink,
 };
 use serde_json::json;
+
+struct NoopTraceSink;
+
+impl TraceSink for NoopTraceSink {
+    fn record(&self, _case_index: u64, _trace: &[TraceEntry]) {}
+}
 
 #[test]
 fn schema_config_defaults_to_latest() {
@@ -45,18 +51,23 @@ fn run_config_builders_wire_fields() {
         .with_schema(schema.clone())
         .with_predicate(predicate)
         .with_assertions(assertions.clone())
-        .with_in_band_error_forbidden(true);
+        .with_in_band_error_forbidden(true)
+        .with_full_trace(true)
+        .with_trace_sink(Arc::new(NoopTraceSink));
 
     assert_eq!(config.schema, schema);
     assert!(config.predicate.is_some());
     assert_eq!(config.assertions.rules.len(), 1);
     assert!(config.in_band_error_forbidden);
+    assert!(config.full_trace);
+    assert!(config.trace_sink.is_some());
     let predicate = config.predicate.as_ref().expect("predicate set");
     assert!(predicate("search", &json!({"query": "hello"})));
     assert!(!predicate("search", &json!({"query": "nope"})));
 
     let debug = format!("{config:?}");
     assert!(debug.contains("predicate: true"));
+    assert!(debug.contains("trace_sink: true"));
 }
 
 #[test]

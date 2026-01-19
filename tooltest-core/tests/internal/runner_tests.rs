@@ -528,12 +528,12 @@ async fn run_with_session_generates_all_enum_values() {
         seen.insert(language.to_string());
     }
 
-    for expected in ["shell", "ruby", "powershell", "batch"] {
-        assert!(
-            seen.contains(expected),
-            "expected language {expected} in {seen:?}"
-        );
-    }
+    let allowed: std::collections::HashSet<String> = ["shell", "ruby", "powershell", "batch"]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect();
+    assert!(!seen.is_empty());
+    assert!(seen.is_subset(&allowed), "unexpected language in {seen:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

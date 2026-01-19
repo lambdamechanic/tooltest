@@ -444,7 +444,7 @@ impl TraceFileSink {
     fn new(path: &str) -> Result<Self, String> {
         let path = path.to_string();
         let header = serde_json::to_string(&serde_json::json!({ "format": "trace_all_v1" }))
-            .map_err(|error| format!("failed to serialize trace header: {error}"))?;
+            .expect("serialize trace header");
         let payload = format!("{header}\n");
         fs::write(&path, payload)
             .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
@@ -458,17 +458,16 @@ impl TraceSink for TraceFileSink {
             "case": case_index,
             "trace": trace,
         });
-        if let Ok(line) = serde_json::to_string(&payload) {
-            let _ = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-                .and_then(|mut file| {
-                    use std::io::Write;
-                    file.write_all(line.as_bytes())?;
-                    file.write_all(b"\n")
-                });
-        }
+        let line = serde_json::to_string(&payload).expect("serialize trace payload");
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .and_then(|mut file| {
+                use std::io::Write;
+                file.write_all(line.as_bytes())?;
+                file.write_all(b"\n")
+            });
     }
 }
 
@@ -476,6 +475,9 @@ impl TraceSink for TraceFileSink {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::CommandFactory;
     use rmcp::model::{
@@ -493,6 +495,17 @@ mod tests {
     use tooltest_test_support::{
         stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
     };
+
+    fn temp_path(name: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("tooltest-{name}-{pid}-{nanos}-{counter}"))
+    }
 
     #[test]
     fn build_sequence_len_rejects_zero_min() {
@@ -934,6 +947,25 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_reports_missing_structured_warning_code() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::MissingStructuredContent,
+                message: "missing".to_string(),
+                tool: Some("echo".to_string()),
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("missing_structured_content"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_warning_without_tool() {
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -1002,6 +1034,51 @@ mod tests {
         let output = format_run_result_human(&result);
         assert!(!output.contains("Coverage warnings:"));
         assert!(!output.contains("Coverage failures:"));
+    }
+
+    #[test]
+    fn trace_file_sink_writes_header_and_records_trace() {
+        let path = temp_path("trace-all.jsonl");
+        let sink = TraceFileSink::new(path.to_str().expect("path")).expect("trace sink");
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: None,
+        };
+        let trace = vec![TraceEntry::tool_call(invocation)];
+        sink.record(3, &trace);
+
+        let contents = fs::read_to_string(&path).expect("read trace file");
+        let mut lines = contents.lines();
+        let header = lines.next().expect("header");
+        let record = lines.next().expect("record");
+        assert!(header.contains("trace_all_v1"));
+        assert!(record.contains("\"case\":3"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn trace_file_sink_new_fails_for_directory() {
+        let path = temp_path("trace-all-dir");
+        fs::create_dir_all(&path).expect("create dir");
+
+        assert!(TraceFileSink::new(path.to_str().expect("path")).is_err());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trace_file_sink_record_ignores_write_error() {
+        let path = std::path::Path::new("/dev/full");
+        assert!(path.exists());
+        let sink = TraceFileSink {
+            path: path.to_string_lossy().to_string(),
+        };
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: None,
+        };
+        let trace = vec![TraceEntry::tool_call(invocation)];
+        sink.record(1, &trace);
     }
 
     #[test]
@@ -1081,6 +1158,76 @@ mod tests {
 
         let exit = run(cli).await;
         assert_eq!(exit, ExitCode::from(1));
+    }
+
+    #[tokio::test]
+    async fn run_accepts_trace_all_output() {
+        let trace_path = temp_path("trace-all-ok");
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            trace_all: Some(trace_path.display().to_string()),
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(1));
+        assert!(trace_path.exists());
+        let _ = fs::remove_file(trace_path);
+    }
+
+    #[tokio::test]
+    async fn run_exits_on_trace_all_error() {
+        let trace_dir = temp_path("trace-all-run");
+        fs::create_dir_all(&trace_dir).expect("create dir");
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            trace_all: Some(trace_dir.display().to_string()),
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+        let _ = fs::remove_dir_all(trace_dir);
     }
 
     #[tokio::test]

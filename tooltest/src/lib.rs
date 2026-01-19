@@ -438,6 +438,8 @@ fn format_run_warning_message(warning: &RunWarning) -> String {
 #[derive(Clone)]
 struct TraceFileSink {
     path: String,
+    file: std::sync::Arc<std::sync::Mutex<fs::File>>,
+    write_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TraceFileSink {
@@ -445,10 +447,21 @@ impl TraceFileSink {
         let path = path.to_string();
         let header = serde_json::to_string(&serde_json::json!({ "format": "trace_all_v1" }))
             .expect("serialize trace header");
-        let payload = format!("{header}\n");
-        fs::write(&path, payload)
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
             .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
-        Ok(Self { path })
+        use std::io::Write;
+        file.write_all(header.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
+        Ok(Self {
+            path,
+            file: std::sync::Arc::new(std::sync::Mutex::new(file)),
+            write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
     }
 }
 
@@ -459,15 +472,22 @@ impl TraceSink for TraceFileSink {
             "trace": trace,
         });
         let line = serde_json::to_string(&payload).expect("serialize trace payload");
-        let _ = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .and_then(|mut file| {
-                use std::io::Write;
-                file.write_all(line.as_bytes())?;
-                file.write_all(b"\n")
-            });
+        let mut file = match self.file.lock() {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+        let result = {
+            use std::io::Write;
+            file.write_all(line.as_bytes())
+                .and_then(|()| file.write_all(b"\n"))
+        };
+        if result.is_err()
+            && !self
+                .write_failed
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!("failed to append trace output to '{}'", self.path);
+        }
     }
 }
 
@@ -1072,6 +1092,10 @@ mod tests {
         assert!(path.exists());
         let sink = TraceFileSink {
             path: path.to_string_lossy().to_string(),
+            file: std::sync::Arc::new(std::sync::Mutex::new(
+                fs::OpenOptions::new().write(true).open(path).expect("open"),
+            )),
+            write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let invocation = ToolInvocation {
             name: "demo".into(),
@@ -1079,6 +1103,44 @@ mod tests {
         };
         let trace = vec![TraceEntry::tool_call(invocation)];
         sink.record(1, &trace);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trace_file_sink_new_reports_header_write_error() {
+        let path = std::path::Path::new("/dev/full");
+        assert!(path.exists());
+
+        assert!(TraceFileSink::new(path.to_str().expect("path")).is_err());
+    }
+
+    #[test]
+    fn trace_file_sink_record_ignores_poisoned_lock() {
+        let path = temp_path("trace-all-poison");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        let file = std::sync::Arc::new(std::sync::Mutex::new(file));
+        let poisoned = file.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = poisoned.lock().expect("lock");
+            panic!("poison lock");
+        });
+
+        let sink = TraceFileSink {
+            path: path.to_string_lossy().to_string(),
+            file,
+            write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let invocation = ToolInvocation {
+            name: "demo".into(),
+            arguments: None,
+        };
+        let trace = vec![TraceEntry::tool_call(invocation)];
+        sink.record(1, &trace);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

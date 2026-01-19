@@ -1,3 +1,4 @@
+mod docs_tests;
 mod generator_tests;
 mod hosted_mcp_tests;
 mod lib_tests;

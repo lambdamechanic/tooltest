@@ -6,12 +6,9 @@
 *.tmp
 *.swp
 .DS_Store
-.beads/*
-.beads/beads.base.jsonl
-.beads/beads.left.jsonl
-.beads/beads.base.meta.json
-.beads/beads.left.meta.json
-!.beads/*.jsonl
-.beads/.gitignore
-.beads/db.sqlite
-.beads/bd.db
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.beads/
+.logs/

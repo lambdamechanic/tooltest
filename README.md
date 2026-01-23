@@ -211,6 +211,42 @@ Non-zero exit codes fail the run and include stdout/stderr in the failure detail
 
 ---
 
+## Tool enumeration and bulk validation (tooltest-core)
+
+The `tooltest-core` crate exposes helper APIs for listing tools with schema validation and
+running bulk tool validation. The default per-tool case count is controlled by
+`TOOLTEST_CASES_PER_TOOL` and can be overridden in code.
+
+```rust
+use tooltest_core::{
+    list_tools_http, validate_tools, HttpConfig, SchemaConfig, SessionDriver, ToolValidationConfig,
+};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let tools = list_tools_http(
+    &HttpConfig {
+        url: "http://localhost:3000/mcp".into(),
+        auth_token: None,
+    },
+    &SchemaConfig::default(),
+)
+.await?;
+println!("found {} tools", tools.len());
+
+let session = SessionDriver::connect_http(&HttpConfig {
+    url: "http://localhost:3000/mcp".into(),
+    auth_token: None,
+})
+.await?;
+let config = ToolValidationConfig::new().with_cases_per_tool(5);
+let summary = validate_tools(&session, &config, None).await?;
+println!("validated {} tools", summary.tools.len());
+# Ok(())
+# }
+```
+
+---
+
 ## Hosted MCP integration tests
 
 By default the hosted MCP integration test runs and exercises the three public MCP servers used for validation. To skip it:

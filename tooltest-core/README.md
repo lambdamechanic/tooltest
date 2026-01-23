@@ -32,6 +32,30 @@ assert!(matches!(result.outcome, RunOutcome::Success));
 For custom transport workflows, use `SessionDriver` plus `run_with_session` to
 reuse an existing MCP connection.
 
+## Tool enumeration and validation helpers
+
+The validation module provides helpers for listing tools with schema validation and
+for bulk tool validation. The default per-tool case count is controlled by
+`TOOLTEST_CASES_PER_TOOL` and can be overridden via `ToolValidationConfig`.
+
+```rust
+use tooltest_core::{
+    list_tools_stdio, validate_tools, SchemaConfig, SessionDriver, StdioConfig, ToolValidationConfig,
+};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = StdioConfig::new("./path/to/server");
+let tools = list_tools_stdio(&config, &SchemaConfig::default()).await?;
+println!("tool count: {}", tools.len());
+
+let session = SessionDriver::connect_stdio(&config).await?;
+let validation = ToolValidationConfig::new().with_cases_per_tool(10);
+let summary = validate_tools(&session, &validation, None).await?;
+println!("validated {} tools", summary.tools.len());
+# Ok(())
+# }
+```
+
 ## JSON DSL
 
 Assertions can be expressed as structured JSON for FFI use. The JSON DSL mirrors

@@ -47,6 +47,25 @@ pub enum ToolValidationDecision {
 pub type ToolValidationFn = Arc<dyn Fn(&Tool, &TraceEntry) -> ToolValidationDecision + Send + Sync>;
 
 /// Configuration for bulk tool validation.
+///
+/// Defaults `cases_per_tool` from the `TOOLTEST_CASES_PER_TOOL` env var (minimum 1),
+/// unless overridden with `with_cases_per_tool`.
+///
+/// ```no_run
+/// use tooltest_core::{SessionDriver, StdioConfig, ToolValidationConfig, validate_tools};
+///
+/// # async fn run() {
+/// let session = SessionDriver::connect_stdio(&StdioConfig::new("./my-mcp-server"))
+///     .await
+///     .expect("connect");
+/// let config = ToolValidationConfig::new().with_cases_per_tool(5);
+/// let summary = validate_tools(&session, &config, None)
+///     .await
+///     .expect("validate tools");
+/// println!("validated {} tools", summary.tools.len());
+/// # }
+/// # tokio::runtime::Runtime::new().unwrap().block_on(run());
+/// ```
 #[derive(Clone)]
 pub struct ToolValidationConfig {
     /// Run-level configuration and predicates.
@@ -156,6 +175,25 @@ impl From<SessionError> for ToolValidationError {
 }
 
 /// Validates tools by name, or all tools when no name list is provided.
+///
+/// ```no_run
+/// use tooltest_core::{validate_tools, SessionDriver, ToolValidationConfig};
+///
+/// # async fn run() {
+/// let config = ToolValidationConfig::new();
+/// let session = SessionDriver::connect_http(&tooltest_core::HttpConfig {
+///     url: "http://localhost:3000/mcp".into(),
+///     auth_token: None,
+/// })
+/// .await
+/// .expect("connect");
+/// let summary = validate_tools(&session, &config, Some(&vec!["echo".into()]))
+///     .await
+///     .expect("validate tools");
+/// println!("cases per tool: {}", summary.cases_per_tool);
+/// # }
+/// # tokio::runtime::Runtime::new().unwrap().block_on(run());
+/// ```
 pub async fn validate_tools(
     session: &SessionDriver,
     config: &ToolValidationConfig,

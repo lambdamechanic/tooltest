@@ -39,6 +39,21 @@ impl From<SchemaError> for ListToolsError {
 }
 
 /// Lists tools from an HTTP MCP endpoint using the provided configuration.
+///
+/// ```no_run
+/// use tooltest_core::{list_tools_http, HttpConfig, SchemaConfig};
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = HttpConfig {
+///     url: "http://localhost:3000/mcp".into(),
+///     auth_token: None,
+/// };
+/// let tools = list_tools_http(&config, &SchemaConfig::default()).await?;
+/// println!("found {} tools", tools.len());
+/// # Ok(())
+/// # }
+/// # tokio::runtime::Runtime::new().unwrap().block_on(run());
+/// ```
 pub async fn list_tools_http(
     config: &HttpConfig,
     schema: &SchemaConfig,
@@ -50,6 +65,18 @@ pub async fn list_tools_http(
 }
 
 /// Lists tools from a stdio MCP endpoint using the provided configuration.
+///
+/// ```no_run
+/// use tooltest_core::{list_tools_stdio, SchemaConfig, StdioConfig};
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = StdioConfig::new("./my-mcp-server");
+/// let tools = list_tools_stdio(&config, &SchemaConfig::default()).await?;
+/// assert!(!tools.is_empty());
+/// # Ok(())
+/// # }
+/// # tokio::runtime::Runtime::new().unwrap().block_on(run());
+/// ```
 pub async fn list_tools_stdio(
     config: &StdioConfig,
     schema: &SchemaConfig,
@@ -61,6 +88,21 @@ pub async fn list_tools_stdio(
 }
 
 /// Lists tools from an active session using MCP schema validation.
+///
+/// ```no_run
+/// use tooltest_core::{list_tools_with_session, SchemaConfig, SessionDriver, StdioConfig};
+///
+/// # async fn run() {
+/// let session = SessionDriver::connect_stdio(&StdioConfig::new("./my-mcp-server"))
+///     .await
+///     .expect("connect");
+/// let tools = list_tools_with_session(&session, &SchemaConfig::default())
+///     .await
+///     .expect("list tools");
+/// println!("tool names: {:?}", tools.iter().map(|tool| &tool.name).collect::<Vec<_>>());
+/// # }
+/// # tokio::runtime::Runtime::new().unwrap().block_on(run());
+/// ```
 pub async fn list_tools_with_session(
     session: &SessionDriver,
     schema: &SchemaConfig,

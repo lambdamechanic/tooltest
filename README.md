@@ -132,6 +132,12 @@ Or override it on the CLI:
 
 CLI flags take precedence over the JSON config.
 
+### Coverage validation output
+
+When coverage validation fails without a positive error, you can include uncallable tool traces in
+the output with `--show-uncallable`. Use `--uncallable-limit <N>` to control how many calls per
+tool are included (default: 1).
+
 ### Tool filters and pre-run hook
 
 Filter eligible tools by name (exact, case-sensitive) using `--tool-allowlist` and

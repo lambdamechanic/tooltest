@@ -34,7 +34,60 @@ reuse an existing MCP connection.
 
 ## Tool enumeration and validation helpers
 
-See the top-level `README.md` for the full example and environment details.
+The helpers in `tooltest_core::validation` cover two common workflows:
+
+- Enumerate tools with schema validation.
+- Run bulk tool validation against one or more tools.
+
+### Tool enumeration
+
+Use the list helpers to fetch `tools/list` and validate the payload against the
+configured MCP schema before returning tools.
+
+```rust
+use tooltest_core::{list_tools_http, HttpConfig, SchemaConfig};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = HttpConfig {
+    url: "http://localhost:3000/mcp".into(),
+    auth_token: None,
+};
+let tools = list_tools_http(&config, &SchemaConfig::default()).await?;
+println!("found {} tools", tools.len());
+# Ok(())
+# }
+# tokio::runtime::Runtime::new().unwrap().block_on(run());
+```
+
+For existing sessions, use `list_tools_with_session` to reuse a connected
+`SessionDriver`.
+
+### Bulk validation
+
+Bulk validation runs a proptest-driven validation pass per tool, reporting the
+per-tool summary or the first failure encountered.
+
+The default case count comes from `TOOLTEST_CASES_PER_TOOL` (minimum 1). Override
+it in code with `ToolValidationConfig::with_cases_per_tool`.
+
+```rust
+use tooltest_core::{SessionDriver, StdioConfig, ToolValidationConfig, validate_tools};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let session = SessionDriver::connect_stdio(&StdioConfig::new("./my-mcp-server"))
+    .await
+    .expect("connect");
+let config = ToolValidationConfig::new().with_cases_per_tool(10);
+let summary = validate_tools(&session, &config, None)
+    .await
+    .expect("validate tools");
+println!("validated {} tools", summary.tools.len());
+# Ok(())
+# }
+# tokio::runtime::Runtime::new().unwrap().block_on(run());
+```
+
+To validate specific tools, pass a list of names as the final argument.
 
 ## JSON DSL
 

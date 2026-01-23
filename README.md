@@ -222,7 +222,7 @@ use tooltest_core::{
     list_tools_http, validate_tools, HttpConfig, SchemaConfig, SessionDriver, ToolValidationConfig,
 };
 
-# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+# async fn run() {
 let tools = list_tools_http(
     &HttpConfig {
         url: "http://localhost:3000/mcp".into(),
@@ -230,18 +230,21 @@ let tools = list_tools_http(
     },
     &SchemaConfig::default(),
 )
-.await?;
+.await
+.expect("list tools");
 println!("found {} tools", tools.len());
 
 let session = SessionDriver::connect_http(&HttpConfig {
     url: "http://localhost:3000/mcp".into(),
     auth_token: None,
 })
-.await?;
+.await
+.expect("connect");
 let config = ToolValidationConfig::new().with_cases_per_tool(5);
-let summary = validate_tools(&session, &config, None).await?;
+let summary = validate_tools(&session, &config, None)
+    .await
+    .expect("validate tools");
 println!("validated {} tools", summary.tools.len());
-# Ok(())
 # }
 ```
 

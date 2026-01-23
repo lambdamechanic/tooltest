@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,6 +51,20 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
         .expect("time")
         .as_nanos();
     std::env::temp_dir().join(format!("tooltest-{name}-{nanos}"))
+}
+
+fn external_tests_enabled() -> bool {
+    matches!(
+        env::var("TOOLTEST_EXTERNAL_TESTS").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+fn external_cases() -> u32 {
+    env::var("TOOLTEST_EXTERNAL_CASES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1)
 }
 
 #[test]
@@ -1153,6 +1168,19 @@ fn run_missing_state_machine_config_file_returns_exit_code_2() {
 }
 
 #[test]
+fn run_invalid_uncallable_limit_returns_exit_code_2() {
+    let output = run_tooltest(&[
+        "--uncallable-limit",
+        "0",
+        "http",
+        "--url",
+        "http://127.0.0.1:0/mcp",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn run_stdio_success_returns_exit_code_0() {
     let Some(server) = test_server() else {
         return;
@@ -1160,4 +1188,31 @@ fn run_stdio_success_returns_exit_code_0() {
     let output = run_tooltest(&["stdio", "--command", server]);
 
     assert!(output.status.success());
+}
+#[test]
+fn stdio_command_runs_playwright_mcp() {
+    if !external_tests_enabled() {
+        return;
+    }
+    let cases = external_cases().to_string();
+    let config = r#"{"seed_strings":["https://google.com"],"coverage_rules":[{"rule":"percent_called","min_percent":100.0}]}"#;
+    let command_line = "npx -y @playwright/mcp@latest";
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--cases",
+        &cases,
+        "--max-sequence-len",
+        "1",
+        "--json",
+        "--state-machine-config",
+        config,
+        "stdio",
+        "--command",
+        command_line,
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}\njson: {payload:?}",
+        String::from_utf8_lossy(&output.stderr),
+    );
 }

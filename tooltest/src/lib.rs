@@ -62,6 +62,12 @@ pub struct Cli {
     /// Include tool responses in the trace output.
     #[arg(long)]
     pub full_trace: bool,
+    /// Include uncallable tool traces when coverage validation fails.
+    #[arg(long)]
+    pub show_uncallable: bool,
+    /// Number of calls per tool to include in uncallable traces.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(usize))]
+    pub uncallable_limit: usize,
     /// Emit all per-case traces to a file (JSON lines).
     #[arg(long, value_name = "PATH")]
     pub trace_all: Option<String>,
@@ -140,6 +146,9 @@ pub async fn run(cli: Cli) -> ExitCode {
         Ok(range) => range,
         Err(message) => return error_exit(&message, cli.json),
     };
+    if cli.uncallable_limit < 1 {
+        return error_exit("uncallable-limit must be at least 1", cli.json);
+    }
 
     let options = RunnerOptions {
         cases: cli.cases,
@@ -169,7 +178,9 @@ pub async fn run(cli: Cli) -> ExitCode {
     let dump_corpus = state_machine.dump_corpus;
     let mut run_config = RunConfig::new()
         .with_state_machine(state_machine)
-        .with_full_trace(cli.full_trace);
+        .with_full_trace(cli.full_trace)
+        .with_show_uncallable(cli.show_uncallable)
+        .with_uncallable_limit(cli.uncallable_limit);
     if let Some(path) = cli.trace_all.as_ref() {
         match TraceFileSink::new(path) {
             Ok(sink) => {
@@ -499,7 +510,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
     use rmcp::model::{
         CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ListPromptsRequest,
         NumberOrString, PaginatedRequestParam, Tool,
@@ -543,6 +554,13 @@ mod tests {
     fn build_sequence_len_accepts_valid_range() {
         let range = build_sequence_len(1, 3).expect("range");
         assert_eq!(range, 1..=3);
+    }
+
+    #[test]
+    fn cli_defaults_uncallable_flags() {
+        let cli = Cli::parse_from(["tooltest", "http", "--url", "http://127.0.0.1:0/mcp"]);
+        assert!(!cli.show_uncallable);
+        assert_eq!(cli.uncallable_limit, 1);
     }
 
     #[test]
@@ -1209,6 +1227,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -1242,6 +1262,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: Some(trace_path.display().to_string()),
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -1278,6 +1300,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: Some(trace_dir.display().to_string()),
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -1311,6 +1335,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
@@ -1342,6 +1368,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1372,6 +1400,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1401,6 +1431,8 @@ mod tests {
             pre_run_hook: Some("true".to_string()),
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1431,6 +1463,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1461,6 +1495,8 @@ mod tests {
             pre_run_hook: None,
             json: true,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1491,6 +1527,8 @@ mod tests {
             pre_run_hook: None,
             json: true,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1521,6 +1559,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1551,6 +1591,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1581,6 +1623,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
@@ -1611,6 +1655,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
@@ -1643,6 +1689,8 @@ mod tests {
             pre_run_hook: None,
             json: false,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_all: None,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),

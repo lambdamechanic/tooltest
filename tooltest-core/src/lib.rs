@@ -300,6 +300,10 @@ pub struct RunConfig {
     pub pre_run_hook: Option<PreRunHook>,
     /// Emit full tool responses in traces instead of compact invocation-only entries.
     pub full_trace: bool,
+    /// Include uncallable tool traces when coverage validation fails.
+    pub show_uncallable: bool,
+    /// Number of calls per tool to include in uncallable traces.
+    pub uncallable_limit: usize,
     /// Optional trace sink for streaming per-case traces.
     pub trace_sink: Option<Arc<dyn TraceSink>>,
 }
@@ -319,6 +323,8 @@ impl RunConfig {
             state_machine: StateMachineConfig::default(),
             pre_run_hook: None,
             full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
             trace_sink: None,
         }
     }
@@ -371,6 +377,18 @@ impl RunConfig {
         self
     }
 
+    /// Enables uncallable tool trace output for coverage validation failures.
+    pub fn with_show_uncallable(mut self, enabled: bool) -> Self {
+        self.show_uncallable = enabled;
+        self
+    }
+
+    /// Sets the call limit for uncallable tool traces.
+    pub fn with_uncallable_limit(mut self, limit: usize) -> Self {
+        self.uncallable_limit = limit;
+        self
+    }
+
     /// Sets a trace sink that receives per-case traces.
     pub fn with_trace_sink(mut self, sink: Arc<dyn TraceSink>) -> Self {
         self.trace_sink = Some(sink);
@@ -400,6 +418,8 @@ impl fmt::Debug for RunConfig {
             .field("in_band_error_forbidden", &self.in_band_error_forbidden)
             .field("state_machine", &self.state_machine)
             .field("pre_run_hook", &self.pre_run_hook.is_some())
+            .field("show_uncallable", &self.show_uncallable)
+            .field("uncallable_limit", &self.uncallable_limit)
             .field("trace_sink", &self.trace_sink.is_some())
             .finish()
     }

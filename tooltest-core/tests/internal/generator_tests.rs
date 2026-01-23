@@ -220,8 +220,10 @@ fn state_machine_invocation_strategy_respects_oneof_required_properties() {
             ]
         }),
     );
-    let mut config = StateMachineConfig::default();
-    config.seed_strings = vec!["acme".to_string(), "widget".to_string()];
+    let config = StateMachineConfig {
+        seed_strings: vec!["acme".to_string(), "widget".to_string()],
+        ..Default::default()
+    };
     let mut corpus = ValueCorpus::default();
     corpus.seed_strings(config.seed_strings.clone());
     let strategy = invocation_strategy_from_corpus(&[tool], None, &corpus, false)
@@ -476,7 +478,7 @@ fn invocation_strategy_respects_number_bounds() {
             .as_ref()
             .and_then(|args| args.get("value"))
             .and_then(JsonValue::as_f64)
-            .is_some_and(|value| value >= 2.0 && value <= 3.0)
+            .is_some_and(|value| (2.0..=3.0).contains(&value))
     });
     assert!(all_in_range, "expected all values to satisfy number bounds");
 }
@@ -547,7 +549,7 @@ fn invocation_strategy_respects_array_bounds() {
             .as_ref()
             .and_then(|args| args.get("value"))
             .and_then(JsonValue::as_array)
-            .is_some_and(|items| items.len() >= 1 && items.len() <= 2)
+            .is_some_and(|items| !items.is_empty() && items.len() <= 2)
     });
     assert!(all_in_range, "expected all values to satisfy array bounds");
 }

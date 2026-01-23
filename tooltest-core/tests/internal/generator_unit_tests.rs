@@ -203,8 +203,10 @@ fn state_machine_sequence_strategy_rejects_predicate_filtered_tools() {
         }),
     );
     let predicate: ToolPredicate = Arc::new(|_name, _input| false);
-    let mut config = StateMachineConfig::default();
-    config.seed_strings = vec!["alpha".to_string()];
+    let config = StateMachineConfig {
+        seed_strings: vec!["alpha".to_string()],
+        ..Default::default()
+    };
     let result = state_machine_sequence_strategy(&[tool], Some(&predicate), &config, 1..=1);
     #[cfg(coverage)]
     std::hint::black_box(&result);
@@ -2000,22 +2002,21 @@ fn input_object_strategy_supports_anyof_branches() {
     properties.insert("product".to_string(), JsonValue::Object(product_schema));
     schema.insert("properties".to_string(), JsonValue::Object(properties));
     let mut vendor_required = JsonObject::new();
-    let mut vendor_required_values = Vec::new();
-    vendor_required_values.push(JsonValue::String("vendor".to_string()));
+    let vendor_required_values = vec![JsonValue::String("vendor".to_string())];
     vendor_required.insert(
         "required".to_string(),
         JsonValue::Array(vendor_required_values),
     );
     let mut product_required = JsonObject::new();
-    let mut product_required_values = Vec::new();
-    product_required_values.push(JsonValue::String("product".to_string()));
+    let product_required_values = vec![JsonValue::String("product".to_string())];
     product_required.insert(
         "required".to_string(),
         JsonValue::Array(product_required_values),
     );
-    let mut any_of = Vec::new();
-    any_of.push(JsonValue::Object(vendor_required));
-    any_of.push(JsonValue::Object(product_required));
+    let any_of = vec![
+        JsonValue::Object(vendor_required),
+        JsonValue::Object(product_required),
+    ];
     schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
     let schema = tool.input_schema.as_ref();
@@ -2203,9 +2204,10 @@ fn schema_object_union_branches_supports_anyof() {
     text_schema.insert(text_key, text_value);
     text_props.insert("text".to_string(), JsonValue::Object(text_schema));
     branch_text.insert("properties".to_string(), JsonValue::Object(text_props));
-    let mut any_of = Vec::new();
-    any_of.push(JsonValue::Object(branch_empty));
-    any_of.push(JsonValue::Object(branch_text));
+    let any_of = vec![
+        JsonValue::Object(branch_empty),
+        JsonValue::Object(branch_text),
+    ];
     let insert_any_of = |schema: &mut JsonObject, any_of: Vec<JsonValue>| {
         schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     };
@@ -2254,8 +2256,7 @@ fn input_object_strategy_reports_invalid_schemas() {
     assert!(input_object_strategy(&tool).is_err());
     let mut epsilon_schema = JsonObject::new();
     epsilon_schema.insert("type".to_string(), JsonValue::String("object".to_string()));
-    let mut epsilon_required = Vec::new();
-    epsilon_required.push(JsonValue::String("missing".to_string()));
+    let epsilon_required = vec![JsonValue::String("missing".to_string())];
     epsilon_schema.insert("required".to_string(), JsonValue::Array(epsilon_required));
     let tool = tool_with_schema("epsilon", JsonValue::Object(epsilon_schema));
     assert!(input_object_strategy(&tool).is_err());

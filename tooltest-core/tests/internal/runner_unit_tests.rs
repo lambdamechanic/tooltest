@@ -71,6 +71,7 @@ impl TraceSink for CaptureSink {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_sequence_for_test(
     session: &SessionDriver,
     tools: &[Tool],

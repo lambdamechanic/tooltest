@@ -1137,9 +1137,11 @@ async fn run_with_session_reports_sequence_assertion_failure() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_http_succeeds_with_streamable_server() {
-    let mut http_config = StreamableHttpServerConfig::default();
-    http_config.stateful_mode = true;
-    http_config.sse_keep_alive = None;
+    let http_config = StreamableHttpServerConfig {
+        stateful_mode: true,
+        sse_keep_alive: None,
+        ..Default::default()
+    };
     let service: StreamableHttpService<HttpTestServer, LocalSessionManager> =
         StreamableHttpService::new(
             || Ok(HttpTestServer::new()),

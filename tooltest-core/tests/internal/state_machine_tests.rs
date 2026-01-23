@@ -151,7 +151,8 @@ fn state_machine_generator_supports_kev_schema_without_seeds() {
     let tool = tool_with_schema("get_related_cves", schema);
     let config = StateMachineConfig::default();
     let strategy =
-        state_machine_sequence_strategy(&[tool.clone()], None, &config, 1..=1).expect("strategy");
+        state_machine_sequence_strategy(std::slice::from_ref(&tool), None, &config, 1..=1)
+            .expect("strategy");
 
     let sequence = sample(strategy);
     assert_eq!(sequence.seeds.len(), 1);

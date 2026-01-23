@@ -32,6 +32,10 @@ assert!(matches!(result.outcome, RunOutcome::Success));
 For custom transport workflows, use `SessionDriver` plus `run_with_session` to
 reuse an existing MCP connection.
 
+## Tool enumeration and validation helpers
+
+See the top-level `README.md` for the full example and environment details.
+
 ## JSON DSL
 
 Assertions can be expressed as structured JSON for FFI use. The JSON DSL mirrors

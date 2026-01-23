@@ -34,7 +34,43 @@ reuse an existing MCP connection.
 
 ## Tool enumeration and validation helpers
 
-See the top-level `README.md` for the full example and environment details.
+Use `list_tools_http`, `list_tools_stdio`, or `list_tools_with_session` to fetch
+tool definitions while validating against a specific MCP schema version.
+
+```rust
+use tooltest_core::{list_tools_http, HttpConfig, SchemaConfig};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = HttpConfig {
+    url: "http://localhost:3000/mcp".into(),
+    auth_token: None,
+};
+let tools = list_tools_http(&config, &SchemaConfig::default()).await?;
+println!("found {} tools", tools.len());
+# Ok(())
+# }
+# tokio::runtime::Runtime::new().unwrap().block_on(run());
+```
+
+Bulk validation uses `validate_tools`, which runs `cases_per_tool` generated
+invocations for each selected tool. Defaults come from `TOOLTEST_CASES_PER_TOOL`
+and can be overridden in `ToolValidationConfig`.
+
+```rust
+use tooltest_core::{SessionDriver, StdioConfig, ToolValidationConfig, validate_tools};
+
+# async fn run() {
+let session = SessionDriver::connect_stdio(&StdioConfig::new("./my-mcp-server"))
+    .await
+    .expect("connect");
+let config = ToolValidationConfig::new().with_cases_per_tool(5);
+let summary = validate_tools(&session, &config, Some(&vec!["echo".into()]))
+    .await
+    .expect("validate tools");
+println!("validated {} tools", summary.tools.len());
+# }
+# tokio::runtime::Runtime::new().unwrap().block_on(run());
+```
 
 ## JSON DSL
 

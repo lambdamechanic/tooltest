@@ -252,6 +252,16 @@ println!("validated {} tools", summary.tools.len());
 # }
 ```
 
+`list_tools_http` and `list_tools_stdio` handle session setup, then validate the
+list-tools response against the requested MCP schema. For custom transports, use
+`list_tools_with_session` to reuse an existing `SessionDriver`.
+
+`validate_tools` runs `cases_per_tool` invocations for each selected tool (all
+tools by default, or a named subset). It uses `ToolValidationConfig` for the
+`RunConfig`, per-tool case count, and response validators. Call
+`ToolValidationConfig::with_validator` to prepend custom validation logic or
+`with_run_config` to customize generation settings.
+
 ---
 
 ## Hosted MCP integration tests

@@ -52,13 +52,16 @@ pub type ToolValidationFn = Arc<dyn Fn(&Tool, &TraceEntry) -> ToolValidationDeci
 /// unless overridden with `with_cases_per_tool`.
 ///
 /// ```no_run
+/// use std::env;
+///
 /// use tooltest_core::{SessionDriver, StdioConfig, ToolValidationConfig, validate_tools};
 ///
 /// # async fn run() {
+/// env::set_var("TOOLTEST_CASES_PER_TOOL", "10");
 /// let session = SessionDriver::connect_stdio(&StdioConfig::new("./my-mcp-server"))
 ///     .await
 ///     .expect("connect");
-/// let config = ToolValidationConfig::new().with_cases_per_tool(5);
+/// let config = ToolValidationConfig::new();
 /// let summary = validate_tools(&session, &config, None)
 ///     .await
 ///     .expect("validate tools");

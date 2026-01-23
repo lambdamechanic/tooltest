@@ -217,6 +217,10 @@ The `tooltest-core` crate exposes helper APIs for listing tools with schema vali
 running bulk tool validation. The default per-tool case count is controlled by
 `TOOLTEST_CASES_PER_TOOL` and can be overridden in code.
 
+```bash
+export TOOLTEST_CASES_PER_TOOL=10
+```
+
 ```rust
 use tooltest_core::{
     list_tools_http, validate_tools, HttpConfig, SchemaConfig, SessionDriver, ToolValidationConfig,
@@ -240,7 +244,7 @@ let session = SessionDriver::connect_http(&HttpConfig {
 })
 .await
 .expect("connect");
-let config = ToolValidationConfig::new().with_cases_per_tool(5);
+let config = ToolValidationConfig::new();
 let summary = validate_tools(&session, &config, None)
     .await
     .expect("validate tools");

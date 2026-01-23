@@ -39,7 +39,7 @@ fn run_server_skips_empty_and_invalid_input() {
     let lines = vec![
         Ok("   ".to_string()),
         Ok("not-json".to_string()),
-        Err(io::Error::new(io::ErrorKind::Other, "boom")),
+        Err(io::Error::other("boom")),
     ];
     let mut output = Vec::new();
     run_server(lines, &mut output);
@@ -168,11 +168,11 @@ fn write_response_handles_write_errors() {
 
     impl Write for FailingWriter {
         fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::Other, "write failed"))
+            Err(io::Error::other("write failed"))
         }
 
         fn flush(&mut self) -> io::Result<()> {
-            Err(io::Error::new(io::ErrorKind::Other, "flush failed"))
+            Err(io::Error::other("flush failed"))
         }
     }
 
@@ -202,7 +202,7 @@ fn run_server_emits_responses() {
     let lines = vec![
         Ok(serde_json::to_string(&unhandled).expect("serialize unhandled")),
         Ok(serde_json::to_string(&list_tools).expect("serialize list tools")),
-        Err(io::Error::new(io::ErrorKind::Other, "done")),
+        Err(io::Error::other("done")),
     ];
     let mut output = Vec::new();
     run_server(lines, &mut output);

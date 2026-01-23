@@ -64,11 +64,11 @@ struct FailingWriter;
 
 impl Write for FailingWriter {
     fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-        Err(io::Error::new(io::ErrorKind::Other, "write failed"))
+        Err(io::Error::other("write failed"))
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Other, "flush failed"))
+        Err(io::Error::other("flush failed"))
     }
 }
 
@@ -80,7 +80,7 @@ impl Write for FlushFailingWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Other, "flush failed"))
+        Err(io::Error::other("flush failed"))
     }
 }
 
@@ -365,7 +365,7 @@ fn run_server_skips_invalid_and_empty_lines() {
 
 #[test]
 fn run_server_handles_read_errors() {
-    let mut lines = vec![Err(io::Error::new(io::ErrorKind::Other, "read failed"))].into_iter();
+    let mut lines = vec![Err(io::Error::other("read failed"))].into_iter();
     let mut output = Vec::new();
     run_server(&mut lines, &mut output);
     assert!(output.is_empty());

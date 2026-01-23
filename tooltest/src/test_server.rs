@@ -70,89 +70,6 @@ fn select_lines(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{select_lines, tool_stub_with_name};
-    use std::env;
-
-    #[test]
-    fn select_lines_accepts_stdin_when_allowed() {
-        let _ = select_lines(false, None, true);
-    }
-
-    #[test]
-    fn select_lines_returns_empty_iterator_when_disabled() {
-        let mut lines = select_lines(true, None, false);
-        assert!(lines.next().is_none());
-    }
-
-    #[test]
-    fn select_lines_returns_empty_iterator_when_stdin_blocked() {
-        #[cfg(coverage)]
-        {
-            let mut lines = select_lines(false, None, false);
-            assert!(lines.next().is_none());
-        }
-        #[cfg(not(coverage))]
-        {
-            let _lines = select_lines(false, None, false);
-        }
-    }
-
-    #[test]
-    fn select_lines_uses_inline_payload_when_provided() {
-        let mut lines = select_lines(false, Some("ok\n".to_string()), false);
-        let line = lines.next().expect("line").expect("line ok");
-        assert_eq!(line, "ok");
-    }
-
-    struct EnvGuard {
-        key: &'static str,
-        value: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = env::var(key).ok();
-            env::set_var(key, value);
-            Self {
-                key,
-                value: previous,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.value {
-                env::set_var(self.key, value);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    #[test]
-    fn tool_stub_includes_defs_when_warning_env_set() {
-        let _guard = EnvGuard::set("TOOLTEST_SCHEMA_DEFS_WARNING", "1");
-        let tool = tool_stub_with_name("echo");
-        assert!(tool.input_schema.contains_key("$schema"));
-        assert!(tool.input_schema.contains_key("$defs"));
-    }
-
-    #[test]
-    fn env_guard_restores_previous_value() {
-        let key = "TOOLTEST_SCHEMA_DEFS_WARNING_TEST";
-        env::set_var(key, "original");
-        {
-            let _guard = EnvGuard::set(key, "after");
-            assert_eq!(env::var(key).ok().as_deref(), Some("after"));
-        }
-        assert_eq!(env::var(key).ok().as_deref(), Some("original"));
-        env::remove_var(key);
-    }
-}
-
 pub fn run(
     lines: &mut dyn Iterator<Item = io::Result<String>>,
     stdout: &mut dyn Write,
@@ -402,4 +319,87 @@ fn init_response(id: RequestId) -> ServerJsonRpcMessage {
             instructions: None,
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_lines, tool_stub_with_name};
+    use std::env;
+
+    #[test]
+    fn select_lines_accepts_stdin_when_allowed() {
+        let _ = select_lines(false, None, true);
+    }
+
+    #[test]
+    fn select_lines_returns_empty_iterator_when_disabled() {
+        let mut lines = select_lines(true, None, false);
+        assert!(lines.next().is_none());
+    }
+
+    #[test]
+    fn select_lines_returns_empty_iterator_when_stdin_blocked() {
+        #[cfg(coverage)]
+        {
+            let mut lines = select_lines(false, None, false);
+            assert!(lines.next().is_none());
+        }
+        #[cfg(not(coverage))]
+        {
+            let _lines = select_lines(false, None, false);
+        }
+    }
+
+    #[test]
+    fn select_lines_uses_inline_payload_when_provided() {
+        let mut lines = select_lines(false, Some("ok\n".to_string()), false);
+        let line = lines.next().expect("line").expect("line ok");
+        assert_eq!(line, "ok");
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            env::set_var(key, value);
+            Self {
+                key,
+                value: previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.value {
+                env::set_var(self.key, value);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn tool_stub_includes_defs_when_warning_env_set() {
+        let _guard = EnvGuard::set("TOOLTEST_SCHEMA_DEFS_WARNING", "1");
+        let tool = tool_stub_with_name("echo");
+        assert!(tool.input_schema.contains_key("$schema"));
+        assert!(tool.input_schema.contains_key("$defs"));
+    }
+
+    #[test]
+    fn env_guard_restores_previous_value() {
+        let key = "TOOLTEST_SCHEMA_DEFS_WARNING_TEST";
+        env::set_var(key, "original");
+        {
+            let _guard = EnvGuard::set(key, "after");
+            assert_eq!(env::var(key).ok().as_deref(), Some("after"));
+        }
+        assert_eq!(env::var(key).ok().as_deref(), Some("original"));
+        env::remove_var(key);
+    }
 }

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
     let mut full_args: Vec<&str> = args.to_vec();
-    if args.iter().any(|arg| *arg == "stdio") {
+    if args.contains(&"stdio") {
         full_args.push("--env");
         full_args.push("LLVM_PROFILE_FILE=/dev/null");
         full_args.push("--env");

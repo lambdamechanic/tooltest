@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+<<<<<<< Updated upstream
+=======
+## [0.4.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.3.0...tooltest-core-v0.4.0) - 2026-01-23
+
+### Other
+
+- override commit by mark
+
+- Missing `structured_content` now emits a warning instead of failing (deliberate behavior change).
+
+>>>>>>> Stashed changes
 ## [0.3.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.2.0...tooltest-core-v0.3.0) - 2026-01-14
 
 ### Other

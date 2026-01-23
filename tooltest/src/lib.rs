@@ -1573,6 +1573,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_invalid_uncallable_limit_returns_exit_code_2() {
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 0,
+            trace_all: None,
+            command: Command::Http {
+                url: "http://127.0.0.1:0/mcp".to_string(),
+                auth_token: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[tokio::test]
     async fn run_state_machine_mode_returns_failure_for_unreachable_http() {
         let cli = Cli {
             cases: 1,

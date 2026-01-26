@@ -564,6 +564,21 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_uncallable_flags() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--show-uncallable",
+            "--uncallable-limit",
+            "3",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        assert!(cli.show_uncallable);
+        assert_eq!(cli.uncallable_limit, 3);
+    }
+
+    #[test]
     fn build_tool_filters_block_blocklisted_tool() {
         let filters = build_tool_filters(&[], &[String::from("echo")]).expect("filters");
 

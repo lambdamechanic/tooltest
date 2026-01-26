@@ -186,7 +186,8 @@ pub async fn run_with_session(
                         let (report, corpus_report) = {
                             let mut aggregate = aggregate_tracker.borrow_mut();
                             aggregate.merge_from(&tracker);
-                            let report = aggregate.report();
+                            let mut report = aggregate.report();
+                            apply_uncallable_traces(&mut report, config.show_uncallable);
                             let corpus_report = if config.state_machine.dump_corpus {
                                 Some(aggregate.corpus_report())
                             } else {
@@ -242,7 +243,8 @@ pub async fn run_with_session(
         {
             let mut trace = last_trace.borrow().clone();
             attach_failure_reason(&mut trace, "coverage validation failed".to_string());
-            let report = aggregate_tracker.borrow().report();
+            let mut report = aggregate_tracker.borrow().report();
+            apply_uncallable_traces(&mut report, config.show_uncallable);
             let corpus_report = if config.state_machine.dump_corpus {
                 Some(aggregate_tracker.borrow().corpus_report())
             } else {
@@ -259,4 +261,10 @@ pub async fn run_with_session(
         }
     }
     run_result
+}
+
+fn apply_uncallable_traces(report: &mut CoverageReport, show_uncallable: bool) {
+    if !show_uncallable {
+        report.uncallable_traces.clear();
+    }
 }

@@ -399,6 +399,19 @@ fn format_run_result_human(result: &RunResult) -> String {
                 }
             }
         }
+        if !coverage.uncallable_traces.is_empty() {
+            output.push_str("Uncallable traces:\n");
+            for (tool, calls) in &coverage.uncallable_traces {
+                output.push_str(&format!("- {tool}:\n"));
+                let payload =
+                    serde_json::to_string_pretty(calls).expect("serialize uncallable traces");
+                for line in payload.lines() {
+                    output.push_str("  ");
+                    output.push_str(line);
+                    output.push('\n');
+                }
+            }
+        }
     }
 
     if !result.warnings.is_empty() {
@@ -521,7 +534,7 @@ mod tests {
     use tooltest_core::{
         list_tools_http, list_tools_stdio, list_tools_with_session, CorpusReport, CoverageReport,
         CoverageWarning, HttpConfig, ListToolsError, RunFailure, RunWarning, RunWarningCode,
-        SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
+        SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry, UncallableToolCall,
     };
     use tooltest_test_support::{
         stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
@@ -977,6 +990,52 @@ mod tests {
         assert!(output.contains("Coverage failures:"));
         assert!(output.contains("- alpha: 2"));
         assert!(!output.contains("- beta: 0"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_uncallable_traces() {
+        let invocation = ToolInvocation {
+            name: "alpha".into(),
+            arguments: Some(
+                serde_json::json!({ "value": 1 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        };
+        let call = UncallableToolCall {
+            input: invocation,
+            output: Some(CallToolResult::success(vec![Content::text("ok")])),
+            error: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let mut uncallable_traces = BTreeMap::new();
+        uncallable_traces.insert("beta".to_string(), Vec::new());
+        uncallable_traces.insert("alpha".to_string(), vec![call]);
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            warnings: Vec::new(),
+            uncallable_traces,
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: Some(coverage),
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Uncallable traces:"));
+        let alpha_idx = output.find("- alpha:").expect("alpha");
+        let beta_idx = output.find("- beta:").expect("beta");
+        assert!(alpha_idx < beta_idx);
+        assert!(output.contains("\"timestamp\": \"2024-01-01T00:00:00Z\""));
+        assert!(output.contains("\"input\""));
+        assert!(output.contains("\"output\""));
+        assert!(output.contains("- beta:\n  []"));
     }
 
     #[test]

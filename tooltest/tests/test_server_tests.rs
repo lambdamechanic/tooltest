@@ -256,6 +256,19 @@ fn handle_message_includes_extra_tool_from_env() {
 }
 
 #[test]
+fn handle_message_includes_multiple_extra_tools_from_env() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard =
+        EnvGuard::set("TOOLTEST_TEST_SERVER_EXTRA_TOOL", "alpha, ,bravo".to_string());
+    let response = handle_message(list_tools_message()).expect("response");
+    let tools = tools_from_list_response(response);
+    assert!(tools.contains(&"alpha".to_string()));
+    assert!(tools.contains(&"bravo".to_string()));
+    assert!(tools.contains(&"echo".to_string()));
+}
+
+#[test]
 fn handle_message_includes_invalid_tool_when_enabled() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();

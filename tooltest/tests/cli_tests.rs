@@ -218,6 +218,95 @@ fn stdio_command_reports_coverage_warning_for_missing_number() {
 }
 
 #[test]
+fn stdio_command_reports_uncallable_traces_in_human_output() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--show-uncallable",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha,bravo",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert!(stdout.contains("Uncallable traces:"), "stdout: {stdout}");
+
+    let mut tools = Vec::new();
+    let mut lines = stdout.lines().peekable();
+    let mut in_section = false;
+    while let Some(line) = lines.next() {
+        if line == "Uncallable traces:" {
+            in_section = true;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if line == "Warnings:" || line == "Trace:" {
+            break;
+        }
+        if let Some(tool) = line.strip_prefix("- ").and_then(|line| line.strip_suffix(':')) {
+            tools.push(tool.to_string());
+            let next = lines.next().unwrap_or_default();
+            assert_eq!(next.trim(), "[]", "stdout: {stdout}");
+        }
+    }
+
+    assert_eq!(tools.len(), 2, "stdout: {stdout}");
+    let mut sorted = tools.clone();
+    sorted.sort();
+    assert_eq!(tools, sorted, "stdout: {stdout}");
+}
+
+#[test]
+fn stdio_command_reports_uncallable_traces_in_json() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, payload) = run_tooltest_json_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--show-uncallable",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha,bravo",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let coverage = payload["coverage"].as_object().expect("coverage");
+    let traces = coverage["uncallable_traces"]
+        .as_object()
+        .expect("uncallable traces");
+    assert_eq!(traces.len(), 2, "uncallable traces: {traces:?}");
+    let keys: Vec<_> = traces.keys().cloned().collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted);
+    for value in traces.values() {
+        let calls = value.as_array().expect("uncallable trace list");
+        assert!(calls.is_empty(), "uncallable trace list: {calls:?}");
+    }
+}
+
+#[test]
 fn stdio_command_accepts_required_object_value() {
     let Some(server) = test_server() else {
         return;

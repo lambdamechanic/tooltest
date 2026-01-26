@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
+use chrono::Utc;
 use rmcp::model::{CallToolResult, Tool};
 use serde_json::{json, Number, Value as JsonValue};
 
 use crate::generator::{uncallable_reason, UncallableReason, ValueCorpus};
 use crate::{
     CorpusReport, CoverageReport, CoverageRule, CoverageWarning, CoverageWarningReason, RunFailure,
-    StateMachineConfig,
+    StateMachineConfig, ToolInvocation, UncallableToolCall,
 };
 
 const LIST_TOOLS_COUNT_LABEL: &str = "tools/list";
@@ -21,6 +22,8 @@ pub(super) struct CoverageTracker<'a> {
     corpus: ValueCorpus,
     counts: BTreeMap<String, u64>,
     failures: BTreeMap<String, u64>,
+    call_history: BTreeMap<String, Vec<UncallableToolCall>>,
+    uncallable_limit: usize,
     allowlist: Option<Vec<String>>,
     blocklist: Option<Vec<String>>,
     lenient_sourcing: bool,
@@ -59,7 +62,11 @@ impl CorpusSnapshot {
 }
 
 impl<'a> CoverageTracker<'a> {
-    pub(super) fn new(tools: &'a [Tool], config: &StateMachineConfig) -> Self {
+    pub(super) fn new(
+        tools: &'a [Tool],
+        config: &StateMachineConfig,
+        uncallable_limit: usize,
+    ) -> Self {
         let mut corpus = ValueCorpus::default();
         corpus.seed_numbers(config.seed_numbers.clone());
         corpus.seed_strings(config.seed_strings.clone());
@@ -68,6 +75,8 @@ impl<'a> CoverageTracker<'a> {
             corpus,
             counts: BTreeMap::new(),
             failures: BTreeMap::new(),
+            call_history: BTreeMap::new(),
+            uncallable_limit,
             allowlist: config.coverage_allowlist.clone(),
             blocklist: config.coverage_blocklist.clone(),
             lenient_sourcing: config.lenient_sourcing,
@@ -91,6 +100,9 @@ impl<'a> CoverageTracker<'a> {
         for (tool, count) in &other.failures {
             *self.failures.entry(tool.clone()).or_insert(0) += count;
         }
+        for (tool, calls) in &other.call_history {
+            self.append_calls(tool, calls);
+        }
         self.corpus.merge_from(other.corpus());
     }
 
@@ -106,6 +118,7 @@ impl<'a> CoverageTracker<'a> {
             counts,
             failures,
             warnings: self.build_warnings(),
+            uncallable_traces: self.uncallable_traces(),
         }
     }
 
@@ -123,6 +136,26 @@ impl<'a> CoverageTracker<'a> {
 
     pub(super) fn record_failure(&mut self, tool: &str) {
         *self.failures.entry(tool.to_string()).or_insert(0) += 1;
+    }
+
+    pub(super) fn record_call(&mut self, invocation: &ToolInvocation, response: &CallToolResult) {
+        let (output, error) = if response.is_error.unwrap_or(false) {
+            (None, Some(response.clone()))
+        } else {
+            (Some(response.clone()), None)
+        };
+        let call = UncallableToolCall {
+            input: invocation.clone(),
+            output,
+            error,
+            timestamp: Utc::now().to_rfc3339(),
+        };
+        let calls = self
+            .call_history
+            .entry(invocation.name.to_string())
+            .or_default();
+        calls.push(call);
+        Self::truncate_calls(calls, self.uncallable_limit);
     }
 
     pub(super) fn mine_response(&mut self, tool: &str, response: &CallToolResult) {
@@ -187,6 +220,19 @@ impl<'a> CoverageTracker<'a> {
         }
 
         warnings
+    }
+
+    pub(super) fn uncallable_traces(&self) -> BTreeMap<String, Vec<UncallableToolCall>> {
+        let mut traces = BTreeMap::new();
+        for tool in self.eligible_tools() {
+            let name = tool.name.to_string();
+            let successes = *self.counts.get(&name).unwrap_or(&0);
+            if successes == 0 {
+                let calls = self.call_history.get(&name).cloned().unwrap_or_default();
+                traces.insert(name, calls);
+            }
+        }
+        traces
     }
 
     pub(super) fn validate(&self, rules: &[CoverageRule]) -> Result<(), CoverageValidationFailure> {
@@ -304,6 +350,26 @@ impl<'a> CoverageTracker<'a> {
                 true
             })
             .collect()
+    }
+
+    fn append_calls(&mut self, tool: &str, calls: &[UncallableToolCall]) {
+        if calls.is_empty() {
+            return;
+        }
+        let entries = self.call_history.entry(tool.to_string()).or_default();
+        entries.extend_from_slice(calls);
+        Self::truncate_calls(entries, self.uncallable_limit);
+    }
+
+    fn truncate_calls(calls: &mut Vec<UncallableToolCall>, limit: usize) {
+        if limit == 0 {
+            calls.clear();
+            return;
+        }
+        if calls.len() > limit {
+            let start = calls.len() - limit;
+            calls.drain(0..start);
+        }
     }
 }
 

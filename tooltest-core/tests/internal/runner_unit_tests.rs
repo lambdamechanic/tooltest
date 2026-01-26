@@ -1151,7 +1151,7 @@ async fn execute_state_machine_sequence_breaks_when_no_callable_tools() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![1, 2] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1177,7 +1177,7 @@ async fn execute_state_machine_sequence_reports_generation_error() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1208,7 +1208,7 @@ async fn execute_state_machine_sequence_reports_session_error() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1234,7 +1234,7 @@ async fn execute_state_machine_sequence_full_trace_success_records_trace() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let sink = Arc::new(CaptureSink::default());
     let execution = StateMachineExecution {
         session: &session,
@@ -1270,7 +1270,7 @@ async fn execute_state_machine_sequence_full_trace_reports_generation_error() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let sink = Arc::new(CaptureSink::default());
     let execution = StateMachineExecution {
         session: &session,
@@ -1309,7 +1309,7 @@ async fn execute_state_machine_sequence_full_trace_reports_session_error() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let sink = Arc::new(CaptureSink::default());
     let execution = StateMachineExecution {
         session: &session,
@@ -1350,7 +1350,7 @@ async fn execute_state_machine_sequence_full_trace_reports_default_assertion_fai
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let execution = StateMachineExecution {
         session: &session,
         tools: &tools,
@@ -1395,7 +1395,7 @@ async fn execute_state_machine_sequence_full_trace_reports_response_assertion_fa
             }],
         })],
     };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let execution = StateMachineExecution {
         session: &session,
         tools: &tools,
@@ -1436,7 +1436,7 @@ async fn execute_state_machine_sequence_full_trace_reports_sequence_assertion_fa
             }],
         })],
     };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let execution = StateMachineExecution {
         session: &session,
         tools: &tools,
@@ -1474,7 +1474,7 @@ async fn execute_state_machine_sequence_full_trace_fails_on_minimum_length_short
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
     let execution = StateMachineExecution {
         session: &session,
         tools: &tools,
@@ -1517,7 +1517,7 @@ async fn execute_state_machine_sequence_reports_response_assertion_failure() {
             }],
         })],
     };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1553,7 +1553,7 @@ async fn execute_state_machine_sequence_reports_response_assertion_failure_on_er
             }],
         })],
     };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1588,7 +1588,7 @@ async fn execute_state_machine_sequence_reports_sequence_assertion_failure() {
             }],
         })],
     };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1622,7 +1622,7 @@ async fn execute_state_machine_sequence_fails_on_minimum_length_shortfall() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let tools = vec![tool];
     let sequence = StateMachineSequence { seeds: vec![0] };
-    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default());
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
 
     let result = execute_sequence_for_test(
         &session,
@@ -1929,7 +1929,7 @@ fn validate_tools_accepts_valid_schema() {
 fn coverage_tracker_mines_structured_content() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let entry = trace_entry_with(
         "echo",
         None,
@@ -1947,7 +1947,7 @@ fn coverage_tracker_mines_structured_content() {
 fn coverage_tracker_logs_corpus_deltas_and_reports() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default().with_log_corpus_deltas(true);
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let response = CallToolResult::structured(json!({ "value": 1 }));
 
     tracker.mine_response("echo", &response);
@@ -1961,7 +1961,7 @@ fn coverage_tracker_logs_corpus_deltas_and_reports() {
 fn coverage_tracker_ignores_missing_structured_content() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default();
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let entry = trace_entry_with(
         "echo",
         None,
@@ -1979,7 +1979,7 @@ fn coverage_tracker_ignores_missing_structured_content() {
 fn coverage_tracker_skips_error_responses() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default().with_mine_text(true);
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let response = CallToolResult::error(vec![Content::text("oops")]);
 
     tracker.mine_response("echo", &response);
@@ -1992,7 +1992,7 @@ fn coverage_tracker_skips_error_responses() {
 fn coverage_tracker_mines_resource_text() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default().with_mine_text(true);
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let response = CallToolResult::success(vec![
         Content::resource(ResourceContents::TextResourceContents {
             uri: "file://alpha".to_string(),
@@ -2018,7 +2018,7 @@ fn coverage_tracker_mines_resource_text() {
 fn coverage_tracker_mines_text_from_structured_content() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default().with_mine_text(true);
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let response = CallToolResult::structured(json!({ "note": "alpha 1" }));
 
     tracker.mine_response("echo", &response);
@@ -2031,13 +2031,121 @@ fn coverage_tracker_mines_text_from_structured_content() {
 fn coverage_tracker_mines_text_content() {
     let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
     let config = StateMachineConfig::default().with_mine_text(true);
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     let response = CallToolResult::success(vec![Content::text("beta 2")]);
 
     tracker.mine_response("echo", &response);
 
     assert!(tracker.corpus().strings().contains(&"beta".to_string()));
     assert!(tracker.corpus().integers().contains(&2));
+}
+
+#[test]
+fn coverage_tracker_truncates_uncallable_call_history() {
+    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+    let config = StateMachineConfig::default();
+    let mut tracker = CoverageTracker::new(&tools, &config, 2);
+    for index in 0..3 {
+        let invocation = ToolInvocation {
+            name: "echo".into(),
+            arguments: Some(
+                serde_json::json!({ "idx": index })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        };
+        let response = CallToolResult::error(vec![Content::text("fail")]);
+        tracker.record_call(&invocation, &response);
+        tracker.record_failure("echo");
+    }
+
+    let report = tracker.report();
+    let calls = report
+        .uncallable_traces
+        .get("echo")
+        .expect("uncallable traces");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0]
+            .input
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("idx"))
+            .expect("first idx"),
+        &json!(1)
+    );
+    assert_eq!(
+        calls[1]
+            .input
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("idx"))
+            .expect("second idx"),
+        &json!(2)
+    );
+}
+
+#[test]
+fn coverage_tracker_includes_empty_uncallable_trace_for_never_invoked_tool() {
+    let alpha = tool_with_schemas("alpha", json!({ "type": "object" }), None);
+    let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
+    let tools = vec![alpha, beta];
+    let config = StateMachineConfig::default();
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
+    let invocation = ToolInvocation {
+        name: "alpha".into(),
+        arguments: Some(
+            serde_json::json!({ "idx": 0 })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ),
+    };
+    let response = CallToolResult::error(vec![Content::text("fail")]);
+    tracker.record_call(&invocation, &response);
+    tracker.record_failure("alpha");
+
+    let report = tracker.report();
+    let alpha_calls = report
+        .uncallable_traces
+        .get("alpha")
+        .expect("alpha traces");
+    let beta_calls = report
+        .uncallable_traces
+        .get("beta")
+        .expect("beta traces");
+    assert_eq!(alpha_calls.len(), 1);
+    assert!(beta_calls.is_empty());
+}
+
+#[test]
+fn coverage_tracker_merge_skips_empty_uncallable_calls() {
+    let tools = vec![tool_with_schemas("echo", json!({ "type": "object" }), None)];
+    let config = StateMachineConfig::default();
+    let mut source = CoverageTracker::new(&tools, &config, 0);
+    let invocation = ToolInvocation {
+        name: "echo".into(),
+        arguments: Some(
+            serde_json::json!({ "idx": 0 })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ),
+    };
+    let response = CallToolResult::error(vec![Content::text("fail")]);
+    source.record_call(&invocation, &response);
+    source.record_failure("echo");
+
+    let mut target = CoverageTracker::new(&tools, &config, 1);
+    target.merge_from(&source);
+
+    let report = target.report();
+    let calls = report
+        .uncallable_traces
+        .get("echo")
+        .expect("uncallable traces");
+    assert!(calls.is_empty());
 }
 
 #[test]
@@ -2052,7 +2160,7 @@ fn coverage_tracker_finalize_reports_warnings() {
         None,
     )];
     let config = StateMachineConfig::default();
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let report = tracker.report();
     assert!(!report.warnings.is_empty());
 }
@@ -2069,7 +2177,7 @@ fn coverage_tracker_skips_blocklisted_tools() {
         None,
     )];
     let config = StateMachineConfig::default().with_coverage_blocklist(vec!["echo".to_string()]);
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let warnings = tracker.build_warnings();
     assert!(warnings.is_empty());
 }
@@ -2096,7 +2204,7 @@ fn coverage_tracker_build_warnings_respects_blocklist() {
     );
     let config = StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
 
     let warnings = tracker.build_warnings();
 
@@ -2130,7 +2238,7 @@ fn coverage_tracker_respects_allowlist_for_warnings() {
     );
     let config = StateMachineConfig::default().with_coverage_allowlist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
 
     let warnings = tracker.build_warnings();
 
@@ -2147,7 +2255,7 @@ fn coverage_tracker_validate_returns_ok_when_rules_empty() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default();
     let tools = vec![tool];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     assert!(tracker.validate(&[]).is_ok());
 }
 
@@ -2156,7 +2264,7 @@ fn coverage_tracker_min_calls_per_tool_reports_failure() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default();
     let tools = vec![tool];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let error = tracker
         .validate(&[CoverageRule::min_calls_per_tool(1)])
         .expect_err("expected failure");
@@ -2185,7 +2293,7 @@ fn coverage_tracker_reports_no_uncalled_tools_failure() {
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
     let tools = vec![alpha, beta];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let error = tracker
         .validate(&[CoverageRule::no_uncalled_tools()])
         .expect_err("expected failure");
@@ -2205,7 +2313,7 @@ fn coverage_tracker_min_calls_per_tool_succeeds() {
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
     let tools = vec![tool];
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("echo");
     assert!(tracker
         .validate(&[CoverageRule::min_calls_per_tool(1)])
@@ -2225,7 +2333,7 @@ fn coverage_tracker_no_uncalled_tools_succeeds() {
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
     let tools = vec![tool];
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("echo");
     assert!(tracker
         .validate(&[CoverageRule::no_uncalled_tools()])
@@ -2254,7 +2362,7 @@ fn coverage_tracker_reports_percent_called_failure() {
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
     let tools = vec![alpha, beta];
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("alpha");
     let error = tracker
         .validate(&[CoverageRule::percent_called(100.0)])
@@ -2267,7 +2375,7 @@ fn coverage_tracker_rejects_invalid_percent_called() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default();
     let tools = vec![tool];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let error = tracker
         .validate(&[CoverageRule::percent_called(101.0)])
         .expect_err("expected failure");
@@ -2297,7 +2405,7 @@ fn coverage_tracker_percent_called_succeeds() {
     );
     let config = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
     let tools = vec![alpha, beta];
-    let mut tracker = CoverageTracker::new(&tools, &config);
+    let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("alpha");
     assert!(tracker
         .validate(&[CoverageRule::percent_called(50.0)])
@@ -2316,7 +2424,7 @@ fn coverage_tracker_skips_percent_called_when_no_callable_tools() {
         None,
     )];
     let config = StateMachineConfig::default();
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     assert!(tracker
         .validate(&[CoverageRule::percent_called(50.0)])
         .is_ok());
@@ -2328,7 +2436,7 @@ fn eligible_tools_respects_allowlist() {
     let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default().with_coverage_allowlist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let eligible = tracker.eligible_tools();
     assert_eq!(eligible.len(), 1);
     assert_eq!(eligible[0].name.as_ref(), "alpha");
@@ -2340,7 +2448,7 @@ fn eligible_tools_respects_blocklist() {
     let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
     let tools = vec![alpha, beta];
-    let tracker = CoverageTracker::new(&tools, &config);
+    let tracker = CoverageTracker::new(&tools, &config, 1);
     let eligible = tracker.eligible_tools();
     assert_eq!(eligible.len(), 1);
     assert_eq!(eligible[0].name.as_ref(), "beta");

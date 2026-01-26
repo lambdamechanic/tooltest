@@ -109,6 +109,7 @@ pub(super) async fn execute_state_machine_sequence(
             let _ = full_trace.pop();
         }
         full_trace.push(entry);
+        tracker.record_call(&invocation, &response);
         if response.is_error.unwrap_or(false) {
             tracker.record_failure(invocation.name.as_ref());
         } else {

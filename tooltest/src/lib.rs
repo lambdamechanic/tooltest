@@ -934,6 +934,7 @@ mod tests {
                     reason: CoverageWarningReason::MissingRequiredValue,
                 },
             ],
+            uncallable_traces: BTreeMap::new(),
         };
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -961,6 +962,7 @@ mod tests {
             counts: BTreeMap::new(),
             failures,
             warnings: Vec::new(),
+            uncallable_traces: BTreeMap::new(),
         };
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -1074,6 +1076,7 @@ mod tests {
             counts: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
+            uncallable_traces: BTreeMap::new(),
         };
         let result = RunResult {
             outcome: RunOutcome::Success,

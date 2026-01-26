@@ -581,6 +581,21 @@ pub enum CoverageWarningReason {
     MissingRequiredValue,
 }
 
+/// Recorded call details for tools with zero successes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UncallableToolCall {
+    /// Tool invocation input.
+    pub input: ToolInvocation,
+    /// Successful output payload, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<CallToolResult>,
+    /// Error payload when the tool returned an error result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CallToolResult>,
+    /// RFC3339 timestamp when the call completed.
+    pub timestamp: String,
+}
+
 /// Coverage report for state-machine runs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoverageReport {
@@ -590,6 +605,8 @@ pub struct CoverageReport {
     pub failures: BTreeMap<String, u64>,
     /// Coverage warnings for uncallable tools.
     pub warnings: Vec<CoverageWarning>,
+    /// Last N calls for tools with zero successes.
+    pub uncallable_traces: BTreeMap<String, Vec<UncallableToolCall>>,
 }
 
 /// Snapshot of the state-machine corpus.

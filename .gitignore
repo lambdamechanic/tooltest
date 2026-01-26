@@ -12,3 +12,15 @@
 .claude/
 .beads/
 .logs/
+.beads/*
+.beads/beads.base.jsonl
+.beads/beads.left.jsonl
+.beads/beads.base.meta.json
+.beads/beads.left.meta.json
+!.beads/*.jsonl
+.beads/.gitignore
+.beads/db.sqlite
+.beads/bd.db
+
+# bv (beads viewer) local config and caches
+.bv/

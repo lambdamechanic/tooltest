@@ -1,30 +1,24 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+# bd-shim v1
+# bd-hooks-version: 0.49.0
+#
+# bd (beads) pre-commit hook - thin shim
+#
+# This shim delegates to 'bd hook pre-commit' which contains
+# the actual hook logic. This pattern ensures hook behavior is always
+# in sync with the installed bd version - no manual updates needed.
+#
+# The 'bd hook' command (singular) supports:
+# - Per-worktree export state tracking
+# - Dolt branch-then-merge pattern for cell-level conflict resolution
+# - Hook chaining configuration
 
-export PATH="$HOME/.qlty/bin:$PATH"
-
-# Check if bd is available.
+# Check if bd is available
 if ! command -v bd >/dev/null 2>&1; then
-  echo "Warning: bd command not found, skipping pre-commit flush" >&2
-else
-  # Only run in bd workspaces.
-  if [ -d .beads ]; then
-    if ! bd sync --flush-only >/dev/null 2>&1; then
-      echo "Warning: Failed to flush bd changes to JSONL" >&2
-      echo "Run 'bd sync --flush-only' manually to diagnose" >&2
-    fi
-
-    for f in .beads/beads.jsonl .beads/issues.jsonl .beads/deletions.jsonl; do
-      [ -f "$f" ] && git add "$f" 2>/dev/null || true
-    done
-  fi
+    echo "Warning: bd command not found in PATH, skipping pre-commit hook" >&2
+    echo "  Install bd: brew install steveyegge/tap/bd" >&2
+    echo "  Or add bd to your PATH" >&2
+    exit 0
 fi
 
-if ! command -v qlty >/dev/null 2>&1; then
-  echo "qlty not found; install with: curl -fsSL https://qlty.sh | sh" >&2
-  exit 1
-fi
-
-cargo fmt --all -- --check
-cargo clippy --workspace -- -D warnings
-qlty check --all
+exec bd hook pre-commit "$@"

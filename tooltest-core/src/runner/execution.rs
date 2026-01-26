@@ -72,6 +72,7 @@ pub async fn run_with_session(
         trace: Vec::new(),
         coverage: None,
         corpus: None,
+        positive_error: false,
     }));
     let validators = Rc::new(validators);
     clear_reject_context();
@@ -150,6 +151,7 @@ pub async fn run_with_session(
                                 trace: Vec::new(),
                                 coverage: None,
                                 corpus: None,
+                                positive_error: true,
                             });
                         }
                         let mut tracker = CoverageTracker::new(&tools, &config.state_machine, config.uncallable_limit);
@@ -197,7 +199,11 @@ pub async fn run_with_session(
                         match result {
                             Ok(trace) => Ok(trace),
                             Err(mut failure) => {
-                                failure.coverage = Some(report);
+                                if failure.positive_error {
+                                    failure.coverage = None;
+                                } else {
+                                    failure.coverage = Some(report);
+                                }
                                 failure.corpus = corpus_report;
                                 Err(failure)
                             }

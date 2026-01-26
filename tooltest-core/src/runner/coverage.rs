@@ -236,9 +236,11 @@ impl<'a> CoverageTracker<'a> {
     }
 
     pub(super) fn validate(&self, rules: &[CoverageRule]) -> Result<(), CoverageValidationFailure> {
-        if rules.is_empty() {
-            return Ok(());
-        }
+        let effective_rules = if rules.is_empty() {
+            vec![CoverageRule::PercentCalled { min_percent: 100.0 }]
+        } else {
+            rules.to_vec()
+        };
 
         let eligible_tools = self.eligible_tools();
         let mut callable_tools = Vec::new();
@@ -248,7 +250,7 @@ impl<'a> CoverageTracker<'a> {
             }
         }
 
-        for rule in rules {
+        for rule in &effective_rules {
             match rule {
                 CoverageRule::MinCallsPerTool { min } => {
                     let mut violations = Vec::new();

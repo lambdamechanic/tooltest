@@ -68,6 +68,7 @@ pub(super) async fn execute_state_machine_sequence(
                     trace: failure_trace,
                     coverage: None,
                     corpus: None,
+                    positive_error: true,
                 });
             }
         };
@@ -89,6 +90,7 @@ pub(super) async fn execute_state_machine_sequence(
                         trace: full_trace.clone(),
                         coverage: None,
                         corpus: None,
+                        positive_error: true,
                     });
                 }
                 attach_failure_reason(&mut trace, reason.clone());
@@ -98,6 +100,7 @@ pub(super) async fn execute_state_machine_sequence(
                     trace: trace.clone(),
                     coverage: None,
                     corpus: None,
+                    positive_error: true,
                 });
             }
         };
@@ -125,6 +128,8 @@ pub(super) async fn execute_state_machine_sequence(
             &mut execution.warnings.borrow_mut(),
             &mut execution.warned_missing_structured.borrow_mut(),
         ) {
+            let positive_error = !(response.is_error.unwrap_or(false)
+                && execution.in_band_error_forbidden);
             if execution.full_trace {
                 attach_response(&mut full_trace, response.clone());
                 attach_failure_reason(&mut full_trace, reason.clone());
@@ -134,6 +139,7 @@ pub(super) async fn execute_state_machine_sequence(
                     trace: full_trace.clone(),
                     coverage: None,
                     corpus: None,
+                    positive_error,
                 });
             }
             attach_response(&mut trace, response.clone());
@@ -144,6 +150,7 @@ pub(super) async fn execute_state_machine_sequence(
                 trace: trace.clone(),
                 coverage: None,
                 corpus: None,
+                positive_error,
             });
         }
 
@@ -159,6 +166,7 @@ pub(super) async fn execute_state_machine_sequence(
                     trace: full_trace.clone(),
                     coverage: None,
                     corpus: None,
+                    positive_error: true,
                 });
             }
             attach_response(&mut trace, response.clone());
@@ -169,6 +177,7 @@ pub(super) async fn execute_state_machine_sequence(
                 trace: trace.clone(),
                 coverage: None,
                 corpus: None,
+                positive_error: true,
             });
         }
     }
@@ -186,6 +195,7 @@ pub(super) async fn execute_state_machine_sequence(
                     trace: full_trace.clone(),
                     coverage: None,
                     corpus: None,
+                    positive_error: false,
                 });
             }
             attach_failure_reason(&mut trace, reason.clone());
@@ -195,6 +205,7 @@ pub(super) async fn execute_state_machine_sequence(
                 trace: trace.clone(),
                 coverage: None,
                 corpus: None,
+                positive_error: false,
             });
         }
     }
@@ -208,6 +219,7 @@ pub(super) async fn execute_state_machine_sequence(
                 trace: full_trace.clone(),
                 coverage: None,
                 corpus: None,
+                positive_error: true,
             });
         }
         attach_failure_reason(&mut trace, reason.clone());
@@ -217,6 +229,7 @@ pub(super) async fn execute_state_machine_sequence(
             trace: trace.clone(),
             coverage: None,
             corpus: None,
+            positive_error: true,
         });
     }
 

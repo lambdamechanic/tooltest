@@ -1034,7 +1034,9 @@ async fn run_with_session_state_machine_allows_in_band_error_by_default() {
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new();
+    let config = RunConfig::new().with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -1055,7 +1057,9 @@ async fn run_with_session_state_machine_requires_structured_content_on_error_wit
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new();
+    let config = RunConfig::new().with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -1087,7 +1091,9 @@ async fn run_with_session_state_machine_accepts_structured_content_on_error_with
     };
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new();
+    let config = RunConfig::new().with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -1656,6 +1662,7 @@ fn finalize_state_machine_result_uses_fail_path() {
         trace: vec![trace_entry],
         coverage: None,
         corpus: None,
+        positive_error: false,
     }));
     let result = finalize_state_machine_result(
         Err(TestError::Fail(
@@ -1681,6 +1688,7 @@ fn finalize_state_machine_result_skips_minimized_without_invocations() {
         trace: Vec::new(),
         coverage: None,
         corpus: None,
+        positive_error: false,
     }));
     let result = finalize_state_machine_result(
         Err(TestError::Fail(
@@ -1709,6 +1717,7 @@ fn finalize_state_machine_result_includes_reject_context_on_abort() {
         trace: Vec::new(),
         coverage: None,
         corpus: None,
+        positive_error: false,
     }));
     let result = finalize_state_machine_result(
         Err(TestError::Abort("nope".into())),
@@ -1735,6 +1744,7 @@ fn finalize_state_machine_result_appends_reject_context() {
         trace: Vec::new(),
         coverage: None,
         corpus: None,
+        positive_error: false,
     }));
     let result = finalize_state_machine_result(
         Err(TestError::Abort("nope".into())),
@@ -2251,12 +2261,14 @@ fn coverage_tracker_respects_allowlist_for_warnings() {
 }
 
 #[test]
-fn coverage_tracker_validate_returns_ok_when_rules_empty() {
+fn coverage_tracker_validate_defaults_to_percent_called() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default();
     let tools = vec![tool];
     let tracker = CoverageTracker::new(&tools, &config, 1);
-    assert!(tracker.validate(&[]).is_ok());
+    let error = tracker.validate(&[]).expect_err("expected failure");
+    assert_eq!(error.details["rule"], "percent_called");
+    assert_eq!(error.details["min_percent"], 100.0);
 }
 
 #[test]

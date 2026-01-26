@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, InitializeResult, JsonRpcMessage,
     JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
     Tool,
 };
@@ -291,6 +291,9 @@ pub fn invalid_tool_stub(name: &str) -> Tool {
 }
 
 fn tool_response() -> CallToolResult {
+    if env::var_os("TOOLTEST_TEST_SERVER_CALL_ERROR").is_some() {
+        return CallToolResult::error(vec![Content::text("boom")]);
+    }
     CallToolResult::structured(json!({ "status": "ok" }))
 }
 

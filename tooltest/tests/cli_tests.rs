@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+use chrono::DateTime;
+use tooltest_core::RunResult;
 
 fn run_tooltest(args: &[&str]) -> Output {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
@@ -33,6 +35,13 @@ fn run_tooltest_json_allow_failure(args: &[&str]) -> (Output, serde_json::Value)
     let output = run_tooltest(args);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let payload = serde_json::from_str(stdout.trim()).expect("json output");
+    (output, payload)
+}
+
+fn run_tooltest_run_result_allow_failure(args: &[&str]) -> (Output, RunResult) {
+    let output = run_tooltest(args);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload = serde_json::from_str(stdout.trim()).expect("run result");
     (output, payload)
 }
 
@@ -270,11 +279,36 @@ fn stdio_command_reports_uncallable_traces_in_human_output() {
 }
 
 #[test]
+fn stdio_command_omits_uncallable_traces_by_default() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha,bravo",
+    ]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(!stdout.contains("Uncallable traces:"), "stdout: {stdout}");
+    assert!(!stdout.contains("Trace:"), "stdout: {stdout}");
+}
+
+#[test]
 fn stdio_command_reports_uncallable_traces_in_json() {
     let Some(server) = test_server() else {
         return;
     };
-    let (output, payload) = run_tooltest_json_allow_failure(&[
+    let (output, result) = run_tooltest_run_result_allow_failure(&[
         "--json",
         "--cases",
         "1",
@@ -291,18 +325,105 @@ fn stdio_command_reports_uncallable_traces_in_json() {
     ]);
 
     assert_eq!(output.status.code(), Some(1));
-    let coverage = payload["coverage"].as_object().expect("coverage");
-    let traces = coverage["uncallable_traces"]
-        .as_object()
-        .expect("uncallable traces");
+    let coverage = result.coverage.expect("coverage");
+    let traces = coverage.uncallable_traces;
     assert_eq!(traces.len(), 2, "uncallable traces: {traces:?}");
     let keys: Vec<_> = traces.keys().cloned().collect();
     let mut sorted = keys.clone();
     sorted.sort();
     assert_eq!(keys, sorted);
-    for value in traces.values() {
-        let calls = value.as_array().expect("uncallable trace list");
+    for calls in traces.values() {
         assert!(calls.is_empty(), "uncallable trace list: {calls:?}");
+    }
+}
+
+#[test]
+fn stdio_command_omits_uncallable_traces_in_json_by_default() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, result) = run_tooltest_run_result_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha,bravo",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let coverage = result.coverage.expect("coverage");
+    assert!(
+        coverage.uncallable_traces.is_empty(),
+        "uncallable traces: {:?}",
+        coverage.uncallable_traces
+    );
+    assert!(result.trace.is_empty(), "trace: {:?}", result.trace);
+}
+
+#[test]
+fn stdio_command_positive_error_omits_coverage_output() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, result) = run_tooltest_run_result_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_INVALID_OUTPUT_SCHEMA=1",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(result.coverage.is_none(), "coverage: {:?}", result.coverage);
+}
+
+#[test]
+fn stdio_command_parses_uncallable_trace_timestamps() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let (output, result) = run_tooltest_run_result_allow_failure(&[
+        "--json",
+        "--cases",
+        "1",
+        "--min-sequence-len",
+        "3",
+        "--max-sequence-len",
+        "3",
+        "--show-uncallable",
+        "--uncallable-limit",
+        "2",
+        "--state-machine-config",
+        r#"{"coverage_rules":[{"rule":"min_calls_per_tool","min":1}]}"#,
+        "stdio",
+        "--command",
+        server,
+        "--env",
+        "TOOLTEST_TEST_SERVER_CALL_ERROR=1",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let coverage = result.coverage.expect("coverage");
+    let calls = coverage
+        .uncallable_traces
+        .get("echo")
+        .expect("echo traces");
+    assert_eq!(calls.len(), 2, "calls: {calls:?}");
+    for call in calls {
+        let _ = DateTime::parse_from_rfc3339(&call.timestamp)
+            .expect("timestamp RFC3339");
     }
 }
 
@@ -1065,7 +1186,7 @@ fn trace_all_rejects_directory_path() {
 }
 
 #[test]
-fn state_machine_coverage_validation_failure_emits_details_and_trace() {
+fn state_machine_coverage_validation_failure_emits_details_without_trace() {
     let Some(server) = test_server() else {
         return;
     };
@@ -1092,7 +1213,7 @@ fn state_machine_coverage_validation_failure_emits_details_and_trace() {
     assert!(stdout.contains("Outcome: failure"));
     assert!(stdout.contains("Code: coverage_validation_failed"));
     assert!(stdout.contains("Details:"));
-    assert!(stdout.contains("Trace:"));
+    assert!(!stdout.contains("Trace:"), "stdout: {stdout}");
 }
 
 #[test]

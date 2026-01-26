@@ -10,7 +10,6 @@ use crate::{
     TraceEntry,
 };
 
-use super::assertions::attach_failure_reason;
 use super::coverage::{coverage_failure, CoverageTracker};
 use super::pre_run::run_pre_run_hook;
 use super::prepare::prepare_run;
@@ -241,8 +240,7 @@ pub async fn run_with_session(
             .borrow()
             .validate(&config.state_machine.coverage_rules)
         {
-            let mut trace = last_trace.borrow().clone();
-            attach_failure_reason(&mut trace, "coverage validation failed".to_string());
+            let trace = Vec::new();
             let mut report = aggregate_tracker.borrow().report();
             apply_uncallable_traces(&mut report, config.show_uncallable);
             let corpus_report = if config.state_machine.dump_corpus {

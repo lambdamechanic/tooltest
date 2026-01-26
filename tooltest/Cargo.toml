@@ -28,6 +28,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tooltest-core = { path = "../tooltest-core", version = "0.3.0" }
 
 [dev-dependencies]
+chrono = "0.4"
 serde_json = "1"
 tooltest-test-support = { path = "../tooltest-test-support" }
 toml = "0.8"

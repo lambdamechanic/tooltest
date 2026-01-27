@@ -59,9 +59,12 @@ pub async fn run_with_session(
     let warnings = Rc::new(RefCell::new(warnings));
     let warned_missing_structured = Rc::new(RefCell::new(std::collections::HashSet::new()));
     let aggregate_tools = tools.clone();
-    let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> = Rc::new(RefCell::new(
-        CoverageTracker::new(&aggregate_tools, &config.state_machine, config.uncallable_limit),
-    ));
+    let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> =
+        Rc::new(RefCell::new(CoverageTracker::new(
+            &aggregate_tools,
+            &config.state_machine,
+            config.uncallable_limit,
+        )));
     let last_trace: Rc<RefCell<Vec<TraceEntry>>> = Rc::new(RefCell::new(Vec::new()));
     last_trace.replace(prelude_trace.as_ref().clone());
     let last_coverage: Rc<RefCell<Option<CoverageReport>>> = Rc::new(RefCell::new(None));
@@ -153,7 +156,11 @@ pub async fn run_with_session(
                                 positive_error: true,
                             });
                         }
-                        let mut tracker = CoverageTracker::new(&tools, &config.state_machine, config.uncallable_limit);
+                        let mut tracker = CoverageTracker::new(
+                            &tools,
+                            &config.state_machine,
+                            config.uncallable_limit,
+                        );
                         let min_len = if config.state_machine.coverage_rules.is_empty() {
                             Some(*options.sequence_len.start())
                         } else {

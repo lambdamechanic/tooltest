@@ -403,12 +403,48 @@ fn format_run_result_human(result: &RunResult) -> String {
             output.push_str("Uncallable traces:\n");
             for (tool, calls) in &coverage.uncallable_traces {
                 output.push_str(&format!("- {tool}:\n"));
-                let payload =
-                    serde_json::to_string_pretty(calls).expect("serialize uncallable traces");
-                for line in payload.lines() {
-                    output.push_str("  ");
-                    output.push_str(line);
+                if calls.is_empty() {
+                    output.push_str("  (no calls)\n");
+                    continue;
+                }
+                for call in calls {
+                    output.push_str("  - timestamp: ");
+                    output.push_str(&call.timestamp);
                     output.push('\n');
+                    let arguments = call
+                        .input
+                        .arguments
+                        .clone()
+                        .map(serde_json::Value::Object)
+                        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let args_payload = serde_json::to_string_pretty(&arguments)
+                        .expect("serialize uncallable arguments");
+                    output.push_str("    arguments:\n");
+                    for line in args_payload.lines() {
+                        output.push_str("      ");
+                        output.push_str(line);
+                        output.push('\n');
+                    }
+                    if let Some(result) = call.output.as_ref() {
+                        let output_payload = serde_json::to_string_pretty(result)
+                            .expect("serialize uncallable output");
+                        output.push_str("    output:\n");
+                        for line in output_payload.lines() {
+                            output.push_str("      ");
+                            output.push_str(line);
+                            output.push('\n');
+                        }
+                    }
+                    if let Some(result) = call.error.as_ref() {
+                        let error_payload = serde_json::to_string_pretty(result)
+                            .expect("serialize uncallable error");
+                        output.push_str("    error:\n");
+                        for line in error_payload.lines() {
+                            output.push_str("      ");
+                            output.push_str(line);
+                            output.push('\n');
+                        }
+                    }
                 }
             }
         }
@@ -1032,10 +1068,10 @@ mod tests {
         let alpha_idx = output.find("- alpha:").expect("alpha");
         let beta_idx = output.find("- beta:").expect("beta");
         assert!(alpha_idx < beta_idx);
-        assert!(output.contains("\"timestamp\": \"2024-01-01T00:00:00Z\""));
-        assert!(output.contains("\"input\""));
-        assert!(output.contains("\"output\""));
-        assert!(output.contains("- beta:\n  []"));
+        assert!(output.contains("timestamp: 2024-01-01T00:00:00Z"));
+        assert!(output.contains("arguments:"));
+        assert!(output.contains("output:"));
+        assert!(output.contains("- beta:\n  (no calls)"));
     }
 
     #[test]

@@ -153,12 +153,9 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
 
     let path = temp_hook_path("per-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new()
-        .with_pre_run_hook(hook)
-        .with_state_machine(
-            StateMachineConfig::default()
-                .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-        );
+    let config = RunConfig::new().with_pre_run_hook(hook).with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 2,
         sequence_len: 1..=1,
@@ -181,12 +178,9 @@ async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
 
     let path = temp_hook_path("zero-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new()
-        .with_pre_run_hook(hook)
-        .with_state_machine(
-            StateMachineConfig::default()
-                .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-        );
+    let config = RunConfig::new().with_pre_run_hook(hook).with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 0,
         sequence_len: 1..=1,

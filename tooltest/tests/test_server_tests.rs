@@ -260,8 +260,10 @@ fn handle_message_includes_extra_tool_from_env() {
 fn handle_message_includes_multiple_extra_tools_from_env() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard =
-        EnvGuard::set("TOOLTEST_TEST_SERVER_EXTRA_TOOL", "alpha, ,bravo".to_string());
+    let _guard = EnvGuard::set(
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL",
+        "alpha, ,bravo".to_string(),
+    );
     let response = handle_message(list_tools_message()).expect("response");
     let tools = tools_from_list_response(response);
     assert!(tools.contains(&"alpha".to_string()));

@@ -1,8 +1,8 @@
+use chrono::DateTime;
 use std::env;
 use std::fs;
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use chrono::DateTime;
 use tooltest_core::RunResult;
 
 fn run_tooltest(args: &[&str]) -> Output {
@@ -265,10 +265,13 @@ fn stdio_command_reports_uncallable_traces_in_human_output() {
         if line == "Warnings:" || line == "Trace:" {
             break;
         }
-        if let Some(tool) = line.strip_prefix("- ").and_then(|line| line.strip_suffix(':')) {
+        if let Some(tool) = line
+            .strip_prefix("- ")
+            .and_then(|line| line.strip_suffix(':'))
+        {
             tools.push(tool.to_string());
             let next = lines.next().unwrap_or_default();
-            assert_eq!(next.trim(), "[]", "stdout: {stdout}");
+            assert_eq!(next.trim(), "(no calls)", "stdout: {stdout}");
         }
     }
 
@@ -416,14 +419,10 @@ fn stdio_command_parses_uncallable_trace_timestamps() {
 
     assert_eq!(output.status.code(), Some(1));
     let coverage = result.coverage.expect("coverage");
-    let calls = coverage
-        .uncallable_traces
-        .get("echo")
-        .expect("echo traces");
+    let calls = coverage.uncallable_traces.get("echo").expect("echo traces");
     assert_eq!(calls.len(), 2, "calls: {calls:?}");
     for call in calls {
-        let _ = DateTime::parse_from_rfc3339(&call.timestamp)
-            .expect("timestamp RFC3339");
+        let _ = DateTime::parse_from_rfc3339(&call.timestamp).expect("timestamp RFC3339");
     }
 }
 

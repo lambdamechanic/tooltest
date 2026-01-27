@@ -2117,14 +2117,8 @@ fn coverage_tracker_includes_empty_uncallable_trace_for_never_invoked_tool() {
     tracker.record_failure("alpha");
 
     let report = tracker.report();
-    let alpha_calls = report
-        .uncallable_traces
-        .get("alpha")
-        .expect("alpha traces");
-    let beta_calls = report
-        .uncallable_traces
-        .get("beta")
-        .expect("beta traces");
+    let alpha_calls = report.uncallable_traces.get("alpha").expect("alpha traces");
+    let beta_calls = report.uncallable_traces.get("beta").expect("beta traces");
     assert_eq!(alpha_calls.len(), 1);
     assert!(beta_calls.is_empty());
 }

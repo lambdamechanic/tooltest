@@ -1045,9 +1045,20 @@ mod tests {
             error: None,
             timestamp: "2024-01-01T00:00:00Z".to_string(),
         };
+        let error_invocation = ToolInvocation {
+            name: "gamma".into(),
+            arguments: None,
+        };
+        let error_call = UncallableToolCall {
+            input: error_invocation,
+            output: None,
+            error: Some(CallToolResult::error(vec![Content::text("boom")])),
+            timestamp: "2024-01-02T00:00:00Z".to_string(),
+        };
         let mut uncallable_traces = BTreeMap::new();
         uncallable_traces.insert("beta".to_string(), Vec::new());
         uncallable_traces.insert("alpha".to_string(), vec![call]);
+        uncallable_traces.insert("gamma".to_string(), vec![error_call]);
         let coverage = CoverageReport {
             counts: BTreeMap::new(),
             failures: BTreeMap::new(),
@@ -1067,11 +1078,15 @@ mod tests {
         assert!(output.contains("Uncallable traces:"));
         let alpha_idx = output.find("- alpha:").expect("alpha");
         let beta_idx = output.find("- beta:").expect("beta");
+        let gamma_idx = output.find("- gamma:").expect("gamma");
         assert!(alpha_idx < beta_idx);
+        assert!(beta_idx < gamma_idx);
         assert!(output.contains("timestamp: 2024-01-01T00:00:00Z"));
         assert!(output.contains("arguments:"));
         assert!(output.contains("output:"));
         assert!(output.contains("- beta:\n  (no calls)"));
+        assert!(output.contains("error:"));
+        assert!(output.contains("boom"));
     }
 
     #[test]

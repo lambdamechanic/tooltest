@@ -15,6 +15,7 @@ pub(super) struct FailureContext {
     pub(super) trace: Vec<TraceEntry>,
     pub(super) coverage: Option<CoverageReport>,
     pub(super) corpus: Option<CorpusReport>,
+    pub(super) positive_error: bool,
 }
 
 pub(super) fn failure_result(
@@ -74,7 +75,7 @@ pub(super) fn finalize_state_machine_result(
                 last_trace.borrow().clone(),
                 None,
                 warnings.to_vec(),
-                last_coverage.borrow().clone(),
+                None,
                 last_corpus.borrow().clone(),
             )
         }
@@ -87,12 +88,17 @@ pub(super) fn finalize_state_machine_result(
             } else {
                 Some(MinimizedSequence { invocations })
             };
+            let coverage = if failure.positive_error {
+                None
+            } else {
+                failure.coverage
+            };
             failure_result(
                 failure.failure,
                 trace,
                 minimized,
                 warnings.to_vec(),
-                failure.coverage,
+                coverage,
                 failure.corpus,
             )
         }

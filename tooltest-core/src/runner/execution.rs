@@ -10,7 +10,6 @@ use crate::{
     TraceEntry,
 };
 
-use super::assertions::attach_failure_reason;
 use super::coverage::{coverage_failure, CoverageTracker};
 use super::pre_run::run_pre_run_hook;
 use super::prepare::prepare_run;
@@ -60,9 +59,12 @@ pub async fn run_with_session(
     let warnings = Rc::new(RefCell::new(warnings));
     let warned_missing_structured = Rc::new(RefCell::new(std::collections::HashSet::new()));
     let aggregate_tools = tools.clone();
-    let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> = Rc::new(RefCell::new(
-        CoverageTracker::new(&aggregate_tools, &config.state_machine),
-    ));
+    let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> =
+        Rc::new(RefCell::new(CoverageTracker::new(
+            &aggregate_tools,
+            &config.state_machine,
+            config.uncallable_limit,
+        )));
     let last_trace: Rc<RefCell<Vec<TraceEntry>>> = Rc::new(RefCell::new(Vec::new()));
     last_trace.replace(prelude_trace.as_ref().clone());
     let last_coverage: Rc<RefCell<Option<CoverageReport>>> = Rc::new(RefCell::new(None));
@@ -72,6 +74,7 @@ pub async fn run_with_session(
         trace: Vec::new(),
         coverage: None,
         corpus: None,
+        positive_error: false,
     }));
     let validators = Rc::new(validators);
     clear_reject_context();
@@ -150,9 +153,14 @@ pub async fn run_with_session(
                                 trace: Vec::new(),
                                 coverage: None,
                                 corpus: None,
+                                positive_error: true,
                             });
                         }
-                        let mut tracker = CoverageTracker::new(&tools, &config.state_machine);
+                        let mut tracker = CoverageTracker::new(
+                            &tools,
+                            &config.state_machine,
+                            config.uncallable_limit,
+                        );
                         let min_len = if config.state_machine.coverage_rules.is_empty() {
                             Some(*options.sequence_len.start())
                         } else {
@@ -184,7 +192,8 @@ pub async fn run_with_session(
                         let (report, corpus_report) = {
                             let mut aggregate = aggregate_tracker.borrow_mut();
                             aggregate.merge_from(&tracker);
-                            let report = aggregate.report();
+                            let mut report = aggregate.report();
+                            apply_uncallable_traces(&mut report, config.show_uncallable);
                             let corpus_report = if config.state_machine.dump_corpus {
                                 Some(aggregate.corpus_report())
                             } else {
@@ -197,7 +206,11 @@ pub async fn run_with_session(
                         match result {
                             Ok(trace) => Ok(trace),
                             Err(mut failure) => {
-                                failure.coverage = Some(report);
+                                if failure.positive_error {
+                                    failure.coverage = None;
+                                } else {
+                                    failure.coverage = Some(report);
+                                }
                                 failure.corpus = corpus_report;
                                 Err(failure)
                             }
@@ -234,9 +247,9 @@ pub async fn run_with_session(
             .borrow()
             .validate(&config.state_machine.coverage_rules)
         {
-            let mut trace = last_trace.borrow().clone();
-            attach_failure_reason(&mut trace, "coverage validation failed".to_string());
-            let report = aggregate_tracker.borrow().report();
+            let trace = Vec::new();
+            let mut report = aggregate_tracker.borrow().report();
+            apply_uncallable_traces(&mut report, config.show_uncallable);
             let corpus_report = if config.state_machine.dump_corpus {
                 Some(aggregate_tracker.borrow().corpus_report())
             } else {
@@ -253,4 +266,10 @@ pub async fn run_with_session(
         }
     }
     run_result
+}
+
+fn apply_uncallable_traces(report: &mut CoverageReport, show_uncallable: bool) {
+    if !show_uncallable {
+        report.uncallable_traces.clear();
+    }
 }

@@ -27,6 +27,7 @@ regex-syntax = "0.8"
 rslint_regex = "0.3"
 tokio = { version = "1", features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
 nonempty = "0.10"
+chrono = "0.4"
 
 [dev-dependencies]
 axum = "0.7"

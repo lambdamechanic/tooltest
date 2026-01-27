@@ -399,6 +399,55 @@ fn format_run_result_human(result: &RunResult) -> String {
                 }
             }
         }
+        if !coverage.uncallable_traces.is_empty() {
+            output.push_str("Uncallable traces:\n");
+            for (tool, calls) in &coverage.uncallable_traces {
+                output.push_str(&format!("- {tool}:\n"));
+                if calls.is_empty() {
+                    output.push_str("  (no calls)\n");
+                    continue;
+                }
+                for call in calls {
+                    output.push_str("  - timestamp: ");
+                    output.push_str(&call.timestamp);
+                    output.push('\n');
+                    let arguments = call
+                        .input
+                        .arguments
+                        .clone()
+                        .map(serde_json::Value::Object)
+                        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let args_payload = serde_json::to_string_pretty(&arguments)
+                        .expect("serialize uncallable arguments");
+                    output.push_str("    arguments:\n");
+                    for line in args_payload.lines() {
+                        output.push_str("      ");
+                        output.push_str(line);
+                        output.push('\n');
+                    }
+                    if let Some(result) = call.output.as_ref() {
+                        let output_payload = serde_json::to_string_pretty(result)
+                            .expect("serialize uncallable output");
+                        output.push_str("    output:\n");
+                        for line in output_payload.lines() {
+                            output.push_str("      ");
+                            output.push_str(line);
+                            output.push('\n');
+                        }
+                    }
+                    if let Some(result) = call.error.as_ref() {
+                        let error_payload = serde_json::to_string_pretty(result)
+                            .expect("serialize uncallable error");
+                        output.push_str("    error:\n");
+                        for line in error_payload.lines() {
+                            output.push_str("      ");
+                            output.push_str(line);
+                            output.push('\n');
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if !result.warnings.is_empty() {
@@ -521,7 +570,7 @@ mod tests {
     use tooltest_core::{
         list_tools_http, list_tools_stdio, list_tools_with_session, CorpusReport, CoverageReport,
         CoverageWarning, HttpConfig, ListToolsError, RunFailure, RunWarning, RunWarningCode,
-        SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry,
+        SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry, UncallableToolCall,
     };
     use tooltest_test_support::{
         stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
@@ -561,6 +610,21 @@ mod tests {
         let cli = Cli::parse_from(["tooltest", "http", "--url", "http://127.0.0.1:0/mcp"]);
         assert!(!cli.show_uncallable);
         assert_eq!(cli.uncallable_limit, 1);
+    }
+
+    #[test]
+    fn cli_parses_uncallable_flags() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--show-uncallable",
+            "--uncallable-limit",
+            "3",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        assert!(cli.show_uncallable);
+        assert_eq!(cli.uncallable_limit, 3);
     }
 
     #[test]
@@ -919,6 +983,7 @@ mod tests {
                     reason: CoverageWarningReason::MissingRequiredValue,
                 },
             ],
+            uncallable_traces: BTreeMap::new(),
         };
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -946,6 +1011,7 @@ mod tests {
             counts: BTreeMap::new(),
             failures,
             warnings: Vec::new(),
+            uncallable_traces: BTreeMap::new(),
         };
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -960,6 +1026,67 @@ mod tests {
         assert!(output.contains("Coverage failures:"));
         assert!(output.contains("- alpha: 2"));
         assert!(!output.contains("- beta: 0"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_uncallable_traces() {
+        let invocation = ToolInvocation {
+            name: "alpha".into(),
+            arguments: Some(
+                serde_json::json!({ "value": 1 })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            ),
+        };
+        let call = UncallableToolCall {
+            input: invocation,
+            output: Some(CallToolResult::success(vec![Content::text("ok")])),
+            error: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let error_invocation = ToolInvocation {
+            name: "gamma".into(),
+            arguments: None,
+        };
+        let error_call = UncallableToolCall {
+            input: error_invocation,
+            output: None,
+            error: Some(CallToolResult::error(vec![Content::text("boom")])),
+            timestamp: "2024-01-02T00:00:00Z".to_string(),
+        };
+        let mut uncallable_traces = BTreeMap::new();
+        uncallable_traces.insert("beta".to_string(), Vec::new());
+        uncallable_traces.insert("alpha".to_string(), vec![call]);
+        uncallable_traces.insert("gamma".to_string(), vec![error_call]);
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            warnings: Vec::new(),
+            uncallable_traces,
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: Some(coverage),
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Uncallable traces:"));
+        let alpha_idx = output.find("- alpha:").expect("alpha");
+        let beta_idx = output.find("- beta:").expect("beta");
+        let gamma_idx = output.find("- gamma:").expect("gamma");
+        assert!(alpha_idx < beta_idx);
+        assert!(beta_idx < gamma_idx);
+        assert!(output.contains("timestamp: 2024-01-01T00:00:00Z"));
+        assert!(output.contains("arguments:"));
+        assert!(output.contains("output:"));
+        assert!(output.contains("- beta:\n  (no calls)"));
+        assert!(output.contains("error:"));
+        assert!(output.contains("boom"));
     }
 
     #[test]
@@ -1059,6 +1186,7 @@ mod tests {
             counts: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
+            uncallable_traces: BTreeMap::new(),
         };
         let result = RunResult {
             outcome: RunOutcome::Success,

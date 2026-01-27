@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
+    CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, InitializeResult, JsonRpcMessage,
     JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo, ServerJsonRpcMessage, ServerResult,
     Tool,
 };
@@ -170,7 +170,13 @@ pub fn handle_message(message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMess
             ClientRequest::ListToolsRequest(_) => {
                 let mut tools = Vec::new();
                 if let Ok(extra_tool) = env::var("TOOLTEST_TEST_SERVER_EXTRA_TOOL") {
-                    tools.push(tool_stub_with_name(&extra_tool));
+                    for name in extra_tool.split(',') {
+                        let name = name.trim();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        tools.push(tool_stub_with_name(name));
+                    }
                 }
                 if env::var_os("TOOLTEST_TEST_SERVER_INVALID_TOOL").is_some() {
                     tools.push(invalid_tool_stub("invalid"));
@@ -285,6 +291,9 @@ pub fn invalid_tool_stub(name: &str) -> Tool {
 }
 
 fn tool_response() -> CallToolResult {
+    if env::var_os("TOOLTEST_TEST_SERVER_CALL_ERROR").is_some() {
+        return CallToolResult::error(vec![Content::text("boom")]);
+    }
     CallToolResult::structured(json!({ "status": "ok" }))
 }
 

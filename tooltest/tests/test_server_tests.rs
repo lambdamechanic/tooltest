@@ -23,6 +23,7 @@ const EXPECTATION_ENV_KEYS: &[&str] = &[
     "FORCE_CWD_ERROR",
     "TOOLTEST_INVALID_OUTPUT_SCHEMA",
     "TOOLTEST_REQUIRE_VALUE",
+    "TOOLTEST_TEST_SERVER_CALL_ERROR",
     "TOOLTEST_TEST_SERVER_NO_EXIT",
     "TOOLTEST_TEST_SERVER_NO_STDIN",
     "TOOLTEST_TEST_SERVER_STDIN",
@@ -256,6 +257,21 @@ fn handle_message_includes_extra_tool_from_env() {
 }
 
 #[test]
+fn handle_message_includes_multiple_extra_tools_from_env() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set(
+        "TOOLTEST_TEST_SERVER_EXTRA_TOOL",
+        "alpha, ,bravo".to_string(),
+    );
+    let response = handle_message(list_tools_message()).expect("response");
+    let tools = tools_from_list_response(response);
+    assert!(tools.contains(&"alpha".to_string()));
+    assert!(tools.contains(&"bravo".to_string()));
+    assert!(tools.contains(&"echo".to_string()));
+}
+
+#[test]
 fn handle_message_includes_invalid_tool_when_enabled() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
@@ -381,10 +397,34 @@ fn run_server_skips_unhandled_requests() {
 
 #[test]
 fn run_server_handles_call_tool_request() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
     let mut lines = vec![Ok(call_tool_line())].into_iter();
     let mut output = Vec::new();
     run_server(&mut lines, &mut output);
     assert!(!output.is_empty());
+}
+
+#[test]
+fn run_server_handles_call_tool_request_with_error() {
+    let _lock = ENV_LOCK.lock().expect("lock env");
+    reset_env();
+    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_CALL_ERROR", "1".to_string());
+    let mut lines = vec![Ok(call_tool_line())].into_iter();
+    let mut output = Vec::new();
+    run_server(&mut lines, &mut output);
+
+    let payload = String::from_utf8(output).expect("utf8");
+    let response: ServerJsonRpcMessage = serde_json::from_str(payload.trim()).expect("json");
+    match response {
+        ServerJsonRpcMessage::Response(response) => match response.result {
+            ServerResult::CallToolResult(result) => {
+                assert!(result.is_error.unwrap_or(false));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        },
+        other => panic!("unexpected message: {other:?}"),
+    }
 }
 
 #[test]

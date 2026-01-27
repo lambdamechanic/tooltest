@@ -119,7 +119,9 @@ async fn run_with_session_returns_minimized_failure() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new();
+    let config = RunConfig::new().with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -151,7 +153,9 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
 
     let path = temp_hook_path("per-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new().with_pre_run_hook(hook);
+    let config = RunConfig::new().with_pre_run_hook(hook).with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 2,
         sequence_len: 1..=1,
@@ -174,7 +178,9 @@ async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
 
     let path = temp_hook_path("zero-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new().with_pre_run_hook(hook);
+    let config = RunConfig::new().with_pre_run_hook(hook).with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 0,
         sequence_len: 1..=1,
@@ -331,7 +337,9 @@ async fn run_with_session_zero_cases_without_pre_run_hook_succeeds() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new();
+    let config = RunConfig::new().with_state_machine(
+        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
+    );
     let options = RunnerOptions {
         cases: 0,
         sequence_len: 1..=1,
@@ -654,6 +662,34 @@ async fn run_with_session_executes_allowlist_and_blocklist_filters() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_defaults_to_percent_called_rule() {
+    let alpha = tool_with_schemas("alpha", json!({ "type": "object" }), None);
+    let beta = tool_with_schemas("beta", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new_with_tools(vec![alpha, beta], response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let config = RunConfig::new().with_state_machine(StateMachineConfig::default());
+
+    let result = crate::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
+        }
+        _ => panic!("expected failure"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_fails_on_coverage_validation_rule() {
     let tool = tool_with_schemas(
         "echo",
@@ -692,6 +728,7 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
         }
         _ => panic!("expected failure"),
     }
+    assert!(result.coverage.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -729,6 +766,39 @@ async fn run_with_session_coverage_failure_includes_corpus_dump() {
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
     assert!(result.corpus.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_suppresses_coverage_on_positive_error() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object" }),
+        Some(json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "const": "ok" }
+            },
+            "required": ["status"]
+        })),
+    );
+    let response = CallToolResult::structured(json!({ "status": "bad" }));
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let config = RunConfig::new().with_state_machine(StateMachineConfig::default());
+
+    let result = crate::run_with_session(
+        &driver,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+
+    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(result.coverage.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -794,7 +864,9 @@ async fn run_with_session_allows_error_responses_and_excludes_from_coverage_by_d
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(3)]);
+    let state_machine = StateMachineConfig::default()
+        .with_seed_numbers(vec![Number::from(3)])
+        .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]);
     let config = RunConfig::new().with_state_machine(state_machine);
 
     let result = crate::run_with_session(
@@ -1015,6 +1087,7 @@ async fn run_with_session_reports_tool_error_response_when_forbidden() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(result.coverage.is_none(), "coverage: {:?}", result.coverage);
 }
 
 #[tokio::test(flavor = "multi_thread")]

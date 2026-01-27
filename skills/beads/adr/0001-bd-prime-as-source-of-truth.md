@@ -1,4 +1,4 @@
-# ADR-0001: Use bd prime as CLI Reference Source of Truth
+# ADR-0001: Use br --help as CLI Reference Source of Truth
 
 ## Status
 
@@ -6,48 +6,43 @@ Accepted
 
 ## Context
 
-The beads skill maintained CLI reference documentation in multiple locations:
+This skill avoids duplicating detailed CLI syntax in multiple places:
 
-- `SKILL.md` inline (~2,000+ words of CLI reference)
-- `references/CLI_REFERENCE.md` (~2,363 words)
+- `SKILL.md` inline
+- Resource files
 - Scattered examples throughout resource files
 
-This created:
+Duplicating CLI syntax creates:
 - **Duplication**: Same commands documented 2-3 times
-- **Drift risk**: Documentation can fall behind bd versions
-- **Token overhead**: ~3,000+ tokens loaded even for simple operations
+- **Drift risk**: Documentation can fall behind br versions
+- **Token overhead**: Large docs get loaded even for simple operations
 
-Meanwhile, bd provides `bd prime` which generates AI-optimized workflow context automatically.
+Meanwhile, br provides structured CLI help via `br --help` and `br <command> --help`.
 
 ## Decision
 
-Use `bd prime` as the single source of truth for CLI commands:
+Use `br --help` as the single source of truth for CLI commands:
 
 1. **SKILL.md** contains only value-add content (decision frameworks, cognitive patterns)
-2. **CLI reference** points to `bd prime` (auto-loaded by hooks) and `bd --help`
-3. **Resources** provide depth for advanced features (molecules, agents, gates)
+2. **CLI reference** points to `br --help` and `br <command> --help`
+3. **Resources** provide depth for conceptual guidance and patterns
 
 ## Consequences
 
 ### Positive
 
-- **Zero maintenance**: CLI docs auto-update with bd versions
+- **Zero maintenance**: CLI docs auto-update with br versions
 - **DRY**: Single source of truth
 - **Accurate**: No version drift possible
 - **Lighter SKILL.md**: ~500 words vs ~3,300
 
 ### Negative
 
-- **Dependency on bd prime format**: If output changes significantly, may need adaptation
-- **External tool requirement**: Skill assumes bd is installed
+- **External tool requirement**: Skill assumes br is installed
 
 ## Implementation
 
-Files restructured:
-- `SKILL.md` — Reduced from 3,306 to ~500 words
-- `references/` → `resources/` — Directory rename for consistency
-- New resources added: `agents.md`, `async-gates.md`, `chemistry-patterns.md`, `worktrees.md`
-- Existing resources preserved with path updates
+Files structured so `SKILL.md` stays short and the CLI remains discoverable via `br --help`.
 
 ## Related
 
@@ -56,4 +51,4 @@ Files restructured:
 
 ## Date
 
-2025-01-02
+2026-01-27

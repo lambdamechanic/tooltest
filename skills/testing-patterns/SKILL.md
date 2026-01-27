@@ -208,7 +208,7 @@ When in doubt, assume reviewers will ask “where’s the property test?” and 
 
 ## Property-Based Testing Workflow (proptest)
 
-When you add or refresh property tests, approach the work like a mini bd task—not a plan-tool exercise. Claim/track the effort via `bd` (`ready` → `update ... --status in_progress` → `close`), and keep the following loop tight:
+When you add or refresh property tests, approach the work like a mini br issue - not a plan-tool exercise. Claim/track the effort via `br` (`ready` -> `update ... --status in_progress` -> `close`), and keep the following loop tight:
 
 1. **Identify high-value properties.** Start with the public API or core modules. Look for invariants (round trips, idempotence, ordering guarantees, etc.) that actually buy us something. Skip trivial wrappers.
 2. **Study how the code is used.** Before writing a property, grep the repo to see how that function/struct is consumed so your strategy stays within real-world preconditions.
@@ -217,7 +217,7 @@ When you add or refresh property tests, approach the work like a mini bd task—
 5. **Run and reflect.** `cargo test` (or the specific crate) with the new property tests. If a proptest failure exposes a gap, either fix the bug or constrain the strategy with a documented reason.
 
 Keep the tests maintainable: name the property after the behavior it documents, describe why the invariant matters in a short comment when it isn’t obvious, and prefer deterministic shrink-friendly strategies. The expectation is that every non-trivial business rule eventually has a companion `proptest!` block living next to its unit tests.
-When you record notes or TODOs for these efforts, put them in the bd issue itself so the history stays alongside the task—no side trackers, no plan tool usage, no Hypothesis snippets.
+When you record notes or TODOs for these efforts, put them in the br issue itself so the history stays alongside the task - no side trackers, no plan tool usage, no Hypothesis snippets.
 
 ---
 

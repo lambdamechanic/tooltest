@@ -2,51 +2,51 @@
 
 ## Architecture Decisions
 
-ADRs in `adr/` document key decisions. These are NOT loaded during skill invocation—they're reference material for maintainers making changes.
+ADRs in `adr/` document key decisions. These are NOT loaded during skill invocation - they're reference material for maintainers making changes.
 
 | ADR | Decision |
 |-----|----------|
-| [ADR-0001](adr/0001-bd-prime-as-source-of-truth.md) | Use `bd prime` as CLI reference source of truth |
+| [ADR-0001](adr/0001-bd-prime-as-source-of-truth.md) | Use `br --help` as the CLI reference source of truth |
 
-## Key Principle: DRY via bd prime
+## Key Principle: DRY via br --help
 
-**NEVER duplicate CLI documentation in SKILL.md or resources.**
+Do not duplicate detailed CLI syntax in `SKILL.md` or resources.
 
-- `bd prime` outputs AI-optimized workflow context
-- `bd <command> --help` provides specific usage
-- Both auto-update with bd releases
+- `br --help` provides the top-level command set
+- `br <command> --help` provides specific usage
+- The upstream repo README documents install and sync semantics
 
 **SKILL.md should only contain:**
-- Decision frameworks (bd vs TodoWrite)
+- Decision frameworks (br vs TodoWrite)
 - Prerequisites (install verification)
 - Resource index (progressive disclosure)
-- Pointers to `bd prime` and `--help`
+- Pointers to `br --help`
 
 ## Keeping the Skill Updated
 
-### When bd releases new version:
+### When br releases a new version:
 
-1. **Check for new features**: `bd --help` for new commands
+1. **Check for new features**: `br --help` for new commands
 2. **Update SKILL.md frontmatter**: `version: "X.Y.Z"`
-3. **Add resources for conceptual features** (agents, gates, chemistry patterns)
-4. **Don't add CLI reference** — that's `bd prime`'s job
+3. **Add resources for conceptual features** only when needed
+4. **Don't add CLI reference** - that's `br --help`'s job
 
 ### What belongs in resources:
 
 | Content Type | Belongs in Resources? | Why |
 |--------------|----------------------|-----|
-| Conceptual frameworks | ✅ Yes | bd prime doesn't explain "when to use" |
+| Conceptual frameworks | ✅ Yes | `br --help` doesn't explain "when to use" |
 | Decision trees | ✅ Yes | Cognitive guidance, not CLI reference |
 | Advanced patterns | ✅ Yes | Depth beyond `--help` |
-| CLI command syntax | ❌ No | Use `bd <cmd> --help` |
-| Workflow checklists | ❌ No | `bd prime` covers this |
+| CLI command syntax | ❌ No | Use `br <cmd> --help` |
+| Workflow checklists | ❌ No | Keep in project `AGENTS.md` if needed |
 
 ### Resource update checklist:
 
 ```
-[ ] Check if bd prime now covers this content
+[ ] Check if br docs / `br --help` now cover this content
 [ ] If yes, remove from resources (avoid duplication)
-[ ] If no, update resource for new bd version
+[ ] If no, update resource for new br version
 [ ] Update version compatibility in README.md
 ```
 
@@ -71,8 +71,8 @@ wc -w skills/beads/SKILL.md  # Target: 400-600 words
 # Verify links resolve
 # (Manual check: ensure all resource links in SKILL.md exist)
 
-# Verify bd prime still works
-bd prime | head -20
+# Spot check the CLI surface
+br --help | head -20
 ```
 
 ## Attribution

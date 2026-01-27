@@ -19,7 +19,16 @@ Use this skill whenever you touch delivery end-to-end - from grabbing a br issue
 ## 1. Select & Claim the br Issue
 
 - If `.beads/beads.db` is missing (fresh clone, new worktree, etc.), run `br sync --import-only --db .beads/beads.db` from the repo root so the local database hydrates from `.beads/issues.jsonl` before listing work.
+- If the `beads-sync` worktree is missing, recreate it with a sparse checkout of only `/.beads/`:
+  ```bash
+  git fetch origin beads-sync:beads-sync || git branch beads-sync
+  git worktree add --no-checkout .git/beads-worktrees/beads-sync beads-sync
+  git -C .git/beads-worktrees/beads-sync sparse-checkout init --cone
+  git -C .git/beads-worktrees/beads-sync sparse-checkout set /.beads
+  git -C .git/beads-worktrees/beads-sync checkout beads-sync
+  ```
 - You may be handed an issue: if so, choose that one. Otherwise, run `br ready --json --limit 0` before asking for work; respect blockers/dependencies, pick the first ready issue and claim it. `br update <id> --status in_progress --notes "Starting work on ${issue title}"`.
+- Default selection mechanism: `bv -robot-next` (or `bv -robot-triage` for full context). Map the selected `id` to `br show <id>` and `br update <id> --status in_progress`. Ignore embedded `bd` claim/show commands in the `bv` output.
 - Export and commit the `.beads/issues.jsonl` changes immediately on `main` and push. This avoids multiple agents pulling the same issue. If you get a conflict, revert the `.beads/issues.jsonl` changes, pull with rebase, and try again.
 - Read the issue (and linked docs) end-to-end. Confirm acceptance criteria, implicit contracts, and dependent tasks. It is possible it is in a partially complete state: if so, pick up where it was left off.
 - Clarify gaps before coding. Update the br issue with questions or new discoveries so history lives in `.beads/issues.jsonl`. Again, push these changes (and only these changes) directly to `main`.

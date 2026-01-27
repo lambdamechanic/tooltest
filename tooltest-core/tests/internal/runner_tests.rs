@@ -1093,6 +1093,7 @@ async fn run_with_session_reports_tool_error_response_when_forbidden() {
     .await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
+    assert!(result.coverage.is_none(), "coverage: {:?}", result.coverage);
 }
 
 #[tokio::test(flavor = "multi_thread")]

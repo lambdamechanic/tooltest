@@ -128,8 +128,7 @@ pub(super) async fn execute_state_machine_sequence(
             &mut execution.warnings.borrow_mut(),
             &mut execution.warned_missing_structured.borrow_mut(),
         ) {
-            let positive_error = !(response.is_error.unwrap_or(false)
-                && execution.in_band_error_forbidden);
+            let positive_error = true;
             if execution.full_trace {
                 attach_response(&mut full_trace, response.clone());
                 attach_failure_reason(&mut full_trace, reason.clone());

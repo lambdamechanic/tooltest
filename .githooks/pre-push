@@ -1,19 +1,187 @@
 #!/usr/bin/env sh
-# bd-shim v1
-# bd-hooks-version: 0.49.0
-#
-# bd (beads) pre-push hook - thin shim
-#
-# This shim delegates to 'bd hooks run pre-push' which contains
-# the actual hook logic. This pattern ensures hook behavior is always
-# in sync with the installed bd version - no manual updates needed.
 
-# Check if bd is available
-if ! command -v bd >/dev/null 2>&1; then
-    echo "Warning: bd command not found in PATH, skipping pre-push hook" >&2
-    echo "  Install bd: brew install steveyegge/tap/bd" >&2
-    echo "  Or add bd to your PATH" >&2
+set -u
+
+if [ "${BR_BEADS_SYNC_MAINTENANCE:-}" = "1" ]; then
     exit 0
 fi
 
-exec bd hooks run pre-push "$@"
+remote_name=${1:-}
+if [ -z "$remote_name" ]; then
+    echo "Error: pre-push requires a remote name." >&2
+    exit 1
+fi
+
+if ! command -v br >/dev/null 2>&1; then
+    echo "Error: br command not found in PATH; pre-push requires br." >&2
+    echo "  Install br or add it to your PATH before pushing." >&2
+    exit 1
+fi
+
+if ! br sync --flush-only; then
+    echo "Error: br sync --flush-only failed; aborting push." >&2
+    exit 1
+fi
+
+if ! git diff --quiet -- .beads/issues.jsonl; then
+    echo "Error: .beads/issues.jsonl has uncommitted changes after flush." >&2
+    echo "  Commit .beads/issues.jsonl before pushing." >&2
+    exit 1
+fi
+
+if ! git diff --cached --quiet -- .beads/issues.jsonl; then
+    echo "Error: .beads/issues.jsonl is staged but not committed." >&2
+    echo "  Commit .beads/issues.jsonl before pushing." >&2
+    exit 1
+fi
+
+if [ "$remote_name" != "origin" ]; then
+    exit 0
+fi
+
+beads_worktree=".git/beads-worktrees/beads-sync"
+max_attempts=3
+remote_has_branch=0
+
+ensure_beads_branch() {
+    if git show-ref --verify --quiet refs/heads/beads-sync; then
+        return 0
+    fi
+
+    if [ "$remote_has_branch" -eq 1 ]; then
+        git branch beads-sync "$remote_name/beads-sync" >/dev/null 2>&1
+        return $?
+    fi
+
+    git branch beads-sync HEAD >/dev/null 2>&1
+}
+
+ensure_beads_worktree() {
+    if [ -e "$beads_worktree/.git" ]; then
+        return 0
+    fi
+
+    if ! ensure_beads_branch; then
+        return 1
+    fi
+
+    if ! git worktree add --no-checkout "$beads_worktree" beads-sync >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" sparse-checkout init --cone >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" sparse-checkout set /.beads >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" checkout beads-sync >/dev/null 2>&1; then
+        return 1
+    fi
+}
+
+write_remote_jsonl() {
+    jsonl_path=$1
+
+    if [ "$remote_has_branch" -eq 1 ]; then
+        if git show "$remote_name/beads-sync:.beads/issues.jsonl" > "$jsonl_path" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    if [ -f .beads/issues.jsonl ]; then
+        cp .beads/issues.jsonl "$jsonl_path"
+        return 0
+    fi
+
+    : > "$jsonl_path"
+}
+
+attempt=1
+while [ "$attempt" -le "$max_attempts" ]; do
+    remote_has_branch=0
+    if git ls-remote --exit-code "$remote_name" refs/heads/beads-sync >/dev/null 2>&1; then
+        remote_has_branch=1
+        if ! git fetch "$remote_name" beads-sync >/dev/null 2>&1; then
+            echo "Error: failed to fetch beads-sync from $remote_name." >&2
+            exit 1
+        fi
+    fi
+
+    if ! ensure_beads_worktree; then
+        echo "Error: failed to create beads-sync worktree at $beads_worktree." >&2
+        exit 1
+    fi
+
+    if [ "$remote_has_branch" -eq 1 ]; then
+        if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" checkout -B beads-sync "$remote_name/beads-sync" >/dev/null 2>&1; then
+            echo "Error: failed to check out beads-sync branch in worktree." >&2
+            exit 1
+        fi
+    else
+        if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" checkout -B beads-sync >/dev/null 2>&1; then
+            echo "Error: failed to check out beads-sync branch in worktree." >&2
+            exit 1
+        fi
+    fi
+
+    if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" reset --hard >/dev/null 2>&1; then
+        echo "Error: failed to reset beads-sync worktree." >&2
+        exit 1
+    fi
+
+    if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" sparse-checkout set /.beads >/dev/null 2>&1; then
+        echo "Error: failed to enforce sparse-checkout for beads-sync." >&2
+        exit 1
+    fi
+
+    if ! mkdir -p "$beads_worktree/.beads"; then
+        echo "Error: failed to ensure $beads_worktree/.beads directory." >&2
+        exit 1
+    fi
+
+    tmp_jsonl=$(mktemp "${TMPDIR:-/tmp}/beads-sync.XXXXXX.jsonl")
+    if ! write_remote_jsonl "$tmp_jsonl"; then
+        echo "Error: failed to prepare beads-sync JSONL." >&2
+        rm -f "$tmp_jsonl"
+        exit 1
+    fi
+
+    if ! BEADS_JSONL="$tmp_jsonl" br sync --merge --allow-external-jsonl; then
+        echo "Error: br sync --merge failed; aborting push." >&2
+        rm -f "$tmp_jsonl"
+        exit 1
+    fi
+
+    if ! BR_BEADS_SYNC_MAINTENANCE=1 cp "$tmp_jsonl" "$beads_worktree/.beads/issues.jsonl"; then
+        echo "Error: failed to update beads-sync JSONL." >&2
+        rm -f "$tmp_jsonl"
+        exit 1
+    fi
+
+    rm -f "$tmp_jsonl"
+
+    BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" add .beads/issues.jsonl >/dev/null 2>&1
+
+    if ! git -C "$beads_worktree" diff --cached --quiet -- .beads/issues.jsonl; then
+        if ! BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" commit -m "Sync .beads/issues.jsonl" >/dev/null 2>&1; then
+            echo "Error: failed to commit .beads/issues.jsonl to beads-sync." >&2
+            exit 1
+        fi
+    fi
+
+    if BR_BEADS_SYNC_MAINTENANCE=1 git -C "$beads_worktree" push "$remote_name" beads-sync >/dev/null 2>&1; then
+        exit 0
+    fi
+
+    attempt=$((attempt + 1))
+    if [ "$attempt" -le "$max_attempts" ]; then
+        echo "Warning: beads-sync push failed; retrying (attempt $attempt of $max_attempts)." >&2
+    fi
+
+done
+
+echo "Error: failed to push beads-sync to $remote_name after $max_attempts attempts." >&2
+exit 1

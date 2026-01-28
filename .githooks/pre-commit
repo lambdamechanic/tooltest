@@ -2,6 +2,10 @@
 
 set -u
 
+if [ "${BR_BEADS_SYNC_MAINTENANCE:-}" = "1" ]; then
+    exit 0
+fi
+
 if ! command -v br >/dev/null 2>&1; then
     echo "Error: br command not found in PATH; pre-commit requires br." >&2
     echo "  Install br or add it to your PATH before committing." >&2

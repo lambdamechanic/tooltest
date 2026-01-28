@@ -35,7 +35,7 @@ Minimal behaviors to replicate:
 Hooks also actively maintain `beads-sync`:
 - The mirror update happens during `git push` (pre-push), not during `git commit` (no network in pre-commit).
 - Canonical issue state remains `.beads/issues.jsonl` tracked on `main`; `beads-sync` is a mirror branch that always matches the last published `.beads/issues.jsonl`.
-- After a successful flush, commit `.beads/issues.jsonl` to the `beads-sync` branch (in the sparse worktree) and push to the same remote as the push (typically `origin/beads-sync`).
+- After a successful flush, reconcile against `origin/beads-sync` with `br sync --merge`, commit `.beads/issues.jsonl` to the `beads-sync` branch (in the sparse worktree), and push to `origin` only.
 - Hard-block only when publishing (`git commit`, `git push`). Import hooks warn and never block checkout/pull.
 - Prevent recursion by ensuring commits performed inside the `beads-sync` worktree do not re-enter beads-sync maintenance.
 

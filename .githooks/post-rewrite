@@ -13,4 +13,4 @@ if [ -z "$base_ref" ]; then
     exit 0
 fi
 
-"$(dirname "$0")/_br_sync_import.sh" "merge" "$base_ref" "HEAD"
+"$(dirname "$0")/_br_sync_import.sh" "rewrite" "$base_ref" "HEAD"

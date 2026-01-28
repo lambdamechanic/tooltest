@@ -27,7 +27,7 @@ warnings=0
 echo "Checking for remaining bd references (must be 0)..."
 
 # Check for bd command references
-bd_refs=$(grep -c '`bd ' "$file" 2>/dev/null || echo "0")
+bd_refs=$(grep -c '`bd ' "$file" 2>/dev/null || true)
 if [[ "$bd_refs" -gt 0 ]]; then
     echo "  ✗ FAIL: Found $bd_refs \`bd\` command references"
     grep -n '`bd ' "$file" | head -3 | sed 's/^/    /'
@@ -37,7 +37,7 @@ else
 fi
 
 # Check for bd sync specifically
-bd_sync=$(grep -c 'bd sync' "$file" 2>/dev/null || echo "0")
+bd_sync=$(grep -c 'bd sync' "$file" 2>/dev/null || true)
 if [[ "$bd_sync" -gt 0 ]]; then
     echo "  ✗ FAIL: Found $bd_sync 'bd sync' references"
     grep -n 'bd sync' "$file" | head -3 | sed 's/^/    /'
@@ -47,7 +47,7 @@ else
 fi
 
 # Check for bd-### issue IDs
-bd_ids=$(grep -c 'bd-[0-9]' "$file" 2>/dev/null || echo "0")
+bd_ids=$(grep -c 'bd-[0-9]' "$file" 2>/dev/null || true)
 if [[ "$bd_ids" -gt 0 ]]; then
     echo "  ✗ FAIL: Found $bd_ids 'bd-###' issue ID references"
     grep -n 'bd-[0-9]' "$file" | head -3 | sed 's/^/    /'
@@ -57,7 +57,7 @@ else
 fi
 
 # Check for daemon references (should be removed)
-daemon_refs=$(grep -ci 'daemon' "$file" 2>/dev/null || echo "0")
+daemon_refs=$(grep -ci 'daemon' "$file" 2>/dev/null || true)
 if [[ "$daemon_refs" -gt 0 ]]; then
     echo "  ⚠ WARN: Found $daemon_refs daemon references (br has no daemon)"
     warnings=$((warnings + 1))
@@ -67,13 +67,13 @@ echo ""
 
 # === Check if file has beads content ===
 
-has_beads=$(grep -c 'beads\|\.beads\|br ready\|br sync' "$file" 2>/dev/null || echo "0")
+has_beads=$(grep -c 'beads\|\.beads\|br ready\|br sync' "$file" 2>/dev/null || true)
 
 if [[ "$has_beads" -gt 0 ]]; then
     echo "Checking for required br patterns (file has beads content)..."
 
     # Check for br sync --flush-only
-    br_sync=$(grep -c 'br sync --flush-only' "$file" 2>/dev/null || echo "0")
+    br_sync=$(grep -c 'br sync --flush-only' "$file" 2>/dev/null || true)
     if [[ "$br_sync" -eq 0 ]]; then
         echo "  ⚠ WARN: No 'br sync --flush-only' found (expected if file has sync sections)"
         warnings=$((warnings + 1))
@@ -81,20 +81,31 @@ if [[ "$has_beads" -gt 0 ]]; then
         echo "  ✓ PASS: Found $br_sync 'br sync --flush-only' references"
     fi
 
-    # Check for git add .beads/
-    git_add=$(grep -c 'git add .beads/' "$file" 2>/dev/null || echo "0")
+    # Check for git add .beads/ (or documented hook-based staging)
+    git_add=$(grep -c 'git add .beads/' "$file" 2>/dev/null || true)
+    hook_notes_line1=$(grep -ciE '(hooksPath|\\.githooks|pre-commit|pre-push).*(issues\\.jsonl|beads-sync)' "$file" 2>/dev/null || true)
+    hook_notes_line2=$(grep -ciE '(issues\\.jsonl|beads-sync).*(hooksPath|\\.githooks|pre-commit|pre-push)' "$file" 2>/dev/null || true)
+    hook_notes=$((hook_notes_line1 + hook_notes_line2))
     if [[ "$git_add" -eq 0 && "$br_sync" -gt 0 ]]; then
-        echo "  ⚠ WARN: No 'git add .beads/' found (required after br sync)"
-        warnings=$((warnings + 1))
+        if [[ "$hook_notes" -gt 0 ]]; then
+            echo "  ✓ PASS: Hook-based staging documented; git add step optional"
+        else
+            echo "  ⚠ WARN: No 'git add .beads/' found (required after br sync)"
+            warnings=$((warnings + 1))
+        fi
     elif [[ "$git_add" -gt 0 ]]; then
         echo "  ✓ PASS: Found $git_add 'git add .beads/' references"
     fi
 
-    # Check for non-invasive note
-    note=$(grep -c 'non-invasive' "$file" 2>/dev/null || echo "0")
+    # Check for non-invasive note (or hook-based staging note)
+    note=$(grep -c 'non-invasive' "$file" 2>/dev/null || true)
     if [[ "$note" -eq 0 ]]; then
-        echo "  ⚠ WARN: No non-invasive note found"
-        warnings=$((warnings + 1))
+        if [[ "$hook_notes" -gt 0 ]]; then
+            echo "  ✓ PASS: Hook-based staging documented; non-invasive note optional"
+        else
+            echo "  ⚠ WARN: No non-invasive note found"
+            warnings=$((warnings + 1))
+        fi
     else
         echo "  ✓ PASS: Non-invasive note present"
     fi

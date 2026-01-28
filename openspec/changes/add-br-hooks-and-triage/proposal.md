@@ -22,7 +22,7 @@ This mismatch makes the "default path" confusing: agents see `br` in docs, but t
   - Use the returned `id` with `br show` / `br update --status in_progress` (ignore bv's embedded `bd` commands)
 - Ensure hooks actively maintain the `beads-sync` worktree/branch and hard-block on failures:
   - Flush/import uses `br sync --flush-only` / `br sync --import-only`
-  - The hook commits `.beads/issues.jsonl` on `beads-sync` and pushes to the same remote as the push (typically `origin/beads-sync`)
+  - The hook reconciles against `origin/beads-sync` using `br sync --merge`, then commits `.beads/issues.jsonl` on `beads-sync` and pushes to `origin` only
   - Publish steps (`git commit`, `git push`) hard-block on failure; import hooks warn and never block
 
 ## Impact

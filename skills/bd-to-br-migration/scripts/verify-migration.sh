@@ -83,7 +83,9 @@ if [[ "$has_beads" -gt 0 ]]; then
 
     # Check for git add .beads/ (or documented hook-based staging)
     git_add=$(grep -c 'git add .beads/' "$file" 2>/dev/null || true)
-    hook_notes=$(grep -ciE 'hooksPath|\\.githooks|pre-commit|pre-push|beads-sync' "$file" 2>/dev/null || true)
+    hook_notes_line1=$(grep -ciE '(hooksPath|\\.githooks|pre-commit|pre-push).*(issues\\.jsonl|beads-sync)' "$file" 2>/dev/null || true)
+    hook_notes_line2=$(grep -ciE '(issues\\.jsonl|beads-sync).*(hooksPath|\\.githooks|pre-commit|pre-push)' "$file" 2>/dev/null || true)
+    hook_notes=$((hook_notes_line1 + hook_notes_line2))
     if [[ "$git_add" -eq 0 && "$br_sync" -gt 0 ]]; then
         if [[ "$hook_notes" -gt 0 ]]; then
             echo "  ✓ PASS: Hook-based staging documented; git add step optional"

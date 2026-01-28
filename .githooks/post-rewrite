@@ -2,33 +2,15 @@
 
 set -u
 
-if [ "${BR_BEADS_SYNC_MAINTENANCE:-}" = "1" ]; then
-    exit 0
-fi
-
-base=""
+base_ref=""
 if git rev-parse -q --verify ORIG_HEAD >/dev/null 2>&1; then
-    base="ORIG_HEAD"
+    base_ref="ORIG_HEAD"
 elif git rev-parse -q --verify HEAD@{1} >/dev/null 2>&1; then
-    base="HEAD@{1}"
+    base_ref="HEAD@{1}"
 fi
 
-if [ -z "$base" ]; then
+if [ -z "$base_ref" ]; then
     exit 0
 fi
 
-if ! git diff --name-only "$base" HEAD -- .beads/issues.jsonl | grep -q .; then
-    exit 0
-fi
-
-if ! command -v br >/dev/null 2>&1; then
-    echo "Warning: br command not found; skipping post-rewrite import." >&2
-    echo "  Run 'br sync --import-only' manually once br is available." >&2
-    exit 0
-fi
-
-if ! br sync --import-only; then
-    echo "Warning: br sync --import-only failed after rewrite." >&2
-    echo "  Run 'br sync --import-only' manually to recover." >&2
-    exit 0
-fi
+"$(dirname "$0")/_br_sync_import.sh" "rewrite" "$base_ref" "HEAD"

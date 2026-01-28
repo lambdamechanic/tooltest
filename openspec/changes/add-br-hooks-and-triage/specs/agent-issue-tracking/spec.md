@@ -32,12 +32,19 @@ The system SHALL provide br-native git hooks that keep the local `br` SQLite DB 
 - **AND** the hook is a no-op when `.beads/issues.jsonl` did not change
 
 #### Scenario: Push updates beads-sync mirror branch
-- **WHEN** a user runs `git push`
+- **WHEN** a user runs `git push` to `origin`
 - **THEN** the pre-push hook flushes pending changes via `br sync --flush-only`
 - **AND** the hook hard-blocks if `.beads/issues.jsonl` is modified in the working tree after the flush (i.e., would require committing `.beads/issues.jsonl` before pushing)
-- **AND** the hook updates the `beads-sync` mirror branch to match the committed `.beads/issues.jsonl` being pushed
-- **AND** the hook creates or hard-resets the mirror branch as needed to match the committed file content
-- **AND** the hook pushes the mirror branch to the same remote as the push (e.g., `origin/beads-sync`)
+- **AND** the hook fetches `origin/beads-sync` when it exists
+- **AND** the hook reconciles the committed `.beads/issues.jsonl` with the remote mirror using `br sync --merge`
+- **AND** the hook updates the `beads-sync` mirror branch to match the merged `.beads/issues.jsonl`
+- **AND** the hook pushes the mirror branch back to `origin` (i.e., `origin/beads-sync`)
+
+#### Scenario: Push to non-origin skips beads-sync mirror update
+- **WHEN** a user runs `git push` to a remote other than `origin`
+- **THEN** the pre-push hook still flushes pending changes via `br sync --flush-only`
+- **AND** the hook hard-blocks if `.beads/issues.jsonl` is modified in the working tree after the flush
+- **AND** the hook does not update or push the `beads-sync` mirror branch for that remote
 
 #### Scenario: Hooks hard-block only on publish steps
 - **WHEN** the pre-commit hook cannot flush via `br`

@@ -2,6 +2,9 @@
 
 set -u
 
+# BR_BEADS_SYNC_MAINTENANCE=1 is set during beads-sync worktree maintenance
+# to prevent recursive hook invocation.
+
 hook_name=${1:-}
 base_ref=${2:-}
 head_ref=${3:-}

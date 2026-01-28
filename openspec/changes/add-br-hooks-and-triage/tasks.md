@@ -10,7 +10,7 @@
 - [x] 2.3 Implement `beads-sync` maintenance in hooks (hard-block):
   - ensure the `beads-sync` sparse worktree exists
   - commit `.beads/issues.jsonl` on `beads-sync`
-  - push `beads-sync` to the same remote as the push (typically `origin/beads-sync`)
+  - push `beads-sync` to `origin` only (i.e., `origin/beads-sync`)
   - ensure recursion guards prevent re-entering beads-sync maintenance during the mirror update
 
 ## 3. Validation

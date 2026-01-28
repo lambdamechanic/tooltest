@@ -39,9 +39,9 @@ if [[ -n "$id_files" ]]; then
 fi
 
 # Count summary
-bd_count=$(echo "$bd_files" | grep -c . 2>/dev/null || echo "0")
-sync_count=$(echo "$sync_files" | grep -c . 2>/dev/null || echo "0")
-id_count=$(echo "$id_files" | grep -c . 2>/dev/null || echo "0")
+bd_count=$(echo "$bd_files" | grep -c . 2>/dev/null || true)
+sync_count=$(echo "$sync_files" | grep -c . 2>/dev/null || true)
+id_count=$(echo "$id_files" | grep -c . 2>/dev/null || true)
 
 echo "=== Summary ==="
 echo "Files with bd commands: $bd_count"
@@ -50,7 +50,7 @@ echo "Files with bd-### IDs: $id_count"
 
 # Unique files needing migration
 all_files=$(echo -e "$bd_files\n$sync_files\n$id_files" | grep -v '^$' | sort -u || true)
-total=$(echo "$all_files" | grep -c . 2>/dev/null || echo "0")
+total=$(echo "$all_files" | grep -c . 2>/dev/null || true)
 echo ""
 echo "Total unique files needing migration: $total"
 

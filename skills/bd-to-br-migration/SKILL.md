@@ -9,7 +9,7 @@ description: >-
 
 # bd → br Migration
 
-> **Core Philosophy:** One behavioral change, mechanical transforms. The ONLY difference is git handling—everything else is find-replace.
+> **Core Philosophy:** One behavioral change, mechanical transforms. The ONLY difference is git handling—everything else is find-replace. Repo-owned hooks may handle git steps, but `br` itself never does.
 
 ## Why This Matters
 
@@ -27,7 +27,7 @@ Apply transforms IN THIS ORDER (order matters):
 2. Add non-invasive note after beads section header
 3. Commands: `bd X` → `br X` for ready/list/show/create/update/close/dep/stats
 4. Sync command: `bd sync` → `br sync --flush-only`
-5. Add git steps after EVERY sync:
+5. Add git steps after EVERY sync (unless repo hooks already stage/commit `.beads/issues.jsonl`):
    git add .beads/
    git commit -m "sync beads"
 6. Issue IDs: bd-### → br-### in thread_ids, subjects, reasons, commits
@@ -36,7 +36,8 @@ Apply transforms IN THIS ORDER (order matters):
 Remove completely:
 - Daemon references
 - Auto-commit assumptions
-- Hook installation mentions
+- `bd hook` / `bd hooks` shim references
+- `bd` hook installation instructions
 - RPC mode
 
 Keep unchanged:
@@ -102,6 +103,8 @@ What are you migrating?
 Everything else is literally s/bd/br/g
 ```
 
+Note: Some repos install br-native hooks that stage/commit `.beads/issues.jsonl` during commit/push. In those cases, document the hook behavior instead of repeating manual git steps.
+
 ---
 
 ## Command Map
@@ -127,8 +130,10 @@ Everything else is literally s/bd/br/g
 **Add immediately after any beads section header:**
 
 ```markdown
-**Note:** `br` is non-invasive and never executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit`.
+**Note:** `br` is non-invasive and never executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit` unless repo hooks already handle staging/committing `.beads/issues.jsonl` (see local AGENTS.md).
 ```
+
+If the file already documents hook-based staging/commits for `.beads/issues.jsonl`, the note can be omitted.
 
 ### Pattern 2: Sync Command Transform
 
@@ -208,7 +213,7 @@ grep -c '`bd ' file.md
 grep -c 'bd sync' file.md
 grep -c 'bd ready' file.md
 
-# MUST return > 0 (if file has sync sections):
+# MUST return > 0 (if file has sync sections and no hook-based staging is documented):
 grep -c 'br sync --flush-only' file.md
 grep -c 'git add .beads/' file.md
 ```
@@ -241,7 +246,7 @@ This is a **deterministic transformation**. There is ONE correct output for each
 |---------|------------|---------------|
 | "bd daemon" | br has no daemon | `grep -i daemon` |
 | "auto-commits" | br never commits | `grep -i "auto.*commit"` |
-| "git hooks" | br installs none | `grep -i "hook"` |
+| "bd hook shims" | repo owns hooks, not bd | `grep -i "bd hook"` |
 | "RPC mode" | br has no RPC | `grep -i "rpc"` |
 
 ---
@@ -327,6 +332,8 @@ Key invariants:
 
 # Quick check (should return nothing)
 grep '`bd ' /path/to/AGENTS.md
+
+If a doc relies on repo-owned hooks for `.beads/issues.jsonl` staging/commits, ensure that is explicitly mentioned so verification warnings are intentional.
 ```
 
 If any bd references remain → migration incomplete → re-apply transforms.

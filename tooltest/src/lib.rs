@@ -506,6 +506,7 @@ fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
         RunWarningCode::MissingStructuredContent => "missing_structured_content",
         RunWarningCode::TooManyTools => "too_many_tools",
         RunWarningCode::ResponseTooLarge => "response_too_large",
+        _ => "unknown",
     }
 }
 

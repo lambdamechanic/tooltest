@@ -129,9 +129,7 @@ pub(super) fn check_response_size(
     warnings: &mut Vec<RunWarning>,
     warned_large_responses: &mut std::collections::HashSet<String>,
 ) -> Option<String> {
-    let Some(max_bytes) = max_bytes else {
-        return None;
-    };
+    let max_bytes = max_bytes?;
     let response_bytes = serde_json::to_string(response)
         .map(|s| s.len())
         .unwrap_or(0);

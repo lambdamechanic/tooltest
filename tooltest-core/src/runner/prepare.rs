@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::{RunConfig, RunFailure, RunResult, RunWarning, RunWarningCode, SessionDriver, Tool, TraceEntry};
+use crate::{
+    RunConfig, RunFailure, RunResult, RunWarning, RunWarningCode, SessionDriver, Tool, TraceEntry,
+};
 
 use super::pre_run::run_pre_run_hook;
 use super::result::failure_result;

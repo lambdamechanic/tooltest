@@ -597,6 +597,7 @@ pub trait TraceSink: Send + Sync {
 /// Structured warning codes for tooltest runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RunWarningCode {
     SchemaUnsupportedKeyword,
     MissingStructuredContent,

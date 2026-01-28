@@ -50,7 +50,7 @@ ensure_beads_branch() {
 }
 
 ensure_beads_worktree() {
-    if [ -d "$beads_worktree/.git" ]; then
+    if [ -e "$beads_worktree/.git" ]; then
         return 0
     fi
 

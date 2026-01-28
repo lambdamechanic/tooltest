@@ -1,8 +1,7 @@
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, HttpConfig, PreRunHook, ResponseAssertion, RunConfig,
-    RunOutcome, RunnerOptions, SequenceAssertion, SessionDriver, StateMachineConfig, StdioConfig,
-    TraceEntry,
+    RunOutcome, RunnerOptions, SequenceAssertion, StateMachineConfig, StdioConfig, TraceEntry,
 };
 use axum::Router;
 use rmcp::handler::server::{
@@ -24,18 +23,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::test_support::connect_runner_transport;
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
-
-async fn connect_runner_transport(
-    transport: RunnerTransport,
-) -> Result<SessionDriver, crate::SessionError> {
-    SessionDriver::connect_with_transport::<
-        RunnerTransport,
-        std::convert::Infallible,
-        rmcp::transport::TransportAdapterIdentity,
-    >(transport)
-    .await
-}
 
 #[derive(Clone)]
 struct HttpTestServer {

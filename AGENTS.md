@@ -28,6 +28,15 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/
 
 First-time setup (fresh clone/new worktree): if `.beads/beads.db` is missing, run `br sync --import-only --db .beads/beads.db` to hydrate from `.beads/issues.jsonl`.
 
+Beads-sync worktree setup (fresh clone or missing worktree):
+```bash
+git fetch origin beads-sync:beads-sync || git branch beads-sync
+git worktree add --no-checkout .git/beads-worktrees/beads-sync beads-sync
+git -C .git/beads-worktrees/beads-sync sparse-checkout init --cone
+git -C .git/beads-worktrees/beads-sync sparse-checkout set /.beads
+git -C .git/beads-worktrees/beads-sync checkout beads-sync
+```
+
 ## Quick Reference
 
 ```bash
@@ -93,6 +102,10 @@ This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_view
 # View issues (launches TUI - avoid in automated sessions)
 bv
 
+# Robot triage (default selection mechanism)
+bv -robot-next
+bv -robot-triage
+
 # CLI commands for agents (use these instead)
 br ready                    # Show issues ready to work (no blockers)
 br list --status open        # All open issues
@@ -106,7 +119,10 @@ br sync --flush-only         # Export issue changes to .beads/issues.jsonl
 
 ### Workflow Pattern
 
-1. **Start**: Run `br ready` to find actionable work
+1. **Start**: Run `bv -robot-next` (or `bv -robot-triage` for full context), then map the selected `id` to:
+   - `br show <id>`
+   - `br update <id> --status in_progress`
+   - Ignore any embedded `bd` claim/show commands in `bv` output.
 2. **Claim**: Use `br update <id> --status in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `br close <id>`

@@ -19,9 +19,18 @@
         "owner": "steveyegge",
         "repo": "beads",
         "addedAt": "2026-01-07T01:30:28.788496405+00:00"
+      },
+      {
+        "key": "github.com/Dicklesworthstone/beads_rust",
+        "alias": "Dicklesworthstone/beads_rust",
+        "url": "https://github.com/Dicklesworthstone/beads_rust",
+        "host": "github.com",
+        "owner": "Dicklesworthstone",
+        "repo": "beads_rust",
+        "addedAt": "2026-01-28T02:26:34.711860285+00:00"
       }
     ],
-    "updatedAt": "2026-01-07T01:30:28.788497244+00:00"
+    "updatedAt": "2026-01-28T02:26:34.711876506+00:00"
   },
   "skills": [
     {
@@ -73,7 +82,17 @@
       "commit": "c43682f5b602c61928866e8ef4b175ecc29e025e",
       "digest": "sha256:6855a41a6254fdb722019ca9fc8bce9835c3a41aeaabb05d6d6fa5ce68b2f4ae",
       "installedAt": "2026-01-07T01:30:28.785666298+00:00"
+    },
+    {
+      "installName": "bd-to-br-migration",
+      "source": {
+        "repoKey": "github.com/Dicklesworthstone/beads_rust",
+        "skillPath": "skills/bd-to-br-migration"
+      },
+      "commit": "385a6fb709b076dd2b50709704db4ec7e2c85776",
+      "digest": "sha256:de4727136a9d956637f0d605be7d82e1846d51944ca3e56f3f36440d7f858cda",
+      "installedAt": "2026-01-28T02:27:33.012636723+00:00"
     }
   ],
-  "generatedAt": "2026-01-07T01:30:56.560550652+00:00"
+  "generatedAt": "2026-01-28T02:27:33.012905508+00:00"
 }

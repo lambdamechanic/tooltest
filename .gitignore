@@ -10,14 +10,14 @@
 # Gas Town (added by gt)
 .runtime/
 .claude/
-.beads/
 .logs/
 .beads/*
 .beads/beads.base.jsonl
 .beads/beads.left.jsonl
 .beads/beads.base.meta.json
 .beads/beads.left.meta.json
-!.beads/*.jsonl
+# Only track the canonical exported issues file; everything else under .beads is local state.
+!.beads/issues.jsonl
 .beads/.gitignore
 .beads/db.sqlite
 .beads/bd.db

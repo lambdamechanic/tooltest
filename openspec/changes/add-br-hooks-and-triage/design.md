@@ -29,12 +29,15 @@ Because `br` does not provide a `hook`/`hooks` subcommand, the repo will own the
 
 Minimal behaviors to replicate:
 - pre-commit: `br sync --flush-only` and `git add .beads/issues.jsonl` (if present)
-- post-merge/post-checkout: `br sync --import-only` when `.beads/issues.jsonl` changed
-- pre-push: hard-block if `.beads/issues.jsonl` is not flushed and/or `beads-sync` cannot be updated and pushed
+- post-merge/post-checkout/post-rewrite: `br sync --import-only` when `.beads/issues.jsonl` changed
+- pre-push: hard-block if `.beads/issues.jsonl` is not flushed and committed and/or `beads-sync` cannot be updated and pushed
 
 Hooks also actively maintain `beads-sync`:
-- After a flush, commit `.beads/issues.jsonl` to the `beads-sync` branch (in the sparse worktree) and push to `origin/beads-sync`.
-- Hard-block if any `br` or git step fails.
+- The mirror update happens during `git push` (pre-push), not during `git commit` (no network in pre-commit).
+- Canonical issue state remains `.beads/issues.jsonl` tracked on `main`; `beads-sync` is a mirror branch that always matches the last published `.beads/issues.jsonl`.
+- After a successful flush, commit `.beads/issues.jsonl` to the `beads-sync` branch (in the sparse worktree) and push to the same remote as the push (typically `origin/beads-sync`).
+- Hard-block only when publishing (`git commit`, `git push`). Import hooks warn and never block checkout/pull.
+- Prevent recursion by ensuring commits performed inside the `beads-sync` worktree do not re-enter beads-sync maintenance.
 
 ### 3) Default triage flow uses bv robot outputs
 For "what next?", prefer:
@@ -44,8 +47,8 @@ For "what next?", prefer:
 Then use the `id` field with `br`.
 
 ## Risks / Trade-offs
-- If we keep `.beads/issues.jsonl` tracked on `main`, we must define how `beads-sync` interacts with it (mirror vs canonical).
-- Hard-blocking hooks can be disruptive, especially when offline; this workflow explicitly chooses correctness over convenience.
+- Mirror branches can drift if someone force-pushes or edits `beads-sync` manually; hooks should treat `beads-sync` as a mirror and reset/recreate it as needed.
+- Hard-blocking publish hooks can be disruptive; this workflow chooses correctness for commit/push while keeping checkout/pull usable (warn-only imports).
 - `bv` emitting `bd` commands can confuse; docs must clearly instruct to ignore those fields and use `br`.
 
 ## Migration Plan

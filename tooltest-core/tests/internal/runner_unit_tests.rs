@@ -94,6 +94,9 @@ async fn execute_sequence_for_test(
         full_trace: false,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 0,
         trace_sink: None,
     };
@@ -1253,6 +1256,9 @@ async fn execute_state_machine_sequence_full_trace_success_records_trace() {
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 7,
         trace_sink: Some(sink.clone()),
     };
@@ -1289,6 +1295,9 @@ async fn execute_state_machine_sequence_full_trace_reports_generation_error() {
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 3,
         trace_sink: Some(sink.clone()),
     };
@@ -1328,6 +1337,9 @@ async fn execute_state_machine_sequence_full_trace_reports_session_error() {
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 2,
         trace_sink: Some(sink.clone()),
     };
@@ -1368,6 +1380,9 @@ async fn execute_state_machine_sequence_full_trace_reports_default_assertion_fai
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 0,
         trace_sink: None,
     };
@@ -1413,6 +1428,9 @@ async fn execute_state_machine_sequence_full_trace_reports_response_assertion_fa
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 0,
         trace_sink: None,
     };
@@ -1454,6 +1472,9 @@ async fn execute_state_machine_sequence_full_trace_reports_sequence_assertion_fa
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 0,
         trace_sink: None,
     };
@@ -1492,6 +1513,9 @@ async fn execute_state_machine_sequence_full_trace_fails_on_minimum_length_short
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        warned_large_responses: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        max_response_bytes: None,
+        max_response_bytes_fail: false,
         case_index: 0,
         trace_sink: None,
     };

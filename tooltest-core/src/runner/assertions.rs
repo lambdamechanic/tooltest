@@ -120,6 +120,41 @@ pub(super) fn apply_sequence_assertions(
     None
 }
 
+/// Check if response exceeds size limit. Returns failure reason if fail mode, else adds warning.
+pub(super) fn check_response_size(
+    invocation: &ToolInvocation,
+    response: &CallToolResult,
+    max_bytes: Option<usize>,
+    fail_on_exceed: bool,
+    warnings: &mut Vec<RunWarning>,
+    warned_large_responses: &mut std::collections::HashSet<String>,
+) -> Option<String> {
+    let Some(max_bytes) = max_bytes else {
+        return None;
+    };
+    let response_bytes = serde_json::to_string(response)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    if response_bytes > max_bytes {
+        let tool_name = invocation.name.as_ref();
+        let message = format!(
+            "tool '{}' response is {} bytes, which exceeds the limit of {} bytes",
+            tool_name, response_bytes, max_bytes
+        );
+        if fail_on_exceed {
+            return Some(message);
+        }
+        if warned_large_responses.insert(tool_name.to_string()) {
+            warnings.push(RunWarning {
+                code: RunWarningCode::ResponseTooLarge,
+                message,
+                tool: Some(tool_name.to_string()),
+            });
+        }
+    }
+    None
+}
+
 pub(super) fn attach_response(trace: &mut [TraceEntry], response: CallToolResult) {
     if let Some(TraceEntry::ToolCall { response: slot, .. }) = trace.last_mut() {
         *slot = Some(response);

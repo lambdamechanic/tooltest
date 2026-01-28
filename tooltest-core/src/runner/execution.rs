@@ -58,6 +58,7 @@ pub async fn run_with_session(
     let assertions = config.assertions.clone();
     let warnings = Rc::new(RefCell::new(warnings));
     let warned_missing_structured = Rc::new(RefCell::new(std::collections::HashSet::new()));
+    let warned_large_responses = Rc::new(RefCell::new(std::collections::HashSet::new()));
     let aggregate_tools = tools.clone();
     let aggregate_tracker: Rc<RefCell<CoverageTracker<'_>>> =
         Rc::new(RefCell::new(CoverageTracker::new(
@@ -138,6 +139,7 @@ pub async fn run_with_session(
         let aggregate_tracker = aggregate_tracker.clone();
         let warnings = warnings.clone();
         let warned_missing_structured = warned_missing_structured.clone();
+        let warned_large_responses = warned_large_responses.clone();
         let trace_sink = config.trace_sink.clone();
         let case_counter = Rc::new(RefCell::new(0u64));
         move |sequence| {
@@ -183,6 +185,9 @@ pub async fn run_with_session(
                             full_trace: config.full_trace,
                             warnings: warnings.clone(),
                             warned_missing_structured: warned_missing_structured.clone(),
+                            warned_large_responses: warned_large_responses.clone(),
+                            max_response_bytes: config.max_response_bytes,
+                            max_response_bytes_fail: config.max_response_bytes_fail,
                             case_index,
                             trace_sink: trace_sink.clone(),
                         };

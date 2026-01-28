@@ -306,6 +306,14 @@ pub struct RunConfig {
     pub uncallable_limit: usize,
     /// Optional trace sink for streaming per-case traces.
     pub trace_sink: Option<Arc<dyn TraceSink>>,
+    /// Maximum number of tools before warning (None = no limit).
+    pub max_tool_count: Option<usize>,
+    /// Fail instead of warn when tool count exceeds limit.
+    pub max_tool_count_fail: bool,
+    /// Maximum response size in bytes before warning (None = no limit).
+    pub max_response_bytes: Option<usize>,
+    /// Fail instead of warn when response size exceeds limit.
+    pub max_response_bytes_fail: bool,
 }
 
 impl RunConfig {
@@ -326,6 +334,10 @@ impl RunConfig {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_sink: None,
+            max_tool_count: None,
+            max_tool_count_fail: false,
+            max_response_bytes: None,
+            max_response_bytes_fail: false,
         }
     }
 
@@ -395,6 +407,30 @@ impl RunConfig {
         self
     }
 
+    /// Sets the maximum tool count limit (warn when exceeded).
+    pub fn with_max_tool_count(mut self, limit: usize) -> Self {
+        self.max_tool_count = Some(limit);
+        self
+    }
+
+    /// Sets whether to fail (instead of warn) when tool count limit is exceeded.
+    pub fn with_max_tool_count_fail(mut self, fail: bool) -> Self {
+        self.max_tool_count_fail = fail;
+        self
+    }
+
+    /// Sets the maximum response size in bytes (warn when exceeded).
+    pub fn with_max_response_bytes(mut self, limit: usize) -> Self {
+        self.max_response_bytes = Some(limit);
+        self
+    }
+
+    /// Sets whether to fail (instead of warn) when response size limit is exceeded.
+    pub fn with_max_response_bytes_fail(mut self, fail: bool) -> Self {
+        self.max_response_bytes_fail = fail;
+        self
+    }
+
     pub(crate) fn apply_stdio_pre_run_context(&mut self, endpoint: &StdioConfig) {
         if let Some(hook) = self.pre_run_hook.as_mut() {
             hook.apply_stdio_context(endpoint);
@@ -421,6 +457,10 @@ impl fmt::Debug for RunConfig {
             .field("show_uncallable", &self.show_uncallable)
             .field("uncallable_limit", &self.uncallable_limit)
             .field("trace_sink", &self.trace_sink.is_some())
+            .field("max_tool_count", &self.max_tool_count)
+            .field("max_tool_count_fail", &self.max_tool_count_fail)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("max_response_bytes_fail", &self.max_response_bytes_fail)
             .finish()
     }
 }
@@ -560,6 +600,8 @@ pub trait TraceSink: Send + Sync {
 pub enum RunWarningCode {
     SchemaUnsupportedKeyword,
     MissingStructuredContent,
+    TooManyTools,
+    ResponseTooLarge,
 }
 
 /// Warning describing a coverage issue in a state-machine run.

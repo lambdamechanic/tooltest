@@ -83,10 +83,6 @@ The system SHALL generate state-machine sequences using explicit state transitio
 - **WHEN** no tools are callable under the current state
 - **THEN** the generator yields an empty tail for the remaining steps
 
-#### Scenario: Minimum length cannot be satisfied
-- **WHEN** the configured minimum sequence length cannot be reached due to no callable tools
-- **THEN** the generator fails the run
-
 ### Requirement: State Reference Resolution
 The system SHALL resolve state references into concrete invocation arguments before issuing tool calls.
 
@@ -165,10 +161,6 @@ The system SHALL allow callers of the state-machine generator mode to supply cov
 #### Scenario: Coverage validation failures fail the run
 - **WHEN** a coverage validation rule fails
 - **THEN** the run outcome is a failure with a structured coverage validation reason
-
-#### Scenario: Coverage validation warnings are structured
-- **WHEN** coverage validation rules emit warnings without failures
-- **THEN** the run output includes structured coverage warning details
 
 #### Scenario: Coverage validation failure reason includes code and details
 - **WHEN** a coverage validation failure is reported

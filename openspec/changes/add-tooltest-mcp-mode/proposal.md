@@ -5,11 +5,12 @@ Tooltest currently runs only as a CLI, which makes it harder to integrate with M
 
 ## What Changes
 - Add a `tooltest mcp` subcommand that exposes tooltest as an MCP server.
-- Support `--stdio` and `--http` transport modes for the MCP server, defaulting to stdio.
+- Support explicit `--stdio` and `--http` transport modes (mutually exclusive), defaulting to stdio and requiring `--bind` for HTTP.
 - Centralize tooltest input configuration into a public `tooltest-core` type shared by CLI and MCP modes.
-- Add an MCP prompt that mirrors the README “fix loop” prompt, updated to call the MCP tool.
-- Add tests covering the MCP prompt and running tooltest-against-tooltest via the stdio test server.
+- Return `RunResult` for tooltest completion outcomes; unexpected tooltest errors surface as MCP errors.
+- Add an MCP prompt and static resource with MCP-specific fix-loop guidance (tool subset selection, MCP/CLI options).
+- Add tests covering the MCP prompt/resource and running tooltest-against-tooltest via the stdio test server.
 
 ## Impact
-- Affected specs: tooltest-mcp-mode (new), mcp-sequence-runner (indirect via shared config type).
+- Affected specs: tooltest-mcp-mode (new), mcp-sequence-runner (indirect via shared config type and run result semantics).
 - Affected code: `tooltest` CLI, MCP server entry point, shared config in `tooltest-core`, tests.

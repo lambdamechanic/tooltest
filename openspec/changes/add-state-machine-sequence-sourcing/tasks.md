@@ -4,7 +4,7 @@
 - [ ] 1.3 Implement corpus type for de-duplicated, insertion-ordered integers, numbers, and strings with stable indices
 - [ ] 1.4 Implement response mining of `structured_content` (including nested keys/values) to extend the corpus after each tool call
 - [ ] 1.5 Add translation layer to resolve state references into concrete invocation arguments
-- [ ] 1.6 Add proptest-state-machine model that generates tool calls using only corpus-sourced numbers/strings, generates booleans/null/enums directly from schema constraints, recomputes callability each step, and ends runs when no callable tools remain (fail if minimum length is unattainable)
+- [ ] 1.6 Add proptest-state-machine model that generates tool calls using only corpus-sourced numbers/strings, generates booleans/null/enums directly from schema constraints, recomputes callability each step, and ends runs when no callable tools remain
 - [ ] 1.7 Integrate the state-machine generator into the unified entry point as the sole generator
 - [ ] 1.8 Add coverage tracking for tool call counts (successful responses only), warning reporting with structured reason codes, and allowlist/blocklist exemptions
 - [ ] 1.9 Add coverage validation rule helpers (e.g., minimum calls per tool, no uncalled tools, percentage called) that operate on successful call counts and treat uncallable tools as excluded from percentage denominators

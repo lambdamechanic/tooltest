@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::{RunConfig, RunFailure, RunResult, RunWarning, SessionDriver, Tool, TraceEntry};
+use crate::{
+    RunConfig, RunFailure, RunResult, RunWarning, RunWarningCode, SessionDriver, Tool, TraceEntry,
+};
 
 use super::pre_run::run_pre_run_hook;
 use super::result::failure_result;
@@ -56,7 +58,33 @@ pub(super) async fn prepare_run(
             ))
         }
     };
-    let warnings = collect_schema_warnings(&tools);
+    let mut warnings = collect_schema_warnings(&tools);
+
+    // Check max tool count limit
+    if let Some(max_count) = config.max_tool_count {
+        if tools.len() > max_count {
+            let message = format!(
+                "server registered {} tools, which exceeds the limit of {}",
+                tools.len(),
+                max_count
+            );
+            if config.max_tool_count_fail {
+                return Err(failure_result(
+                    RunFailure::new(message),
+                    prelude_trace.clone(),
+                    None,
+                    warnings.clone(),
+                    None,
+                    None,
+                ));
+            }
+            warnings.push(RunWarning {
+                code: RunWarningCode::TooManyTools,
+                message,
+                tool: None,
+            });
+        }
+    }
 
     let validators = match build_output_validators(&tools) {
         Ok(validators) => validators,

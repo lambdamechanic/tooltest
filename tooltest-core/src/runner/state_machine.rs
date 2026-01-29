@@ -10,7 +10,7 @@ use crate::{AssertionSet, RunFailure, SessionDriver, ToolPredicate, TraceEntry};
 
 use super::assertions::{
     apply_default_assertions, apply_response_assertions, apply_sequence_assertions,
-    attach_failure_reason, attach_response,
+    attach_failure_reason, attach_response, check_response_size,
 };
 use super::coverage::CoverageTracker;
 use super::result::FailureContext;
@@ -26,6 +26,9 @@ pub(super) struct StateMachineExecution<'a> {
     pub(super) full_trace: bool,
     pub(super) warnings: std::rc::Rc<std::cell::RefCell<Vec<crate::RunWarning>>>,
     pub(super) warned_missing_structured: std::rc::Rc<std::cell::RefCell<HashSet<String>>>,
+    pub(super) warned_large_responses: std::rc::Rc<std::cell::RefCell<HashSet<String>>>,
+    pub(super) max_response_bytes: Option<usize>,
+    pub(super) max_response_bytes_fail: bool,
     pub(super) case_index: u64,
     pub(super) trace_sink: Option<std::sync::Arc<dyn crate::TraceSink>>,
 }
@@ -156,6 +159,39 @@ pub(super) async fn execute_state_machine_sequence(
         if let Some(reason) =
             apply_response_assertions(execution.assertions, &invocation, &response)
         {
+            if execution.full_trace {
+                attach_response(&mut full_trace, response.clone());
+                attach_failure_reason(&mut full_trace, reason.clone());
+                record_trace(&full_trace);
+                return Err(FailureContext {
+                    failure: RunFailure::new(reason),
+                    trace: full_trace.clone(),
+                    coverage: None,
+                    corpus: None,
+                    positive_error: true,
+                });
+            }
+            attach_response(&mut trace, response.clone());
+            attach_failure_reason(&mut trace, reason.clone());
+            record_trace(&trace);
+            return Err(FailureContext {
+                failure: RunFailure::new(reason),
+                trace: trace.clone(),
+                coverage: None,
+                corpus: None,
+                positive_error: true,
+            });
+        }
+
+        // Check response size limit
+        if let Some(reason) = check_response_size(
+            &invocation,
+            &response,
+            execution.max_response_bytes,
+            execution.max_response_bytes_fail,
+            &mut execution.warnings.borrow_mut(),
+            &mut execution.warned_large_responses.borrow_mut(),
+        ) {
             if execution.full_trace {
                 attach_response(&mut full_trace, response.clone());
                 attach_failure_reason(&mut full_trace, reason.clone());

@@ -71,6 +71,21 @@ pub struct Cli {
     /// Emit all per-case traces to a file (JSON lines).
     #[arg(long, value_name = "PATH")]
     pub trace_all: Option<String>,
+
+    /// Maximum number of tools before warning (default: 10).
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    pub max_tool_count: usize,
+    /// Fail instead of warn when tool count limit is exceeded.
+    #[arg(long)]
+    pub max_tool_count_fail: bool,
+
+    /// Maximum response size in bytes before warning (default: 10240 = 10KB).
+    #[arg(long, value_name = "BYTES", default_value_t = 10240)]
+    pub max_response_bytes: usize,
+    /// Fail instead of warn when response size limit is exceeded.
+    #[arg(long)]
+    pub max_response_bytes_fail: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -200,6 +215,11 @@ pub async fn run(cli: Cli) -> ExitCode {
             .with_predicate(filters.predicate)
             .with_tool_filter(filters.name_predicate);
     }
+    run_config = run_config
+        .with_max_tool_count(cli.max_tool_count)
+        .with_max_tool_count_fail(cli.max_tool_count_fail)
+        .with_max_response_bytes(cli.max_response_bytes)
+        .with_max_response_bytes_fail(cli.max_response_bytes_fail);
 
     let result = match cli.command {
         Command::Stdio {
@@ -484,6 +504,9 @@ fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
     match code {
         RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
         RunWarningCode::MissingStructuredContent => "missing_structured_content",
+        RunWarningCode::TooManyTools => "too_many_tools",
+        RunWarningCode::ResponseTooLarge => "response_too_large",
+        _ => "unknown",
     }
 }
 
@@ -1131,6 +1154,44 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_reports_too_many_tools_warning_code() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::TooManyTools,
+                message: "too many tools".to_string(),
+                tool: None,
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("too_many_tools"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_response_too_large_warning_code() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::ResponseTooLarge,
+                message: "response too large".to_string(),
+                tool: Some("big_tool".to_string()),
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("response_too_large"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_warning_without_tool() {
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -1358,6 +1419,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1393,6 +1458,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: Some(trace_path.display().to_string()),
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1431,6 +1500,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: Some(trace_dir.display().to_string()),
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1466,6 +1539,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Stdio {
                 command: "tooltest-missing-binary".to_string(),
                 args: Vec::new(),
@@ -1499,6 +1576,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1531,6 +1612,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1562,6 +1647,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1594,6 +1683,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1626,6 +1719,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1658,6 +1755,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1690,6 +1791,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1722,6 +1827,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 0,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1754,6 +1863,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1786,6 +1899,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Http {
                 url: "http://127.0.0.1:0/mcp".to_string(),
                 auth_token: None,
@@ -1818,6 +1935,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
                 args: Vec::new(),
@@ -1852,6 +1973,10 @@ mod tests {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_all: None,
+            max_tool_count: 64,
+            max_tool_count_fail: false,
+            max_response_bytes: 102400,
+            max_response_bytes_fail: false,
             command: Command::Stdio {
                 command: "tooltest-missing-command".to_string(),
                 args: Vec::new(),

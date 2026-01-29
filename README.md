@@ -115,6 +115,8 @@ cargo run -p tooltest --bin tooltest -- \
 
 State-machine mode is strict by default: it only uses values mined from the corpus when satisfying required schema fields. If your server needs schema-based generation (for example, on the very first call), enable lenient sourcing.
 
+If you see `state-machine generator failed to reach minimum sequence length`, it usually means no eligible tool call could be generated (often because required fields had no corpus values). Re-run with `--lenient-sourcing` or seed values via `--state-machine-config` to unblock generation.
+
 State-machine runs always track a corpus and coverage counts; this adds overhead compared to the legacy generator and can grow with response size.
 
 You can set this in the JSON config:
@@ -319,6 +321,12 @@ Run tooltest against it (examples below).
 When tooltest reports failures, fix the underlying issues in the smallest reasonable patch.
 
 Re-run tooltest and repeat until it exits 0.
+
+If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
+
+If you need per-case traces for debugging, add `--trace-all /tmp/tooltest-traces.jsonl` (any writable path).
+
+If you are invoking tooltest via the MCP tool instead of the CLI, pass the same options in the tool input.
 
 Don’t rename tools or change schemas unless required; prefer backward-compatible fixes.
 

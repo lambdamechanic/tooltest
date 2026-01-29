@@ -1,32 +1,11 @@
 use crate::{
     list_tools_with_session, validate_tool, RunConfig, RunOutcome, RunnerOptions, SchemaConfig,
-    SessionDriver, ToolValidationConfig, ToolValidationError,
+    ToolValidationConfig, ToolValidationError,
 };
 use rmcp::model::CallToolResult;
 use serde_json::json;
+use super::test_support::{connect_list_tools_transport, connect_runner_transport};
 use tooltest_test_support::{tool_with_schemas, ListToolsTransport, RunnerTransport};
-
-async fn connect_runner_transport(
-    transport: RunnerTransport,
-) -> Result<SessionDriver, crate::SessionError> {
-    SessionDriver::connect_with_transport::<
-        RunnerTransport,
-        std::convert::Infallible,
-        rmcp::transport::TransportAdapterIdentity,
-    >(transport)
-    .await
-}
-
-async fn connect_list_tools_transport(
-    transport: ListToolsTransport,
-) -> Result<SessionDriver, crate::SessionError> {
-    SessionDriver::connect_with_transport::<
-        ListToolsTransport,
-        std::convert::Infallible,
-        rmcp::transport::TransportAdapterIdentity,
-    >(transport)
-    .await
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_rejects_unknown_output_schema_version() {

@@ -83,3 +83,8 @@ async fn hosted_mcp_epss_tools() {
 async fn hosted_mcp_kev_tools() {
     validate_hosted("https://pymcp.app.lambdamechanic.com/kev/mcp").await;
 }
+
+#[tokio::test]
+async fn hosted_mcp_attack_tools() {
+    validate_hosted("https://pymcp.app.lambdamechanic.com/attack/mcp").await;
+}

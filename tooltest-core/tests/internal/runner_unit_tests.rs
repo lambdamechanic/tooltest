@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::tests::test_support::connect_runner_transport;
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
 
 fn outcome_is_success(outcome: &RunOutcome) -> bool {
@@ -98,17 +99,6 @@ async fn execute_sequence_for_test(
         trace_sink: None,
     };
     execute_state_machine_sequence(sequence, &execution, tracker).await
-}
-
-async fn connect_runner_transport(
-    transport: RunnerTransport,
-) -> Result<SessionDriver, SessionError> {
-    SessionDriver::connect_with_transport::<
-        RunnerTransport,
-        std::convert::Infallible,
-        rmcp::transport::TransportAdapterIdentity,
-    >(transport)
-    .await
 }
 
 fn connect_result(result: Result<SessionDriver, SessionError>) -> ConnectFuture<'static> {

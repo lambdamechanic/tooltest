@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value as JsonValue};
 
 mod generator;
+mod input;
 mod output_schema;
 mod runner;
 pub mod schema;
@@ -25,6 +26,10 @@ pub use schema::{
     SchemaError,
 };
 pub use session::{SessionDriver, SessionError};
+pub use input::{
+    TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
+    TooltestTarget, TooltestTargetConfig,
+};
 pub use validation::{
     list_tools_http, list_tools_stdio, list_tools_with_session, validate_tool, validate_tools,
     BulkToolValidationSummary, ListToolsError, ToolValidationConfig, ToolValidationDecision,
@@ -50,6 +55,7 @@ pub enum SchemaVersion {
 ///
 /// State-machine generation is always used for sequence runs; there is no legacy mode.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StateMachineConfig {
     /// Seed numbers added to the corpus before generation.
     pub seed_numbers: Vec<Number>,

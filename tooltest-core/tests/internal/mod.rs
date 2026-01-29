@@ -1,6 +1,7 @@
 mod docs_tests;
 mod generator_tests;
 mod hosted_mcp_tests;
+mod input_tests;
 mod lib_tests;
 mod output_schema_validation_tests;
 mod runner_tests;

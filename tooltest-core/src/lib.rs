@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value as JsonValue};
 
@@ -54,7 +55,7 @@ pub enum SchemaVersion {
 /// Configuration for state-machine generator behavior.
 ///
 /// State-machine generation is always used for sequence runs; there is no legacy mode.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct StateMachineConfig {
     /// Seed numbers added to the corpus before generation.
@@ -627,7 +628,7 @@ pub struct CorpusReport {
 }
 
 /// Coverage validation rules for state-machine runs.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "rule", rename_all = "snake_case")]
 pub enum CoverageRule {
     /// Require a minimum number of successful calls per tool.

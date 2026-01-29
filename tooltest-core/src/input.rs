@@ -3,6 +3,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use reqwest::Url;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -27,7 +28,7 @@ fn default_uncallable_limit() -> usize {
 }
 
 /// Shared tooltest input type for CLI and MCP modes.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestInput {
     /// Target MCP transport configuration.
@@ -177,7 +178,7 @@ impl TooltestInput {
 }
 
 /// Target configuration input wrapper.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestTarget {
     /// Stdio transport configuration.
@@ -217,7 +218,7 @@ impl TooltestTarget {
 }
 
 /// Stdio transport input configuration.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestStdioTarget {
     /// Command to execute for the MCP server.
@@ -245,7 +246,7 @@ impl TooltestStdioTarget {
 }
 
 /// HTTP transport input configuration.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestHttpTarget {
     /// MCP endpoint URL.
@@ -265,7 +266,7 @@ impl TooltestHttpTarget {
 }
 
 /// Pre-run hook input configuration.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestPreRunHook {
     /// Shell command string to execute before each run and validation.

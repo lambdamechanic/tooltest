@@ -25,6 +25,7 @@ Tooltest is a new Rust-based MCP testing tool with no existing code. It must exe
   - Rationale: Leverages the official SDK for MCP session flow and transport framing.
 ## Risks / Trade-offs
 - Schema-to-generator fidelity depends on MCP schema specifics (tool input/output constraints).
+- Hosted MCP live tests may exclude unstable endpoints (for example, the attack endpoint).
 
 ## Migration Plan
 - Greenfield: no migration required. Introduce the core package in a new workspace.

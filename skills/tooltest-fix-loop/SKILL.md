@@ -5,31 +5,37 @@ description: Use when running tooltest to validate MCP servers, interpret failur
 
 # Tooltest fix loop
 
-## Goal
+You have access to this repository and can run commands.
 
-Make the repository's MCP server(s) conform to the MCP spec as exercised by tooltest.
+Goal: make the repository's MCP server(s) conform to the MCP spec as exercised by tooltest.
 
-## Workflow
+Figure out how to start the MCP server from this repo (stdio or streamable HTTP).
 
-- Figure out how to start the MCP server from this repo (stdio or streamable HTTP).
-- Select a small, related subset of tools intended to be used together.
-- Default to testing at most 50 tools and strongly prefer a smaller group.
-- Use an allowlist to constrain the tool set (CLI: `--tool-allowlist`, MCP: `tool_allowlist`).
-- Run tooltest via the CLI or the MCP tool; pass the same options in either path.
-- Fix the smallest reasonable patch for any failures and re-run tooltest until it exits 0.
+Select a small, related subset of tools intended to be used together. Default to testing at most 50 tools at a time, and strongly prefer a smaller group. Use `--tool-allowlist` (or `tool_allowlist` in MCP input) to enforce this.
 
-## Notes
+Run tooltest against it (examples below).
 
-- If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
-- For per-case traces, add `--trace-all /tmp/tooltest-traces.jsonl` (any writable path).
-- Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
-- Add or adjust tests when needed.
+When tooltest reports failures, fix the underlying issues in the smallest reasonable patch.
 
-## Commands (examples)
+Re-run tooltest and repeat until it exits 0.
 
-- CLI stdio (allowlist example): `tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar`
-- CLI http (allowlist example): `tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar`
-- MCP tool (allowlist example):
+If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
+
+If you need per-case traces for debugging, add `--trace-all /tmp/tooltest-traces.jsonl` (any writable path).
+
+If you are invoking tooltest via the MCP tool instead of the CLI, pass the same options in the tool input.
+
+Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
+
+Add/adjust tests if needed.
+
+Commands (choose the right one):
+
+CLI stdio (allowlist example): `tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar`
+
+CLI http (allowlist example): `tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar`
+
+MCP tool (allowlist example):
 
 ```json
 {
@@ -38,7 +44,4 @@ Make the repository's MCP server(s) conform to the MCP spec as exercised by tool
 }
 ```
 
-## Reporting
-
-- Return a short summary of what you changed and why.
-- Include the final passing tooltest output snippet.
+Return a short summary of what you changed and why, plus the final passing tooltest output snippet.

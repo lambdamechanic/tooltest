@@ -1052,6 +1052,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn call_tool_invalid_input_trace_all_field_is_error() {
+        let args = json!({
+            "target": { "http": { "url": "http://127.0.0.1:0/mcp" } },
+            "trace_all": "/tmp/tooltest-traces.jsonl"
+        });
+        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
+            .await;
+        let (error, _) = response.into_error().expect("error response");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
     async fn call_tool_missing_arguments_is_error() {
         let response = send_call_tool_request(None).await;
         let (error, _) = response.into_error().expect("error response");

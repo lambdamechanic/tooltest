@@ -12,6 +12,8 @@ use tooltest_core::{
     ToolPredicate, TraceEntry, TraceSink,
 };
 
+mod mcp;
+
 #[derive(Parser)]
 #[command(name = "tooltest", version, about = "CLI wrapper for tooltest-core")]
 pub struct Cli {
@@ -139,70 +141,146 @@ pub enum Command {
         #[arg(long)]
         auth_token: Option<String>,
     },
+    /// Run the tooltest MCP server.
+    Mcp {
+        /// Use stdio transport for the MCP server (default).
+        #[arg(long)]
+        stdio: bool,
+        /// Use HTTP transport for the MCP server.
+        #[arg(long)]
+        http: bool,
+        /// Bind address for the HTTP server (required with --http).
+        #[arg(long, value_name = "ADDR")]
+        bind: Option<String>,
+    },
+}
+
+enum RunCommand {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: Vec<String>,
+        cwd: Option<String>,
+    },
+    Http {
+        url: String,
+        auth_token: Option<String>,
+    },
 }
 
 pub async fn run(cli: Cli) -> ExitCode {
-    let sequence_len = match build_sequence_len(cli.min_sequence_len, cli.max_sequence_len) {
-        Ok(range) => range,
-        Err(message) => return error_exit(&message, cli.json),
+    let Cli {
+        cases,
+        min_sequence_len,
+        max_sequence_len,
+        lenient_sourcing,
+        mine_text,
+        dump_corpus,
+        log_corpus_deltas,
+        no_lenient_sourcing,
+        state_machine_config,
+        tool_allowlist,
+        tool_blocklist,
+        in_band_error_forbidden,
+        pre_run_hook,
+        json,
+        full_trace,
+        show_uncallable,
+        uncallable_limit,
+        trace_all,
+        command,
+    } = cli;
+
+    let command = match command {
+        Command::Mcp { stdio, http, bind } => {
+            let transport = match resolve_mcp_transport(stdio, http, bind.as_deref()) {
+                Ok(transport) => transport,
+                Err(message) => return error_exit(&message, json),
+            };
+            let result = match transport {
+                McpTransport::Stdio => mcp::run_stdio().await,
+                McpTransport::Http { bind } => mcp::run_http(&bind).await,
+            };
+            if let Err(message) = result {
+                return error_exit(&message, json);
+            }
+            return ExitCode::SUCCESS;
+        }
+        Command::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => RunCommand::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        },
+        Command::Http { url, auth_token } => RunCommand::Http { url, auth_token },
     };
-    if cli.uncallable_limit < 1 {
-        return error_exit("uncallable-limit must be at least 1", cli.json);
+
+    let sequence_len = match build_sequence_len(min_sequence_len, max_sequence_len) {
+        Ok(range) => range,
+        Err(message) => return error_exit(&message, json),
+    };
+    if uncallable_limit < 1 {
+        return error_exit("uncallable-limit must be at least 1", json);
     }
 
     let options = RunnerOptions {
-        cases: cli.cases,
+        cases,
         sequence_len,
     };
-    let mut state_machine = match cli.state_machine_config.as_deref() {
+    let mut state_machine = match state_machine_config.as_deref() {
         Some(raw) => match parse_state_machine_config(raw) {
             Ok(config) => config,
-            Err(message) => return error_exit(&message, cli.json),
+            Err(message) => return error_exit(&message, json),
         },
         None => StateMachineConfig::default(),
     };
-    if cli.lenient_sourcing {
+    if lenient_sourcing {
         state_machine.lenient_sourcing = true;
-    } else if cli.no_lenient_sourcing {
+    } else if no_lenient_sourcing {
         state_machine.lenient_sourcing = false;
     }
-    if cli.mine_text {
+    if mine_text {
         state_machine.mine_text = true;
     }
-    if cli.dump_corpus {
+    if dump_corpus {
         state_machine.dump_corpus = true;
     }
-    if cli.log_corpus_deltas {
+    if log_corpus_deltas {
         state_machine.log_corpus_deltas = true;
     }
     let dump_corpus = state_machine.dump_corpus;
     let mut run_config = RunConfig::new()
         .with_state_machine(state_machine)
-        .with_full_trace(cli.full_trace)
-        .with_show_uncallable(cli.show_uncallable)
-        .with_uncallable_limit(cli.uncallable_limit);
-    if let Some(path) = cli.trace_all.as_ref() {
+        .with_full_trace(full_trace)
+        .with_show_uncallable(show_uncallable)
+        .with_uncallable_limit(uncallable_limit);
+    if let Some(path) = trace_all.as_ref() {
         match TraceFileSink::new(path) {
             Ok(sink) => {
                 run_config = run_config.with_trace_sink(std::sync::Arc::new(sink));
             }
-            Err(message) => return error_exit(&message, cli.json),
+            Err(message) => return error_exit(&message, json),
         }
     }
-    if let Some(hook) = cli.pre_run_hook.as_ref() {
+    if let Some(hook) = pre_run_hook.as_ref() {
         run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
     }
-    if cli.in_band_error_forbidden {
+    if in_band_error_forbidden {
         run_config = run_config.with_in_band_error_forbidden(true);
     }
-    if let Some(filters) = build_tool_filters(&cli.tool_allowlist, &cli.tool_blocklist) {
+    if let Some(filters) = build_tool_filters(&tool_allowlist, &tool_blocklist) {
         run_config = run_config
             .with_predicate(filters.predicate)
             .with_tool_filter(filters.name_predicate);
     }
 
-    let result = match cli.command {
-        Command::Stdio {
+    let result = match command {
+        RunCommand::Stdio {
             command,
             args,
             env,
@@ -210,7 +288,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         } => {
             let env = match parse_env_vars(env) {
                 Ok(env) => env,
-                Err(message) => return error_exit(&message, cli.json),
+                Err(message) => return error_exit(&message, json),
             };
             let config = StdioConfig {
                 command,
@@ -220,21 +298,50 @@ pub async fn run(cli: Cli) -> ExitCode {
             };
             tooltest_core::run_stdio(&config, &run_config, options).await
         }
-        Command::Http { url, auth_token } => {
+        RunCommand::Http { url, auth_token } => {
             let config = HttpConfig { url, auth_token };
             tooltest_core::run_http(&config, &run_config, options).await
         }
     };
 
-    let output = if cli.json {
+    let output = if json {
         serde_json::to_string_pretty(&result).expect("serialize run result")
     } else {
         format_run_result_human(&result)
     };
     print!("{output}");
-    maybe_dump_corpus(dump_corpus, cli.json, &result);
+    maybe_dump_corpus(dump_corpus, json, &result);
 
     exit_code_for_result(&result)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum McpTransport {
+    Stdio,
+    Http { bind: String },
+}
+
+fn resolve_mcp_transport(
+    stdio: bool,
+    http: bool,
+    bind: Option<&str>,
+) -> Result<McpTransport, String> {
+    if stdio && http {
+        return Err("mcp transport flags are mutually exclusive".to_string());
+    }
+    if stdio && bind.is_some() {
+        return Err("mcp stdio transport does not accept --bind".to_string());
+    }
+    if http {
+        let bind = bind.ok_or_else(|| "mcp http transport requires --bind".to_string())?;
+        return Ok(McpTransport::Http {
+            bind: bind.to_string(),
+        });
+    }
+    if bind.is_some() {
+        return Err("mcp --bind requires --http".to_string());
+    }
+    Ok(McpTransport::Stdio)
 }
 
 fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
@@ -555,8 +662,10 @@ impl TraceSink for TraceFileSink {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::env;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::{CommandFactory, Parser};
@@ -585,6 +694,41 @@ mod tests {
         let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
         std::env::temp_dir().join(format!("tooltest-{name}-{pid}-{nanos}-{counter}"))
+    }
+
+    fn unpack_mcp(command: Command) -> (bool, bool, Option<String>) {
+        match command {
+            Command::Mcp { stdio, http, bind } => (stdio, http, bind),
+            other => panic!("expected mcp command, got {other:?}"),
+        }
+    }
+
+    static MCP_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: String,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            env::set_var(key, value);
+            Self {
+                key: key.to_string(),
+                previous,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                env::set_var(&self.key, previous);
+            } else {
+                env::remove_var(&self.key);
+            }
+        }
     }
 
     #[test]
@@ -910,6 +1054,213 @@ mod tests {
     }
 
     #[test]
+    fn mcp_command_defaults_to_stdio_transport() {
+        let cli = Cli::parse_from(["tooltest", "mcp"]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let transport = resolve_mcp_transport(stdio, http, bind.as_deref()).expect("transport");
+        assert_eq!(transport, McpTransport::Stdio);
+    }
+
+    #[test]
+    fn mcp_command_accepts_explicit_stdio_transport() {
+        let cli = Cli::parse_from(["tooltest", "mcp", "--stdio"]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let transport = resolve_mcp_transport(stdio, http, bind.as_deref()).expect("transport");
+        assert_eq!(transport, McpTransport::Stdio);
+    }
+
+    #[test]
+    fn mcp_command_requires_bind_for_http() {
+        let cli = Cli::parse_from(["tooltest", "mcp", "--http"]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let error = resolve_mcp_transport(stdio, http, bind.as_deref()).expect_err("error");
+        assert!(error.contains("bind"));
+    }
+
+    #[test]
+    fn mcp_command_accepts_http_bind() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "mcp",
+            "--http",
+            "--bind",
+            "127.0.0.1:9000",
+        ]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let transport = resolve_mcp_transport(stdio, http, bind.as_deref()).expect("transport");
+        assert_eq!(
+            transport,
+            McpTransport::Http {
+                bind: "127.0.0.1:9000".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_command_rejects_stdio_and_http_together() {
+        let cli = Cli::parse_from(["tooltest", "mcp", "--stdio", "--http"]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let error = resolve_mcp_transport(stdio, http, bind.as_deref()).expect_err("error");
+        assert!(error.contains("mutually"));
+    }
+
+    #[test]
+    fn mcp_command_rejects_stdio_with_bind() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "mcp",
+            "--stdio",
+            "--bind",
+            "127.0.0.1:9000",
+        ]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let error = resolve_mcp_transport(stdio, http, bind.as_deref()).expect_err("error");
+        assert!(error.contains("bind"));
+    }
+
+    #[test]
+    fn mcp_command_rejects_bind_without_http() {
+        let cli = Cli::parse_from(["tooltest", "mcp", "--bind", "127.0.0.1:9000"]);
+        let (stdio, http, bind) = unpack_mcp(cli.command);
+        let error = resolve_mcp_transport(stdio, http, bind.as_deref()).expect_err("error");
+        assert!(error.contains("--http"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected mcp command")]
+    fn unpack_mcp_panics_on_non_mcp_command() {
+        unpack_mcp(Command::Http {
+            url: "http://example.test/mcp".to_string(),
+            auth_token: None,
+        });
+    }
+
+    #[tokio::test]
+    async fn run_mcp_stdio_exits_successfully() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "1");
+        let cli = Cli::parse_from(["tooltest", "mcp", "--stdio"]);
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[tokio::test]
+    async fn run_mcp_stdio_waits_for_transport_shutdown() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
+        let cli = Cli::parse_from(["tooltest", "mcp", "--stdio"]);
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[tokio::test]
+    async fn run_mcp_stdio_without_test_transport_reports_error() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        env::remove_var("TOOLTEST_MCP_TEST_TRANSPORT");
+        env::remove_var("TOOLTEST_MCP_EXIT_IMMEDIATELY");
+        let result = mcp::run_stdio().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_mcp_stdio_bad_transport_reports_error() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
+        let _bad_guard = EnvVarGuard::set("TOOLTEST_MCP_BAD_TRANSPORT", "1");
+        let result = mcp::run_stdio().await;
+        assert!(result
+            .expect_err("expected error")
+            .contains("failed to start MCP stdio server"));
+    }
+
+    #[tokio::test]
+    async fn run_mcp_stdio_panic_transport_reports_error() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
+        let _panic_guard = EnvVarGuard::set("TOOLTEST_MCP_PANIC_TRANSPORT", "1");
+        let result = mcp::run_stdio().await;
+        assert!(result
+            .expect_err("expected error")
+            .contains("MCP stdio server failed"));
+    }
+
+    #[tokio::test]
+    async fn run_mcp_stdio_exit_immediately_reports_error_on_panic() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
+        let _panic_guard = EnvVarGuard::set("TOOLTEST_MCP_PANIC_TRANSPORT", "1");
+        let _exit_guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "1");
+        let result = mcp::run_stdio().await;
+        assert!(result
+            .expect_err("expected error")
+            .contains("MCP stdio server failed"));
+    }
+
+    #[tokio::test]
+    async fn run_mcp_http_exits_successfully() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "1");
+        let cli = Cli::parse_from(["tooltest", "mcp", "--http", "--bind", "127.0.0.1:0"]);
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[tokio::test]
+    async fn run_mcp_http_pending_shutdown_times_out() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        env::remove_var("TOOLTEST_MCP_EXIT_IMMEDIATELY");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            mcp::run_http("127.0.0.1:0"),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_mcp_http_forced_error_reports_error() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_FORCE_HTTP_ERROR", "1");
+        let result = mcp::run_http("127.0.0.1:0").await;
+        assert!(result
+            .expect_err("expected error")
+            .contains("failed to serve MCP HTTP server"));
+    }
+
+    #[tokio::test]
+    async fn run_mcp_missing_bind_returns_exit_code_2() {
+        let cli = Cli::parse_from(["tooltest", "mcp", "--http"]);
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[tokio::test]
+    async fn run_mcp_http_invalid_bind_returns_exit_code_2() {
+        let cli = Cli::parse_from(["tooltest", "mcp", "--http", "--bind", "invalid:bind"]);
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
+    }
+
+    #[test]
+    fn env_var_guard_restores_previous_value() {
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        env::set_var("TOOLTEST_MCP_EXIT_IMMEDIATELY", "original");
+        {
+            let _guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "temporary");
+            assert_eq!(
+                env::var("TOOLTEST_MCP_EXIT_IMMEDIATELY").as_deref(),
+                Ok("temporary")
+            );
+        }
+        assert_eq!(
+            env::var("TOOLTEST_MCP_EXIT_IMMEDIATELY").as_deref(),
+            Ok("original")
+        );
+        env::remove_var("TOOLTEST_MCP_EXIT_IMMEDIATELY");
+    }
+
+    #[test]
     fn cli_command_factory_includes_subcommands() {
         let command = Cli::command();
         let names: Vec<_> = command
@@ -919,6 +1270,7 @@ mod tests {
 
         assert!(names.contains(&"stdio".to_string()));
         assert!(names.contains(&"http".to_string()));
+        assert!(names.contains(&"mcp".to_string()));
     }
 
     #[test]

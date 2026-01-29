@@ -1,16 +1,23 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::ops::RangeInclusive;
 use std::process::ExitCode;
+
+#[cfg(test)]
+use std::collections::HashSet;
+#[cfg(test)]
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tooltest_core::{
-    CoverageWarningReason, HttpConfig, PreRunHook, RunConfig, RunOutcome, RunResult, RunWarning,
-    RunWarningCode, RunnerOptions, StateMachineConfig, StdioConfig, ToolNamePredicate,
-    ToolPredicate, TraceEntry, TraceSink,
+    CoverageWarningReason, RunOutcome, RunResult, RunWarning, RunWarningCode, StateMachineConfig,
+    TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
+    TooltestTarget, TooltestTargetConfig, TraceEntry, TraceSink,
 };
+
+#[cfg(test)]
+use tooltest_core::{ToolNamePredicate, ToolPredicate};
 
 mod mcp;
 
@@ -220,66 +227,19 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Http { url, auth_token } => RunCommand::Http { url, auth_token },
     };
 
-    let sequence_len = match build_sequence_len(min_sequence_len, max_sequence_len) {
-        Ok(range) => range,
-        Err(message) => return error_exit(&message, json),
-    };
-    if uncallable_limit < 1 {
-        return error_exit("uncallable-limit must be at least 1", json);
-    }
-
-    let options = RunnerOptions {
-        cases,
-        sequence_len,
-    };
-    let mut state_machine = match state_machine_config.as_deref() {
+    let state_machine_config = match state_machine_config.as_deref() {
         Some(raw) => match parse_state_machine_config(raw) {
-            Ok(config) => config,
+            Ok(config) => Some(config),
             Err(message) => return error_exit(&message, json),
         },
-        None => StateMachineConfig::default(),
+        None => None,
     };
-    if lenient_sourcing {
-        state_machine.lenient_sourcing = true;
-    } else if no_lenient_sourcing {
-        state_machine.lenient_sourcing = false;
-    }
-    if mine_text {
-        state_machine.mine_text = true;
-    }
-    if dump_corpus {
-        state_machine.dump_corpus = true;
-    }
-    if log_corpus_deltas {
-        state_machine.log_corpus_deltas = true;
-    }
-    let dump_corpus = state_machine.dump_corpus;
-    let mut run_config = RunConfig::new()
-        .with_state_machine(state_machine)
-        .with_full_trace(full_trace)
-        .with_show_uncallable(show_uncallable)
-        .with_uncallable_limit(uncallable_limit);
-    if let Some(path) = trace_all.as_ref() {
-        match TraceFileSink::new(path) {
-            Ok(sink) => {
-                run_config = run_config.with_trace_sink(std::sync::Arc::new(sink));
-            }
-            Err(message) => return error_exit(&message, json),
-        }
-    }
-    if let Some(hook) = pre_run_hook.as_ref() {
-        run_config = run_config.with_pre_run_hook(PreRunHook::new(hook));
-    }
-    if in_band_error_forbidden {
-        run_config = run_config.with_in_band_error_forbidden(true);
-    }
-    if let Some(filters) = build_tool_filters(&tool_allowlist, &tool_blocklist) {
-        run_config = run_config
-            .with_predicate(filters.predicate)
-            .with_tool_filter(filters.name_predicate);
-    }
-
-    let result = match command {
+    let pre_run_hook = pre_run_hook.map(|command| TooltestPreRunHook {
+        command,
+        env: BTreeMap::new(),
+        cwd: None,
+    });
+    let target = match command {
         RunCommand::Stdio {
             command,
             args,
@@ -290,17 +250,64 @@ pub async fn run(cli: Cli) -> ExitCode {
                 Ok(env) => env,
                 Err(message) => return error_exit(&message, json),
             };
-            let config = StdioConfig {
-                command,
-                args,
-                env,
-                cwd,
-            };
-            tooltest_core::run_stdio(&config, &run_config, options).await
+            TooltestTarget {
+                stdio: Some(TooltestStdioTarget {
+                    command,
+                    args,
+                    env,
+                    cwd,
+                }),
+                http: None,
+            }
         }
-        RunCommand::Http { url, auth_token } => {
-            let config = HttpConfig { url, auth_token };
-            tooltest_core::run_http(&config, &run_config, options).await
+        RunCommand::Http { url, auth_token } => TooltestTarget {
+            stdio: None,
+            http: Some(TooltestHttpTarget { url, auth_token }),
+        },
+    };
+    let input = TooltestInput {
+        target,
+        cases,
+        min_sequence_len,
+        max_sequence_len,
+        lenient_sourcing,
+        mine_text,
+        dump_corpus,
+        log_corpus_deltas,
+        no_lenient_sourcing,
+        state_machine_config,
+        tool_allowlist,
+        tool_blocklist,
+        in_band_error_forbidden,
+        pre_run_hook,
+        full_trace,
+        show_uncallable,
+        uncallable_limit,
+    };
+    let TooltestRunConfig {
+        target,
+        mut run_config,
+        runner_options,
+    } = match input.to_configs() {
+        Ok(configs) => configs,
+        Err(message) => return error_exit(&message, json),
+    };
+    if let Some(path) = trace_all.as_ref() {
+        match TraceFileSink::new(path) {
+            Ok(sink) => {
+                run_config = run_config.with_trace_sink(std::sync::Arc::new(sink));
+            }
+            Err(message) => return error_exit(&message, json),
+        }
+    }
+
+    let dump_corpus = run_config.state_machine.dump_corpus;
+    let result = match target {
+        TooltestTargetConfig::Stdio(config) => {
+            tooltest_core::run_stdio(&config, &run_config, runner_options).await
+        }
+        TooltestTargetConfig::Http(config) => {
+            tooltest_core::run_http(&config, &run_config, runner_options).await
         }
     };
 
@@ -353,16 +360,19 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
     }
 }
 
+#[cfg(test)]
 struct ToolFilterSets {
     allowlist: Option<HashSet<String>>,
     blocklist: Option<HashSet<String>>,
 }
 
+#[cfg(test)]
 struct ToolFilters {
     predicate: ToolPredicate,
     name_predicate: ToolNamePredicate,
 }
 
+#[cfg(test)]
 fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilterSets> {
     if allowlist.is_empty() && blocklist.is_empty() {
         return None;
@@ -377,6 +387,7 @@ fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<
     })
 }
 
+#[cfg(test)]
 fn build_tool_filters(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilters> {
     let sets = build_tool_filter_sets(allowlist, blocklist)?;
     let allowlist = sets.allowlist;
@@ -779,6 +790,11 @@ mod tests {
         assert!(!(filters.name_predicate)("echo"));
         assert!((filters.predicate)("other", &json!({})));
         assert!((filters.name_predicate)("other"));
+    }
+
+    #[test]
+    fn build_tool_filters_none_with_empty_lists() {
+        assert!(build_tool_filters(&[], &[]).is_none());
     }
 
     #[test]

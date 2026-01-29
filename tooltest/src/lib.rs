@@ -1,23 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::ops::RangeInclusive;
 use std::process::ExitCode;
 
-#[cfg(test)]
-use std::collections::HashSet;
-#[cfg(test)]
-use std::sync::Arc;
-
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tooltest_core::{
     CoverageWarningReason, RunOutcome, RunResult, RunWarning, RunWarningCode, StateMachineConfig,
     TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
     TooltestTarget, TooltestTargetConfig, TraceEntry, TraceSink,
 };
-
-#[cfg(test)]
-use tooltest_core::{ToolNamePredicate, ToolPredicate};
 
 mod mcp;
 
@@ -84,44 +75,6 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Deserialize)]
-struct StateMachineConfigInput {
-    #[serde(default)]
-    seed_numbers: Vec<serde_json::Number>,
-    #[serde(default)]
-    seed_strings: Vec<String>,
-    #[serde(default)]
-    mine_text: bool,
-    #[serde(default)]
-    dump_corpus: bool,
-    #[serde(default)]
-    log_corpus_deltas: bool,
-    #[serde(default)]
-    lenient_sourcing: bool,
-    #[serde(default)]
-    coverage_allowlist: Option<Vec<String>>,
-    #[serde(default)]
-    coverage_blocklist: Option<Vec<String>>,
-    #[serde(default)]
-    coverage_rules: Vec<tooltest_core::CoverageRule>,
-}
-
-impl From<StateMachineConfigInput> for StateMachineConfig {
-    fn from(input: StateMachineConfigInput) -> Self {
-        StateMachineConfig {
-            seed_numbers: input.seed_numbers,
-            seed_strings: input.seed_strings,
-            mine_text: input.mine_text,
-            dump_corpus: input.dump_corpus,
-            log_corpus_deltas: input.log_corpus_deltas,
-            lenient_sourcing: input.lenient_sourcing,
-            coverage_allowlist: input.coverage_allowlist,
-            coverage_blocklist: input.coverage_blocklist,
-            coverage_rules: input.coverage_rules,
-        }
-    }
-}
-
 #[derive(Debug, Eq, PartialEq, Subcommand)]
 pub enum Command {
     /// Run against a stdio MCP endpoint.
@@ -162,127 +115,27 @@ pub enum Command {
     },
 }
 
-enum RunCommand {
-    Stdio {
-        command: String,
-        args: Vec<String>,
-        env: Vec<String>,
-        cwd: Option<String>,
-    },
-    Http {
-        url: String,
-        auth_token: Option<String>,
-    },
-}
-
 pub async fn run(cli: Cli) -> ExitCode {
-    let Cli {
-        cases,
-        min_sequence_len,
-        max_sequence_len,
-        lenient_sourcing,
-        mine_text,
-        dump_corpus,
-        log_corpus_deltas,
-        no_lenient_sourcing,
-        state_machine_config,
-        tool_allowlist,
-        tool_blocklist,
-        in_band_error_forbidden,
-        pre_run_hook,
-        json,
-        full_trace,
-        show_uncallable,
-        uncallable_limit,
-        trace_all,
-        command,
-    } = cli;
-
-    let command = match command {
-        Command::Mcp { stdio, http, bind } => {
-            let transport = match resolve_mcp_transport(stdio, http, bind.as_deref()) {
-                Ok(transport) => transport,
-                Err(message) => return error_exit(&message, json),
-            };
-            let result = match transport {
-                McpTransport::Stdio => mcp::run_stdio().await,
-                McpTransport::Http { bind } => mcp::run_http(&bind).await,
-            };
-            if let Err(message) = result {
-                return error_exit(&message, json);
-            }
-            return ExitCode::SUCCESS;
+    if let Command::Mcp { stdio, http, bind } = &cli.command {
+        let transport = match resolve_mcp_transport(*stdio, *http, bind.as_deref()) {
+            Ok(transport) => transport,
+            Err(message) => return error_exit(&message, cli.json),
+        };
+        let result = match transport {
+            McpTransport::Stdio => mcp::run_stdio().await,
+            McpTransport::Http { bind } => mcp::run_http(&bind).await,
+        };
+        if let Err(message) = result {
+            return error_exit(&message, cli.json);
         }
-        Command::Stdio {
-            command,
-            args,
-            env,
-            cwd,
-        } => RunCommand::Stdio {
-            command,
-            args,
-            env,
-            cwd,
-        },
-        Command::Http { url, auth_token } => RunCommand::Http { url, auth_token },
-    };
+        return ExitCode::SUCCESS;
+    }
 
-    let state_machine_config = match state_machine_config.as_deref() {
-        Some(raw) => match parse_state_machine_config(raw) {
-            Ok(config) => Some(config),
-            Err(message) => return error_exit(&message, json),
-        },
-        None => None,
-    };
-    let pre_run_hook = pre_run_hook.map(|command| TooltestPreRunHook {
-        command,
-        env: BTreeMap::new(),
-        cwd: None,
-    });
-    let target = match command {
-        RunCommand::Stdio {
-            command,
-            args,
-            env,
-            cwd,
-        } => {
-            let env = match parse_env_vars(env) {
-                Ok(env) => env,
-                Err(message) => return error_exit(&message, json),
-            };
-            TooltestTarget {
-                stdio: Some(TooltestStdioTarget {
-                    command,
-                    args,
-                    env,
-                    cwd,
-                }),
-                http: None,
-            }
-        }
-        RunCommand::Http { url, auth_token } => TooltestTarget {
-            stdio: None,
-            http: Some(TooltestHttpTarget { url, auth_token }),
-        },
-    };
-    let input = TooltestInput {
-        target,
-        cases,
-        min_sequence_len,
-        max_sequence_len,
-        lenient_sourcing,
-        mine_text,
-        dump_corpus,
-        log_corpus_deltas,
-        no_lenient_sourcing,
-        state_machine_config,
-        tool_allowlist,
-        tool_blocklist,
-        in_band_error_forbidden,
-        pre_run_hook,
-        full_trace,
-        show_uncallable,
-        uncallable_limit,
+    let json = cli.json;
+    let trace_all = cli.trace_all.clone();
+    let input = match build_tooltest_input(&cli) {
+        Ok(input) => input,
+        Err(message) => return error_exit(&message, json),
     };
     let TooltestRunConfig {
         target,
@@ -320,6 +173,64 @@ pub async fn run(cli: Cli) -> ExitCode {
     maybe_dump_corpus(dump_corpus, json, &result);
 
     exit_code_for_result(&result)
+}
+
+fn build_tooltest_input(cli: &Cli) -> Result<TooltestInput, String> {
+    let state_machine_config = match cli.state_machine_config.as_deref() {
+        Some(raw) => Some(parse_state_machine_config(raw)?),
+        None => None,
+    };
+    let pre_run_hook = cli.pre_run_hook.as_ref().map(|command| TooltestPreRunHook {
+        command: command.clone(),
+        env: BTreeMap::new(),
+        cwd: None,
+    });
+    let target = match &cli.command {
+        Command::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
+            let env = parse_env_vars(env.clone())?;
+            TooltestTarget {
+                stdio: Some(TooltestStdioTarget {
+                    command: command.clone(),
+                    args: args.clone(),
+                    env,
+                    cwd: cwd.clone(),
+                }),
+                http: None,
+            }
+        }
+        Command::Http { url, auth_token } => TooltestTarget {
+            stdio: None,
+            http: Some(TooltestHttpTarget {
+                url: url.clone(),
+                auth_token: auth_token.clone(),
+            }),
+        },
+        Command::Mcp { .. } => return Err("mcp command does not accept tooltest input".to_string()),
+    };
+    Ok(TooltestInput {
+        target,
+        cases: cli.cases,
+        min_sequence_len: cli.min_sequence_len,
+        max_sequence_len: cli.max_sequence_len,
+        lenient_sourcing: cli.lenient_sourcing,
+        mine_text: cli.mine_text,
+        dump_corpus: cli.dump_corpus,
+        log_corpus_deltas: cli.log_corpus_deltas,
+        no_lenient_sourcing: cli.no_lenient_sourcing,
+        state_machine_config,
+        tool_allowlist: cli.tool_allowlist.clone(),
+        tool_blocklist: cli.tool_blocklist.clone(),
+        in_band_error_forbidden: cli.in_band_error_forbidden,
+        pre_run_hook,
+        full_trace: cli.full_trace,
+        show_uncallable: cli.show_uncallable,
+        uncallable_limit: cli.uncallable_limit,
+    })
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -360,69 +271,6 @@ fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
     }
 }
 
-#[cfg(test)]
-struct ToolFilterSets {
-    allowlist: Option<HashSet<String>>,
-    blocklist: Option<HashSet<String>>,
-}
-
-#[cfg(test)]
-struct ToolFilters {
-    predicate: ToolPredicate,
-    name_predicate: ToolNamePredicate,
-}
-
-#[cfg(test)]
-fn build_tool_filter_sets(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilterSets> {
-    if allowlist.is_empty() && blocklist.is_empty() {
-        return None;
-    }
-    let allowlist =
-        (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
-    let blocklist =
-        (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
-    Some(ToolFilterSets {
-        allowlist,
-        blocklist,
-    })
-}
-
-#[cfg(test)]
-fn build_tool_filters(allowlist: &[String], blocklist: &[String]) -> Option<ToolFilters> {
-    let sets = build_tool_filter_sets(allowlist, blocklist)?;
-    let allowlist = sets.allowlist;
-    let blocklist = sets.blocklist;
-    let name_predicate: ToolNamePredicate = Arc::new(move |tool_name| {
-        if let Some(allowlist) = allowlist.as_ref() {
-            if !allowlist.contains(tool_name) {
-                return false;
-            }
-        }
-        if let Some(blocklist) = blocklist.as_ref() {
-            if blocklist.contains(tool_name) {
-                return false;
-            }
-        }
-        true
-    });
-    let predicate_name = Arc::clone(&name_predicate);
-    let predicate: ToolPredicate = Arc::new(move |tool_name, _input| predicate_name(tool_name));
-    Some(ToolFilters {
-        predicate,
-        name_predicate,
-    })
-}
-
-pub fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<usize>, String> {
-    if min_len == 0 {
-        return Err("min-sequence-len must be at least 1".to_string());
-    }
-    if min_len > max_len {
-        return Err("min-sequence-len must be <= max-sequence-len".to_string());
-    }
-    Ok(min_len..=max_len)
-}
-
 pub fn parse_env_vars(entries: Vec<String>) -> Result<BTreeMap<String, String>, String> {
     let mut env = BTreeMap::new();
     for entry in entries {
@@ -444,9 +292,9 @@ pub fn parse_state_machine_config(raw: &str) -> Result<StateMachineConfig, Strin
     } else {
         raw.to_string()
     };
-    let input: StateMachineConfigInput = serde_json::from_str(&payload)
+    let input: StateMachineConfig = serde_json::from_str(&payload)
         .map_err(|error| format!("invalid state-machine-config: {error}"))?;
-    Ok(input.into())
+    Ok(input)
 }
 
 #[derive(Serialize)]
@@ -743,21 +591,52 @@ mod tests {
     }
 
     #[test]
-    fn build_sequence_len_rejects_zero_min() {
-        let error = build_sequence_len(0, 1).expect_err("error");
+    fn tooltest_input_rejects_zero_min_sequence_len() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--min-sequence-len",
+            "0",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let error = input.to_runner_options().expect_err("error");
         assert!(error.contains("min-sequence-len must be at least 1"));
     }
 
     #[test]
-    fn build_sequence_len_rejects_inverted_range() {
-        let error = build_sequence_len(3, 2).expect_err("error");
+    fn tooltest_input_rejects_inverted_sequence_len() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--min-sequence-len",
+            "3",
+            "--max-sequence-len",
+            "2",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let error = input.to_runner_options().expect_err("error");
         assert!(error.contains("min-sequence-len must be <= max-sequence-len"));
     }
 
     #[test]
-    fn build_sequence_len_accepts_valid_range() {
-        let range = build_sequence_len(1, 3).expect("range");
-        assert_eq!(range, 1..=3);
+    fn tooltest_input_accepts_valid_sequence_len() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--min-sequence-len",
+            "1",
+            "--max-sequence-len",
+            "3",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let options = input.to_runner_options().expect("options");
+        assert_eq!(options.sequence_len, 1..=3);
     }
 
     #[test]
@@ -783,28 +662,54 @@ mod tests {
     }
 
     #[test]
-    fn build_tool_filters_block_blocklisted_tool() {
-        let filters = build_tool_filters(&[], &[String::from("echo")]).expect("filters");
+    fn tooltest_input_builds_tool_filters_from_blocklist() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--tool-blocklist",
+            "echo",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let run_config = input.to_run_config().expect("run config");
+        let predicate = run_config.predicate.expect("predicate");
+        let name_predicate = run_config.tool_filter.expect("tool filter");
 
-        assert!(!(filters.predicate)("echo", &json!({})));
-        assert!(!(filters.name_predicate)("echo"));
-        assert!((filters.predicate)("other", &json!({})));
-        assert!((filters.name_predicate)("other"));
+        assert!(!(predicate)("echo", &json!({})));
+        assert!(!(name_predicate)("echo"));
+        assert!((predicate)("other", &json!({})));
+        assert!((name_predicate)("other"));
     }
 
     #[test]
-    fn build_tool_filters_none_with_empty_lists() {
-        assert!(build_tool_filters(&[], &[]).is_none());
+    fn tooltest_input_omits_tool_filters_when_empty() {
+        let cli = Cli::parse_from(["tooltest", "http", "--url", "http://127.0.0.1:0/mcp"]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let run_config = input.to_run_config().expect("run config");
+        assert!(run_config.predicate.is_none());
+        assert!(run_config.tool_filter.is_none());
     }
 
     #[test]
-    fn build_tool_filters_reject_non_allowlisted_tool() {
-        let filters = build_tool_filters(&[String::from("echo")], &[]).expect("filters");
+    fn tooltest_input_builds_tool_filters_from_allowlist() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "--tool-allowlist",
+            "echo",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let run_config = input.to_run_config().expect("run config");
+        let predicate = run_config.predicate.expect("predicate");
+        let name_predicate = run_config.tool_filter.expect("tool filter");
 
-        assert!(!(filters.predicate)("other", &json!({})));
-        assert!(!(filters.name_predicate)("other"));
-        assert!((filters.predicate)("echo", &json!({})));
-        assert!((filters.name_predicate)("echo"));
+        assert!(!(predicate)("other", &json!({})));
+        assert!(!(name_predicate)("other"));
+        assert!((predicate)("echo", &json!({})));
+        assert!((name_predicate)("echo"));
     }
 
     #[test]
@@ -1012,6 +917,53 @@ mod tests {
     }
 
     #[test]
+    fn tooltest_input_builds_stdio_target_from_cli() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "stdio",
+            "--command",
+            "server",
+            "--arg",
+            "flag",
+            "--env",
+            "FOO=bar",
+            "--cwd",
+            "/tmp",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let stdio = input.target.stdio.expect("stdio target");
+        assert_eq!(stdio.command, "server");
+        assert_eq!(stdio.args, vec!["flag".to_string()]);
+        assert_eq!(stdio.env.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(stdio.cwd.as_deref(), Some("/tmp"));
+        assert!(input.target.http.is_none());
+    }
+
+    #[test]
+    fn tooltest_input_builds_http_target_from_cli() {
+        let cli = Cli::parse_from([
+            "tooltest",
+            "http",
+            "--url",
+            "http://127.0.0.1:0/mcp",
+            "--auth-token",
+            "secret",
+        ]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let http = input.target.http.expect("http target");
+        assert_eq!(http.url, "http://127.0.0.1:0/mcp");
+        assert_eq!(http.auth_token.as_deref(), Some("secret"));
+        assert!(input.target.stdio.is_none());
+    }
+
+    #[test]
+    fn tooltest_input_rejects_mcp_command() {
+        let cli = Cli::parse_from(["tooltest", "mcp"]);
+        let error = build_tooltest_input(&cli).expect_err("error");
+        assert!(error.contains("mcp command"));
+    }
+
+    #[test]
     fn cli_parses_lenient_sourcing_flag() {
         let cli = Cli::parse_from([
             "tooltest",
@@ -1095,13 +1047,7 @@ mod tests {
 
     #[test]
     fn mcp_command_accepts_http_bind() {
-        let cli = Cli::parse_from([
-            "tooltest",
-            "mcp",
-            "--http",
-            "--bind",
-            "127.0.0.1:9000",
-        ]);
+        let cli = Cli::parse_from(["tooltest", "mcp", "--http", "--bind", "127.0.0.1:9000"]);
         let (stdio, http, bind) = unpack_mcp(cli.command);
         let transport = resolve_mcp_transport(stdio, http, bind.as_deref()).expect("transport");
         assert_eq!(
@@ -1122,13 +1068,7 @@ mod tests {
 
     #[test]
     fn mcp_command_rejects_stdio_with_bind() {
-        let cli = Cli::parse_from([
-            "tooltest",
-            "mcp",
-            "--stdio",
-            "--bind",
-            "127.0.0.1:9000",
-        ]);
+        let cli = Cli::parse_from(["tooltest", "mcp", "--stdio", "--bind", "127.0.0.1:9000"]);
         let (stdio, http, bind) = unpack_mcp(cli.command);
         let error = resolve_mcp_transport(stdio, http, bind.as_deref()).expect_err("error");
         assert!(error.contains("bind"));

@@ -4,8 +4,10 @@
 //! session layers aligned and to retain full error context for debugging.
 
 use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
+use log::debug;
 use rmcp::model::Tool;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
+use serde::Serialize;
 /// Errors emitted by the rmcp-backed session driver.
 ///
 /// The rmcp error variants are boxed to keep the enum size small; match on
@@ -84,13 +86,17 @@ impl SessionDriver {
         &self,
         invocation: ToolInvocation,
     ) -> Result<TraceEntry, SessionError> {
+        log_io("call_tool request", &invocation);
         let response = self.service.peer().call_tool(invocation.clone()).await?;
+        log_io("call_tool response", &response);
         Ok(TraceEntry::tool_call_with_response(invocation, response))
     }
 
     /// Lists all tools available from the MCP session.
     pub async fn list_tools(&self) -> Result<Vec<Tool>, SessionError> {
+        log_io_message("list_tools request");
         let tools = self.service.peer().list_all_tools().await?;
+        log_io("list_tools response", &tools);
         Ok(tools)
     }
 
@@ -105,6 +111,21 @@ impl SessionDriver {
         }
         Ok(trace)
     }
+}
+
+const IO_LOG_TARGET: &str = "tooltest.io_logs";
+
+fn log_io_message(message: &str) {
+    debug!(target: IO_LOG_TARGET, "{message}");
+}
+
+fn log_io<T: Serialize>(label: &str, value: &T) {
+    debug!(
+        target: IO_LOG_TARGET,
+        "{label}: {}",
+        serde_json::to_string(value)
+            .unwrap_or_else(|error| format!("<serialize error: {error}>"))
+    );
 }
 
 /// Builds an HTTP transport config for MCP communication.

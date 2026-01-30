@@ -2026,6 +2026,7 @@ dependencies = [
  "axum",
  "chrono",
  "jsonschema",
+ "log",
  "nonempty",
  "proptest",
  "proptest-state-machine",

@@ -1091,7 +1091,8 @@ mod tests {
             "target": { "stdio": { "command": server, "env": stdio_env() } },
             "cases": 50,
             "min_sequence_len": 1,
-            "max_sequence_len": 1
+            "max_sequence_len": 1,
+            "lenient_sourcing": true
         });
         let response =
             send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;

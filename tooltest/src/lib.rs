@@ -12,6 +12,18 @@ use tooltest_core::{
 
 mod mcp;
 
+#[cfg(test)]
+mod test_logger {
+    use ctor::ctor;
+
+    #[ctor]
+    fn init_logger() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default())
+            .is_test(true)
+            .try_init();
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "tooltest", version, about = "CLI wrapper for tooltest-core")]
 pub struct Cli {

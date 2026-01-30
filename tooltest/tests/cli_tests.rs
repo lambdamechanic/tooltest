@@ -3,9 +3,10 @@ use std::env;
 use std::fs;
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tooltest_core::RunResult;
+use tooltest_core::{RunOutcome, RunResult, TraceEntry};
+use tooltest_test_support as _;
 
-fn run_tooltest(args: &[&str]) -> Output {
+fn tooltest_command(args: &[&str]) -> Command {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
     let mut full_args: Vec<&str> = args.to_vec();
     if args.contains(&"stdio") {
@@ -14,18 +15,23 @@ fn run_tooltest(args: &[&str]) -> Output {
         full_args.push("--env");
         full_args.push("TOOLTEST_TEST_SERVER_ALLOW_STDIN=1");
     }
-    Command::new(tooltest)
-        .args(full_args)
-        .output()
-        .expect("run tooltest")
+    let mut command = Command::new(tooltest);
+    command.args(full_args);
+    command
+}
+
+fn run_tooltest(args: &[&str]) -> Output {
+    tooltest_command(args).output().expect("run tooltest")
 }
 
 fn run_tooltest_json(args: &[&str]) -> serde_json::Value {
     let output = run_tooltest(args);
+    let outer_json = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
         output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "stderr: {}\nouter json:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        outer_json
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(stdout.trim()).expect("json output")
@@ -47,6 +53,15 @@ fn run_tooltest_run_result_allow_failure(args: &[&str]) -> (Output, RunResult) {
 
 fn test_server() -> Option<&'static str> {
     let server = option_env!("CARGO_BIN_EXE_tooltest_test_server")?;
+    if std::path::Path::new(server).exists() {
+        Some(server)
+    } else {
+        None
+    }
+}
+
+fn flaky_server() -> Option<&'static str> {
+    let server = option_env!("CARGO_BIN_EXE_tooltest_flaky_stdio_server")?;
     if std::path::Path::new(server).exists() {
         Some(server)
     } else {
@@ -103,10 +118,12 @@ fn stdio_command_reports_success() {
     };
     let output = run_tooltest(&["stdio", "--command", server, "--env", "FOO=bar"]);
 
+    let outer_json = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
         output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "stderr: {}\nouter json:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        outer_json
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -139,10 +156,12 @@ fn stdio_command_reports_success_with_state_machine_mode() {
         server,
     ]);
 
+    let outer_json = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
         output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "stderr: {}\nouter json:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        outer_json
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -157,7 +176,7 @@ fn stdio_command_reports_coverage_warning_for_missing_string() {
     };
     let output = run_tooltest(&[
         "--cases",
-        "1",
+        "50",
         "--max-sequence-len",
         "1",
         "stdio",
@@ -927,6 +946,181 @@ fn run_stdio_reports_success_with_env_and_cwd() {
         .expect("run tooltest");
 
     assert!(output.status.success());
+}
+
+#[test]
+fn tooltest_dogfoods_tooltest_stdio() {
+    let Some(server) = flaky_server() else {
+        return;
+    };
+    let config_dir = temp_dir("dogfood");
+    fs::create_dir_all(&config_dir).expect("create temp dir");
+    let config_path = config_dir.join("state-machine.json");
+    let config_payload = serde_json::json!({
+        "seed_numbers": [1, 3, 30],
+    });
+    let config_payload =
+        serde_json::to_string(&config_payload).expect("serialize state machine config");
+    fs::write(&config_path, config_payload).expect("write config");
+    let config_arg = format!("@{}", config_path.display());
+    let dogfood_env = format!("TOOLTEST_MCP_DOGFOOD_COMMAND={server}");
+    let tooltest = env!("CARGO_BIN_EXE_tooltest");
+    let trace_path = config_dir.join("trace-all.jsonl");
+    let trace_arg = trace_path.to_string_lossy().to_string();
+
+    let (output, run_result) = run_tooltest_run_result_allow_failure(&[
+        "--json",
+        "--full-trace",
+        "--trace-all",
+        &trace_arg,
+        "--tool-allowlist",
+        "tooltest",
+        "--cases",
+        "50",
+        "--min-sequence-len",
+        "1",
+        "--max-sequence-len",
+        "1",
+        "--no-lenient-sourcing",
+        "--state-machine-config",
+        &config_arg,
+        "stdio",
+        "--command",
+        tooltest,
+        "--arg",
+        "mcp",
+        "--env",
+        &dogfood_env,
+    ]);
+
+    let outer_json = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(
+        output.status.success(),
+        "stderr: {}\nouter json:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        outer_json
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stdout-noise bucket hit"),
+        "expected stdout-noise marker in stderr\nouter json:\n{}",
+        outer_json
+    );
+    assert!(
+        stderr.contains("crash bucket hit"),
+        "expected crash marker in stderr\nouter json:\n{}",
+        outer_json
+    );
+    assert!(
+        matches!(run_result.outcome, RunOutcome::Success),
+        "outer run failed: {:?}\nouter json:\n{}",
+        run_result.outcome,
+        outer_json
+    );
+
+    let trace_payload = fs::read_to_string(&trace_path).expect("read trace-all output");
+    let mut lines = trace_payload.lines();
+    let header = lines.next().expect("trace-all header");
+    let header_value: serde_json::Value =
+        serde_json::from_str(header).expect("trace-all header json");
+    assert_eq!(header_value["format"], "trace_all_v1");
+
+    #[derive(serde::Deserialize)]
+    struct TraceRecord {
+        #[allow(dead_code)]
+        case: u64,
+        trace: Vec<TraceEntry>,
+    }
+
+    let mut inner_results = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: TraceRecord = serde_json::from_str(line).expect("trace-all record");
+        for entry in record.trace {
+            let TraceEntry::ToolCall {
+                invocation,
+                response,
+                failure_reason,
+            } = entry
+            else {
+                continue;
+            };
+            if invocation.name.as_ref() != "tooltest" {
+                continue;
+            }
+            assert!(
+                failure_reason.is_none(),
+                "tooltest call failed: {failure_reason:?}"
+            );
+            let response = response.expect("tooltest response");
+            assert_ne!(
+                response.is_error,
+                Some(true),
+                "tooltest response reported isError"
+            );
+            let structured = response
+                .structured_content
+                .expect("tooltest structured content");
+            let inner: RunResult = serde_json::from_value(structured).expect("inner run result");
+            inner_results.push(inner);
+        }
+    }
+
+    assert!(
+        !inner_results.is_empty(),
+        "missing tooltest traces in trace-all output\nouter json:\n{}",
+        outer_json
+    );
+
+    let mut saw_success = false;
+    let mut saw_in_band_error = false;
+    let mut saw_catastrophic = false;
+    let mut unexpected_failures = Vec::new();
+
+    for inner in inner_results {
+        match &inner.outcome {
+            RunOutcome::Success => {
+                saw_success = true;
+            }
+            RunOutcome::Failure(failure) => {
+                let reason = failure.reason.as_str();
+                if reason.contains("TransportClosed") || reason.contains("session error") {
+                    saw_catastrophic = true;
+                } else {
+                    unexpected_failures.push(failure.reason.clone());
+                }
+            }
+        }
+        if let Some(coverage) = inner.coverage.as_ref() {
+            let failures = coverage.failures.get("flaky_echo").copied().unwrap_or(0);
+            if failures > 0 {
+                saw_in_band_error = true;
+            }
+        }
+    }
+
+    assert!(
+        unexpected_failures.is_empty(),
+        "unexpected inner failures: {unexpected_failures:?}\nouter json:\n{}",
+        outer_json
+    );
+    assert!(
+        saw_success,
+        "expected at least one inner success\nouter json:\n{}",
+        outer_json
+    );
+    assert!(
+        saw_in_band_error,
+        "expected at least one in-band error\nouter json:\n{}",
+        outer_json
+    );
+    assert!(
+        saw_catastrophic,
+        "expected at least one catastrophic failure\nouter json:\n{}",
+        outer_json
+    );
 }
 
 #[test]

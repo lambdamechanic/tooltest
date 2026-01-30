@@ -9,6 +9,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value as JsonValue};
 
+#[cfg(test)]
+use tooltest_test_support as _;
+
 mod generator;
 mod input;
 mod output_schema;
@@ -436,7 +439,7 @@ impl fmt::Debug for RunConfig {
 pub type ToolInvocation = CallToolRequestParam;
 
 /// A trace entry capturing MCP interactions.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TraceEntry {
     /// A list-tools request was issued.
@@ -505,14 +508,14 @@ impl TraceEntry {
 }
 
 /// A minimized failing sequence from property-based testing.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MinimizedSequence {
     /// The minimized tool invocations that reproduce the failure.
     pub invocations: Vec<ToolInvocation>,
 }
 
 /// Outcome of a tooltest run.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RunOutcome {
     /// The run completed without assertion failures.
@@ -522,13 +525,15 @@ pub enum RunOutcome {
 }
 
 /// Failure details for a tooltest run.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunFailure {
     /// Short description of the failure.
     pub reason: String,
     /// Optional structured failure code.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     /// Optional structured failure details.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<JsonValue>,
 }
 
@@ -544,7 +549,7 @@ impl RunFailure {
 }
 
 /// Warning emitted during a tooltest run.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunWarning {
     /// Structured warning code.
     pub code: RunWarningCode,
@@ -562,7 +567,7 @@ pub trait TraceSink: Send + Sync {
 }
 
 /// Structured warning codes for tooltest runs.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunWarningCode {
     SchemaUnsupportedKeyword,
@@ -570,7 +575,7 @@ pub enum RunWarningCode {
 }
 
 /// Warning describing a coverage issue in a state-machine run.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CoverageWarning {
     /// Tool name that could not be called.
     pub tool: String,
@@ -579,7 +584,7 @@ pub struct CoverageWarning {
 }
 
 /// Structured reason codes for coverage warnings.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageWarningReason {
     MissingString,
@@ -589,7 +594,7 @@ pub enum CoverageWarningReason {
 }
 
 /// Recorded call details for tools with zero successes.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct UncallableToolCall {
     /// Tool invocation input.
     pub input: ToolInvocation,
@@ -604,7 +609,7 @@ pub struct UncallableToolCall {
 }
 
 /// Coverage report for state-machine runs.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CoverageReport {
     /// Successful tool call counts.
     pub counts: BTreeMap<String, u64>,
@@ -617,7 +622,7 @@ pub struct CoverageReport {
 }
 
 /// Snapshot of the state-machine corpus.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CorpusReport {
     /// Numbers observed in the corpus.
     pub numbers: Vec<Number>,
@@ -657,17 +662,19 @@ impl CoverageRule {
 }
 
 /// Results of a tooltest run.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunResult {
     /// Overall run outcome.
     pub outcome: RunOutcome,
     /// Trace of MCP calls (responses are only included on failures).
     pub trace: Vec<TraceEntry>,
     /// Minimized sequence for failures, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized: Option<MinimizedSequence>,
     /// Non-fatal warnings collected during the run.
     pub warnings: Vec<RunWarning>,
     /// Coverage report for state-machine runs, when enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub coverage: Option<CoverageReport>,
     /// Corpus snapshot for state-machine runs, when enabled.
     #[serde(skip_serializing_if = "Option::is_none")]

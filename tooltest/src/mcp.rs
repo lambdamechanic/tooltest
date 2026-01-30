@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use tooltest_core::{TooltestInput, TooltestRunConfig, TooltestTargetConfig};
 
@@ -89,7 +89,8 @@ fn build_worker_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
             "forced runtime error",
         ));
     }
-    tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
 }
@@ -372,12 +373,55 @@ fn tooltest_tool() -> Tool {
         name: TOOLTEST_TOOL_NAME.into(),
         title: None,
         description: Some(TOOLTEST_TOOL_DESCRIPTION.into()),
-        input_schema: schema_for_type::<TooltestInput>(),
-        output_schema: None,
+        input_schema: tooltest_input_schema(),
+        output_schema: Some(schema_for_type::<tooltest_core::RunResult>()),
         annotations: None,
         icons: None,
         meta: None,
     }
+}
+
+fn tooltest_input_schema() -> Arc<JsonObject> {
+    if let Ok(command) = std::env::var("TOOLTEST_MCP_DOGFOOD_COMMAND") {
+        return dogfood_input_schema(&command);
+    }
+    schema_for_type::<TooltestInput>()
+}
+
+fn dogfood_input_schema(command: &str) -> Arc<JsonObject> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "object",
+                "properties": {
+                    "stdio": {
+                        "type": "object",
+                        "properties": {
+                            "command": { "const": command }
+                        },
+                        "required": ["command"],
+                        "additionalProperties": false
+                    }
+                },
+                "required": ["stdio"],
+                "additionalProperties": false
+            },
+            "cases": { "type": "integer", "const": 30 },
+            "min_sequence_len": { "type": "integer", "const": 1 },
+            "max_sequence_len": { "type": "integer", "const": 1 },
+            "lenient_sourcing": { "const": true }
+        },
+        "required": [
+            "target",
+            "cases",
+            "min_sequence_len",
+            "max_sequence_len",
+            "lenient_sourcing"
+        ],
+        "additionalProperties": false
+    });
+    Arc::new(schema.as_object().cloned().expect("dogfood schema object"))
 }
 
 fn fix_loop_prompt() -> Prompt {
@@ -479,8 +523,8 @@ fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::{
-        run_result_to_call_tool, run_tooltest_call, serialize_value, tooltest_worker_inner,
-        McpServer, NoopSink, TooltestWorker, TOOLTEST_FIX_LOOP_PROMPT,
+        run_result_to_call_tool, run_tooltest_call, serialize_value, tooltest_input_schema,
+        tooltest_worker_inner, McpServer, NoopSink, TooltestWorker, TOOLTEST_FIX_LOOP_PROMPT,
         TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION, TOOLTEST_FIX_LOOP_PROMPT_NAME,
         TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION, TOOLTEST_TOOL_NAME,
     };
@@ -667,6 +711,8 @@ mod tests {
             .expect("tooltest tool");
         assert_eq!(tool.description.as_deref(), Some(TOOLTEST_TOOL_DESCRIPTION));
         assert!(!tool.input_schema.is_empty());
+        let output_schema = tool.output_schema.as_ref().expect("output schema");
+        assert!(!output_schema.is_empty());
     }
 
     #[tokio::test]
@@ -1092,14 +1138,19 @@ mod tests {
             "cases": 50,
             "min_sequence_len": 1,
             "max_sequence_len": 1,
-            "lenient_sourcing": true
+            "no_lenient_sourcing": true,
+            "state_machine_config": {
+                "coverage_rules": [
+                    { "rule": "percent_called", "min_percent": 100.0 }
+                ]
+            }
         });
         let response =
             send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let result = call_tool_result_from_response(response).expect("call tool result");
         assert_eq!(result.is_error, Some(false));
         let run_result = run_result_from_tool_result(result);
-        let _ = run_result.outcome;
+        assert!(!outcome_is_failure(&run_result.outcome));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1364,6 +1415,36 @@ mod tests {
         let _guard = EnvVarGuard::set("CARGO_BIN_EXE_tooltest_test_server", "/tmp/override");
         let command = tooltest_server_command_locked();
         assert_eq!(command, "/tmp/override");
+    }
+
+    #[test]
+    fn tooltest_input_schema_uses_dogfood_command_env() {
+        let _lock = tooltest_server_env_lock().lock().expect("server env lock");
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_DOGFOOD_COMMAND", "dogfood-bin");
+        let schema = tooltest_input_schema();
+        let schema_value = JsonValue::Object(schema.as_ref().clone());
+        assert_eq!(
+            schema_value["properties"]["target"]["properties"]["stdio"]["properties"]["command"]
+                ["const"],
+            "dogfood-bin"
+        );
+        assert_eq!(schema_value["properties"]["cases"]["const"], 30);
+        assert_eq!(schema_value["properties"]["min_sequence_len"]["const"], 1);
+        assert_eq!(schema_value["properties"]["max_sequence_len"]["const"], 1);
+        assert_eq!(
+            schema_value["properties"]["lenient_sourcing"]["const"],
+            true
+        );
+        assert_eq!(
+            schema_value["required"],
+            json!([
+                "target",
+                "cases",
+                "min_sequence_len",
+                "max_sequence_len",
+                "lenient_sourcing"
+            ])
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::fs;
+use tooltest_test_support as _;
 
 fn table_has_dep(table: &toml::value::Table, name: &str) -> bool {
     table.contains_key(name)

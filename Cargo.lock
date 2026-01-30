@@ -2018,7 +2018,6 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "ctor",
  "env_logger",
  "futures",
  "rmcp",
@@ -2059,6 +2058,8 @@ dependencies = [
 name = "tooltest-test-support"
 version = "0.3.0"
 dependencies = [
+ "ctor",
+ "env_logger",
  "rmcp",
  "serde_json",
  "tokio",

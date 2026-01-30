@@ -6,7 +6,12 @@ license.workspace = true
 description = "CLI conformance testing for MCP servers."
 repository.workspace = true
 readme = "../README.md"
-exclude = ["src/bin/tooltest_test_server.rs", "src/test_server.rs"]
+exclude = [
+    "src/bin/tooltest_flaky_stdio_server.rs",
+    "src/bin/tooltest_test_server.rs",
+    "src/test_server.rs",
+    "tests/support/flaky_stdio_server.rs",
+]
 
 [[bin]]
 name = "tooltest"
@@ -16,6 +21,11 @@ test = false
 [[bin]]
 name = "tooltest_test_server"
 path = "src/bin/tooltest_test_server.rs"
+test = false
+
+[[bin]]
+name = "tooltest_flaky_stdio_server"
+path = "src/bin/tooltest_flaky_stdio_server.rs"
 test = false
 
 [dependencies]
@@ -31,7 +41,6 @@ tooltest-core = { path = "../tooltest-core", version = "0.3.0" }
 
 [dev-dependencies]
 chrono = "0.4"
-ctor = "0.2"
 serde_json = "1"
 tooltest-test-support = { path = "../tooltest-test-support" }
 toml = "0.8"

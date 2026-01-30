@@ -65,9 +65,10 @@ The system SHALL define a public tooltest input type in `tooltest-core` that is 
 - **WHEN** the MCP tool receives input
 - **THEN** it uses the same input type as the CLI to configure the run
 
-#### Scenario: Shared input reflects CLI options
+#### Scenario: Shared input reflects CLI run configuration options
 - **WHEN** the shared input type is defined
-- **THEN** it includes fields corresponding to all CLI options (required and optional), structured into nested objects, with defaults matching the CLI defaults
+- **THEN** it includes fields corresponding to all CLI run-configuration options (required and optional), structured into nested objects, with defaults matching the CLI defaults
+- **THEN** CLI-only output/debug flags (for example `--json` and `--trace-all`) are not included in the shared input type
 
 #### Scenario: Shared input uses canonical JSON field names
 - **WHEN** the shared input is serialized for MCP tool usage

@@ -37,7 +37,7 @@ Tooltest currently generates tool invocations using proptest strategies derived 
 - Response mining may expand the corpus quickly, increasing state space. We can mitigate by bounding sequence length and optionally capping corpus growth in a follow-up change if needed.
 - State-machine generation may require additional runtime to execute and shrink; test defaults must remain conservative.
 - Coverage requirements may flag tools as uncallable due to missing corpus data; this is expected and should be surfaced as warnings.
-- Failing when minimum sequence length is unattainable may increase failures in sparse toolsets; this is intentional to surface insufficient state coverage.
+- Sparse toolsets may terminate early when no callable tools remain; this can reduce coverage and may require seeding or lenient sourcing.
 
 ## Migration Plan
 - Remove `GeneratorMode` and any generator mode selection fields/flags so existing callers fail to compile.

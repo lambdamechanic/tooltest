@@ -1,10 +1,10 @@
+use super::test_support::{connect_list_tools_transport, connect_runner_transport};
 use crate::{
     list_tools_with_session, validate_tool, RunConfig, RunOutcome, RunnerOptions, SchemaConfig,
     ToolValidationConfig, ToolValidationError,
 };
 use rmcp::model::CallToolResult;
 use serde_json::json;
-use super::test_support::{connect_list_tools_transport, connect_runner_transport};
 use tooltest_test_support::{tool_with_schemas, ListToolsTransport, RunnerTransport};
 
 #[tokio::test(flavor = "multi_thread")]

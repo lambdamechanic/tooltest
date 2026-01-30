@@ -308,6 +308,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2005,9 +2015,11 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 name = "tooltest"
 version = "0.3.0"
 dependencies = [
+ "axum",
  "chrono",
  "clap",
  "env_logger",
+ "futures",
  "rmcp",
  "serde",
  "serde_json",
@@ -2024,6 +2036,7 @@ dependencies = [
  "axum",
  "chrono",
  "jsonschema",
+ "log",
  "nonempty",
  "proptest",
  "proptest-state-machine",
@@ -2045,6 +2058,8 @@ dependencies = [
 name = "tooltest-test-support"
 version = "0.3.0"
 dependencies = [
+ "ctor",
+ "env_logger",
  "rmcp",
  "serde_json",
  "tokio",

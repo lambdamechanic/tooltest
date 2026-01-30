@@ -1,5 +1,14 @@
 use std::sync::{Arc, Mutex};
 
+use ctor::ctor;
+
+#[ctor]
+fn init_test_logger() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default())
+        .is_test(true)
+        .try_init();
+}
+
 use rmcp::model::{
     CallToolResult, ClientJsonRpcMessage, ClientRequest, ErrorData, InitializeResult,
     JsonRpcMessage, JsonRpcResponse, JsonRpcVersion2_0, RequestId, ServerInfo,

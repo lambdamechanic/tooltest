@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::sync::Mutex;
+use tooltest_test_support as _;
 
 #[path = "../src/test_server.rs"]
 mod test_server;

@@ -1,34 +1,22 @@
 ## ADDED Requirements
 
 ### Requirement: MCP server entry point
-The system SHALL provide a `tooltest mcp` entry point that runs a tooltest MCP server with explicit transport selection.
+The system SHALL provide a `tooltest mcp` entry point that runs a tooltest MCP server over stdio.
 
 #### Scenario: MCP stdio server defaults to stdio
-- **WHEN** `tooltest mcp` is invoked without `--stdio` or `--http`
+- **WHEN** `tooltest mcp` is invoked without `--stdio`
 - **THEN** the MCP server starts using stdio transport
 
 #### Scenario: MCP stdio server accepts explicit flag
 - **WHEN** `tooltest mcp --stdio` is invoked
 - **THEN** the MCP server starts using stdio transport
 
-#### Scenario: MCP http server requires bind address
-- **WHEN** `tooltest mcp --http` is invoked without `--bind`
+#### Scenario: MCP server rejects http flag
+- **WHEN** `tooltest mcp --http` is invoked
 - **THEN** the command fails with an argument error
 
-#### Scenario: MCP http server binds to provided address
-- **WHEN** `tooltest mcp --http --bind 127.0.0.1:9000` is invoked
-- **THEN** the MCP server binds to `127.0.0.1:9000`
-
-#### Scenario: MCP http server exposes /mcp endpoint
-- **WHEN** `tooltest mcp --http --bind 127.0.0.1:9000` is invoked
-- **THEN** the MCP server serves the MCP endpoint at `http://127.0.0.1:9000/mcp`
-
-#### Scenario: MCP transport flags are mutually exclusive
-- **WHEN** `tooltest mcp --stdio --http` is invoked
-- **THEN** the command fails with an argument error
-
-#### Scenario: MCP stdio server rejects bind address
-- **WHEN** `tooltest mcp --stdio --bind 127.0.0.1:9000` is invoked
+#### Scenario: MCP server rejects bind flag
+- **WHEN** `tooltest mcp --bind 127.0.0.1:9000` is invoked
 - **THEN** the command fails with an argument error
 
 ### Requirement: MCP tool for running tooltest
@@ -83,7 +71,7 @@ The system SHALL define a public tooltest input type in `tooltest-core` that is 
 
 #### Scenario: Shared input uses canonical JSON field names
 - **WHEN** the shared input is serialized for MCP tool usage
-- **THEN** it uses snake_case field names that match CLI long flags (for example `tool_allowlist`, `tool_blocklist`, `min_sequence_len`, `max_sequence_len`, `state_machine_config`, `pre_run_hook`, `trace_all`) and the transport is represented as `target.stdio.command` or `target.http.url`
+- **THEN** it uses snake_case field names that match CLI long flags (for example `tool_allowlist`, `tool_blocklist`, `min_sequence_len`, `max_sequence_len`, `state_machine_config`, `pre_run_hook`) and the transport is represented as `target.stdio.command` or `target.http.url`
 
 #### Scenario: Shared input requires explicit target
 - **WHEN** the MCP tool input omits `target`
@@ -124,9 +112,9 @@ The MCP server SHALL provide a static prompt named `tooltest-fix-loop` and a sta
 - **WHEN** the MCP client requests `tooltest-fix-loop`
 - **THEN** the prompt content instructs selecting a subset of tools intended to be used together and suggests a maximum of 50 tools, while strongly recommending a smaller group
 
-#### Scenario: Prompt supports MCP and CLI usage
+#### Scenario: Prompt distinguishes CLI and MCP usage
 - **WHEN** the MCP client requests `tooltest-fix-loop`
-- **THEN** the prompt content explains that tooltest can be invoked via the MCP tool or via the CLI, and to pass the same options in either path
+- **THEN** the prompt content explains the CLI flow vs the MCP tool flow and calls out CLI-only flags that are not available in MCP input
 
 #### Scenario: Prompt includes explicit allowlist examples
 - **WHEN** the MCP client requests `tooltest-fix-loop`
@@ -144,33 +132,28 @@ Figure out how to start the MCP server from this repo (stdio or streamable HTTP)
 
 Select a small, related subset of tools intended to be used together. Default to testing at most 50 tools at a time, and strongly prefer a smaller group. Use `--tool-allowlist` (or `tool_allowlist` in MCP input) to enforce this.
 
-Run tooltest against it (examples below).
-
-When tooltest reports failures, fix the underlying issues in the smallest reasonable patch.
-
-Re-run tooltest and repeat until it exits 0.
+Run tooltest against it and fix failures until it exits 0.
 
 If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
 
-If you need per-case traces for debugging, add `--trace-all /tmp/tooltest-traces.jsonl` (any writable path).
+CLI usage (preferred when you can run commands):
+- Use CLI-only flags for debugging, e.g. `--trace-all /tmp/tooltest-traces.jsonl`.
+- Examples:
+  CLI stdio (allowlist example): tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar
+  CLI http (allowlist example): tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar
 
-If you are invoking tooltest via the MCP tool instead of the CLI, pass the same options in the tool input.
-
-Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
-
-Add/adjust tests if needed.
-
-Commands (choose the right one):
-
-CLI stdio (allowlist example): tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar
-
-CLI http (allowlist example): tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar
-
-MCP tool (allowlist example):
+MCP tool usage (when you must call via MCP):
+- Call the `tooltest` tool with the shared input schema.
+- Only fields in the MCP input schema are accepted (CLI-only flags like `--json` and `--trace-all` are not supported).
+- Example (allowlist):
 {
   "target": { "stdio": { "command": "<command that starts the repo's MCP server>" } },
   "tool_allowlist": ["foo", "bar"]
 }
+
+Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
+
+Add/adjust tests if needed.
 
 Return a short summary of what you changed and why, plus the final passing tooltest output snippet.
 ```

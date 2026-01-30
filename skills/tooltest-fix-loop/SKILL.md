@@ -13,29 +13,20 @@ Figure out how to start the MCP server from this repo (stdio or streamable HTTP)
 
 Select a small, related subset of tools intended to be used together. Default to testing at most 50 tools at a time, and strongly prefer a smaller group. Use `--tool-allowlist` (or `tool_allowlist` in MCP input) to enforce this.
 
-Run tooltest against it (examples below).
-
-When tooltest reports failures, fix the underlying issues in the smallest reasonable patch.
-
-Re-run tooltest and repeat until it exits 0.
+Run tooltest against it and fix failures until it exits 0.
 
 If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
 
-If you need per-case traces for debugging, add `--trace-all /tmp/tooltest-traces.jsonl` (any writable path).
+CLI usage (preferred when you can run commands):
+- Use CLI-only flags for debugging, e.g. `--trace-all /tmp/tooltest-traces.jsonl`.
+- Examples:
+  CLI stdio (allowlist example): `tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar`
+  CLI http (allowlist example): `tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar`
 
-If you are invoking tooltest via the MCP tool instead of the CLI, pass the same options in the tool input.
-
-Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
-
-Add/adjust tests if needed.
-
-Commands (choose the right one):
-
-CLI stdio (allowlist example): `tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar`
-
-CLI http (allowlist example): `tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar`
-
-MCP tool (allowlist example):
+MCP tool usage (when you must call via MCP):
+- Call the `tooltest` tool with the shared input schema.
+- Only fields in the MCP input schema are accepted (CLI-only flags like `--json` and `--trace-all` are not supported).
+- Example (allowlist):
 
 ```json
 {
@@ -43,5 +34,9 @@ MCP tool (allowlist example):
   "tool_allowlist": ["foo", "bar"]
 }
 ```
+
+Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
+
+Add/adjust tests if needed.
 
 Return a short summary of what you changed and why, plus the final passing tooltest output snippet.

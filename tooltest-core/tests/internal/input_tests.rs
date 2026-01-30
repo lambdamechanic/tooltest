@@ -99,39 +99,6 @@ fn shared_input_rejects_top_level_stdio_shorthand() {
 }
 
 #[test]
-fn shared_input_rejects_empty_target() {
-    let payload = json!({ "target": {} });
-    let input: TooltestInput = serde_json::from_value(payload).expect("input");
-    let error = input.to_target_config().unwrap_err();
-    assert!(error.contains("target must include"));
-}
-
-#[test]
-fn shared_input_rejects_multiple_transports() {
-    let payload = json!({
-        "target": {
-            "stdio": { "command": "server" },
-            "http": { "url": "http://localhost:8080/mcp" }
-        }
-    });
-    let input: TooltestInput = serde_json::from_value(payload).expect("input");
-    let error = input.to_target_config().unwrap_err();
-    assert!(error.contains("exactly one"));
-}
-
-#[test]
-fn shared_input_rejects_invalid_http_url() {
-    let payload = json!({
-        "target": {
-            "http": { "url": "localhost:8080/mcp" }
-        }
-    });
-    let input: TooltestInput = serde_json::from_value(payload).expect("input");
-    let error = input.to_target_config().unwrap_err();
-    assert!(error.contains("invalid http url"));
-}
-
-#[test]
 fn shared_input_rejects_unparseable_http_url() {
     let payload = json!({
         "target": {

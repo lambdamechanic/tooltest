@@ -17,6 +17,10 @@ pub mod schema;
 pub mod session;
 mod validation;
 
+pub use input::{
+    TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
+    TooltestTarget, TooltestTargetConfig,
+};
 pub use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,
 };
@@ -27,10 +31,6 @@ pub use schema::{
     SchemaError,
 };
 pub use session::{SessionDriver, SessionError};
-pub use input::{
-    TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
-    TooltestTarget, TooltestTargetConfig,
-};
 pub use validation::{
     list_tools_http, list_tools_stdio, list_tools_with_session, validate_tool, validate_tools,
     BulkToolValidationSummary, ListToolsError, ToolValidationConfig, ToolValidationDecision,

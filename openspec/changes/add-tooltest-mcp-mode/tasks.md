@@ -24,7 +24,7 @@
 - [ ] Ensure `tooltest stdio` and `tooltest http` remain backwards compatible.
 
 ## 4. MCP server implementation
-- [ ] Add `tooltest mcp` subcommand with explicit `--stdio` (default) and `--http --bind <addr>` (mutually exclusive) options.
+- [ ] Add `tooltest mcp` subcommand with stdio-only transport (optional `--stdio` flag).
 - [ ] Implement MCP server exposing a `tooltest` tool that accepts the shared input type and returns `RunResult` for tooltest completion outcomes.
 - [ ] Surface unexpected tooltest errors as MCP/JSON-RPC errors.
 - [ ] Mirror `RunResult` into `content` as JSON text and include it as `structuredContent` for MCP tool responses.

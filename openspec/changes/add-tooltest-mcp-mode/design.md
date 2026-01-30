@@ -13,14 +13,13 @@ Introduce a new `tooltest mcp` subcommand that runs an MCP server exposing a sin
 - MCP input requires an explicit `target` object (no top-level `stdio` shorthand).
 
 ## MCP server
-- `tooltest mcp` starts an MCP server that exposes the `tooltest` tool.
-- The MCP server transport is configured via `--stdio` (default) or `--http --bind <addr>` with explicit `--stdio` support and mutual exclusion between `--stdio` and `--http`.
-- For `--http`, the server must bind to the provided address and expose the MCP endpoint at `/mcp`.
+- `tooltest mcp` starts an MCP server that exposes the `tooltest` tool over stdio.
+- The MCP server transport is stdio-only; HTTP server mode is intentionally unsupported.
 - The `tooltest` MCP tool returns `RunResult` in `structuredContent`, mirrors it as JSON text in `content`, and uses `isError=true` only for internal tooltest failures that cannot produce a `RunResult`.
 
 ## Prompts
 - Add a static prompt to the MCP server named `tooltest-fix-loop`.
-- The prompt is a static literal that includes guidance to select a small subset of related tools (suggest default max 50, recommend fewer) and notes that tooltest can be invoked via MCP or CLI with the same options.
+- The prompt is a static literal that includes guidance to select a small subset of related tools (suggest default max 50, recommend fewer) and distinguishes CLI usage from MCP tool usage, including CLI-only flags.
 - Add a static MCP resource (default URI `tooltest://guides/fix-loop`) with content matching the prompt to guide usage.
 
 ## Testing

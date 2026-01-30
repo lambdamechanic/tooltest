@@ -1,24 +1,21 @@
-use axum::Router;
-use futures::stream::Stream;
+use futures::{stream::Stream, FutureExt};
 use rmcp::handler::server::common::schema_for_type;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, ClientJsonRpcMessage, ClientNotification, ClientRequest,
-    InitializeRequest, InitializeRequestParam, InitializedNotification, NumberOrString,
-    GetPromptRequestParam, GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParam, Prompt, PromptMessage, PromptMessageContent, PromptMessageRole,
-    ReadResourceRequestParam, ReadResourceResult, ResourceContents, Tool, RawResource, AnnotateAble,
-    Resource, JsonObject,
+    AnnotateAble, CallToolRequestParam, CallToolResult, ClientJsonRpcMessage, ClientNotification,
+    ClientRequest, GetPromptRequestParam, GetPromptResult, InitializeRequest,
+    InitializeRequestParam, InitializedNotification, JsonObject, ListPromptsResult,
+    ListResourcesResult, ListToolsResult, NumberOrString, PaginatedRequestParam, Prompt,
+    PromptMessage, PromptMessageContent, PromptMessageRole, RawResource, ReadResourceRequestParam,
+    ReadResourceResult, Resource, ResourceContents, Tool,
 };
-use rmcp::transport::{
-    streamable_http_server::session::local::LocalSessionManager, stdio, StreamableHttpServerConfig,
-    StreamableHttpService,
-};
+use rmcp::transport::stdio;
 use rmcp::{ErrorData, RoleServer, ServiceExt};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 use tooltest_core::{TooltestInput, TooltestRunConfig, TooltestTargetConfig};
 
@@ -39,33 +36,28 @@ Figure out how to start the MCP server from this repo (stdio or streamable HTTP)
 
 Select a small, related subset of tools intended to be used together. Default to testing at most 50 tools at a time, and strongly prefer a smaller group. Use `--tool-allowlist` (or `tool_allowlist` in MCP input) to enforce this.
 
-Run tooltest against it (examples below).
-
-When tooltest reports failures, fix the underlying issues in the smallest reasonable patch.
-
-Re-run tooltest and repeat until it exits 0.
+Run tooltest against it and fix failures until it exits 0.
 
 If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
 
-If you need per-case traces for debugging, add `--trace-all /tmp/tooltest-traces.jsonl` (any writable path).
+CLI usage (preferred when you can run commands):
+- Use CLI-only flags for debugging, e.g. `--trace-all /tmp/tooltest-traces.jsonl`.
+- Examples:
+  CLI stdio (allowlist example): tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar
+  CLI http (allowlist example): tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar
 
-If you are invoking tooltest via the MCP tool instead of the CLI, pass the same options in the tool input.
-
-Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
-
-Add/adjust tests if needed.
-
-Commands (choose the right one):
-
-CLI stdio (allowlist example): tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar
-
-CLI http (allowlist example): tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar
-
-MCP tool (allowlist example):
+MCP tool usage (when you must call via MCP):
+- Call the `tooltest` tool with the shared input schema.
+- Only fields in the MCP input schema are accepted (CLI-only flags like `--json` and `--trace-all` are not supported).
+- Example (allowlist):
 {
   "target": { "stdio": { "command": "<command that starts the repo's MCP server>" } },
   "tool_allowlist": ["foo", "bar"]
 }
+
+Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
+
+Add/adjust tests if needed.
 
 Return a short summary of what you changed and why, plus the final passing tooltest output snippet.
 "#;
@@ -76,6 +68,97 @@ fn exit_immediately() -> bool {
 
 fn use_test_transport() -> bool {
     std::env::var_os("TOOLTEST_MCP_TEST_TRANSPORT").is_some()
+}
+
+struct TooltestWork {
+    input: TooltestInput,
+    respond_to: tokio::sync::oneshot::Sender<Result<tooltest_core::RunResult, ErrorData>>,
+}
+
+struct TooltestWorker {
+    sender: tokio::sync::mpsc::UnboundedSender<TooltestWork>,
+    #[cfg(test)]
+    done: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+fn build_worker_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+    #[cfg(test)]
+    if std::env::var_os("TOOLTEST_MCP_FORCE_WORKER_RUNTIME_ERROR").is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "forced runtime error",
+        ));
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
+impl TooltestWorker {
+    fn new() -> Result<Self, String> {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<TooltestWork>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        #[cfg(test)]
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            #[cfg(test)]
+            if std::env::var_os("TOOLTEST_MCP_SKIP_WORKER_READY").is_some() {
+                return;
+            }
+            let runtime_result = build_worker_runtime().map_err(|error| error.to_string());
+            let runtime = match runtime_result {
+                Ok(runtime) => {
+                    let _ = ready_tx.send(Ok(()));
+                    runtime
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                while let Some(work) = receiver.recv().await {
+                    let result = std::panic::AssertUnwindSafe(execute_tooltest(work.input))
+                        .catch_unwind()
+                        .await;
+                    let result = match result {
+                        Ok(result) => result,
+                        Err(_) => Err(ErrorData::internal_error("tooltest tool panicked", None)),
+                    };
+                    let _ = work.respond_to.send(result);
+                }
+            });
+            #[cfg(test)]
+            let _ = done_tx.send(());
+        });
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self {
+                sender,
+                #[cfg(test)]
+                done: std::sync::Mutex::new(done_rx),
+            }),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err("tooltest runtime thread failed to start".to_string()),
+        }
+    }
+}
+
+fn tooltest_worker_inner(
+    worker: &OnceLock<Result<TooltestWorker, String>>,
+) -> Result<&TooltestWorker, ErrorData> {
+    let worker = worker.get_or_init(TooltestWorker::new);
+    match worker.as_ref() {
+        Ok(worker) => Ok(worker),
+        Err(error) => Err(ErrorData::internal_error(
+            format!("failed to start tooltest runtime: {error}"),
+            None,
+        )),
+    }
+}
+
+fn tooltest_worker() -> Result<&'static TooltestWorker, ErrorData> {
+    static WORKER: OnceLock<Result<TooltestWorker, String>> = OnceLock::new();
+    tooltest_worker_inner(&WORKER)
 }
 
 struct NoopSink;
@@ -103,8 +186,7 @@ impl futures::Sink<rmcp::service::TxJsonRpcMessage<RoleServer>> for NoopSink {
     }
 }
 
-type TestStream =
-    rmcp::service::RxJsonRpcMessage<RoleServer>;
+type TestStream = rmcp::service::RxJsonRpcMessage<RoleServer>;
 
 struct TestStreamState {
     messages: VecDeque<TestStream>,
@@ -175,12 +257,32 @@ impl McpServer {
     }
 }
 
+async fn run_tooltest_call(
+    worker: Result<&TooltestWorker, ErrorData>,
+    input: TooltestInput,
+) -> Result<CallToolResult, ErrorData> {
+    let worker = worker?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    worker
+        .sender
+        .send(TooltestWork {
+            input,
+            respond_to: sender,
+        })
+        .map_err(|_| ErrorData::internal_error("tooltest tool execution failed", None))?;
+    let result = receiver
+        .await
+        .map_err(|_| ErrorData::internal_error("tooltest tool execution failed", None))??;
+    run_result_to_call_tool(&result)
+}
+
 impl ServerHandler for McpServer {
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParam>,
         _context: rmcp::service::RequestContext<RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_
+    {
         std::future::ready(Ok(ListToolsResult {
             tools: vec![tooltest_tool()],
             ..Default::default()
@@ -191,7 +293,8 @@ impl ServerHandler for McpServer {
         &self,
         request: CallToolRequestParam,
         _context: rmcp::service::RequestContext<RoleServer>,
-    ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
+    {
         let name = request.name;
         let arguments = request.arguments;
         async move {
@@ -202,43 +305,7 @@ impl ServerHandler for McpServer {
                 ));
             }
             let input = parse_tooltest_input(arguments)?;
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            std::thread::spawn(move || {
-                if std::env::var_os("TOOLTEST_MCP_DROP_SENDER").is_some() {
-                    drop(sender);
-                    return;
-                }
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let runtime_result = if std::env::var_os("TOOLTEST_MCP_FORCE_RUNTIME_ERROR").is_some() {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "forced runtime error",
-                        ))
-                    } else {
-                        tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                    };
-                    let runtime = runtime_result.map_err(|error| {
-                        ErrorData::internal_error(
-                            format!("failed to build tooltest runtime: {error}"),
-                            None,
-                        )
-                    })?;
-                    runtime.block_on(async { execute_tooltest(input).await })
-                }));
-                let outcome = match result {
-                    Ok(Ok(result)) => Ok(result),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err(ErrorData::internal_error("tooltest tool panicked", None)),
-                };
-                let _ = sender.send(outcome);
-            });
-
-            let result = receiver.await.map_err(|_| {
-                ErrorData::internal_error("tooltest tool execution failed", None)
-            })??;
-            run_result_to_call_tool(&result)
+            run_tooltest_call(tooltest_worker(), input).await
         }
     }
 
@@ -364,9 +431,8 @@ fn fix_loop_resource_contents() -> ResourceContents {
 }
 
 fn parse_tooltest_input(arguments: Option<JsonObject>) -> Result<TooltestInput, ErrorData> {
-    let arguments = arguments.ok_or_else(|| {
-        ErrorData::invalid_params("tooltest input is required", None)
-    })?;
+    let arguments =
+        arguments.ok_or_else(|| ErrorData::invalid_params("tooltest input is required", None))?;
     serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
         ErrorData::invalid_params(format!("invalid tooltest input: {error}"), None)
     })
@@ -395,9 +461,7 @@ async fn execute_tooltest(input: TooltestInput) -> Result<tooltest_core::RunResu
     Ok(result)
 }
 
-fn run_result_to_call_tool(
-    result: &tooltest_core::RunResult,
-) -> Result<CallToolResult, ErrorData> {
+fn run_result_to_call_tool(result: &tooltest_core::RunResult) -> Result<CallToolResult, ErrorData> {
     let value = serialize_value(result)?;
     Ok(CallToolResult::structured(value))
 }
@@ -405,10 +469,7 @@ fn run_result_to_call_tool(
 fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
     #[cfg(test)]
     if std::env::var_os("TOOLTEST_MCP_FORCE_SERIALIZE_ERROR").is_some() {
-        return Err(ErrorData::internal_error(
-            "forced serialize error",
-            None,
-        ));
+        return Err(ErrorData::internal_error("forced serialize error", None));
     }
     serde_json::to_value(value).map_err(|error| {
         ErrorData::internal_error(format!("failed to serialize run result: {error}"), None)
@@ -418,11 +479,14 @@ fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::{
-        run_result_to_call_tool, serialize_value, McpServer, NoopSink, TOOLTEST_FIX_LOOP_PROMPT,
+        run_result_to_call_tool, run_tooltest_call, serialize_value, tooltest_worker_inner,
+        McpServer, NoopSink, TooltestWorker, TOOLTEST_FIX_LOOP_PROMPT,
         TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION, TOOLTEST_FIX_LOOP_PROMPT_NAME,
         TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION, TOOLTEST_TOOL_NAME,
     };
+    use axum::Router;
     use futures::SinkExt;
+    use rmcp::model::AnnotateAble;
     use rmcp::model::{
         CallToolRequest, CallToolRequestParam, CallToolResult, ClientJsonRpcMessage, ClientRequest,
         EmptyResult, ErrorCode, GetPromptRequest, GetPromptRequestParam, JsonObject,
@@ -430,23 +494,24 @@ mod tests {
         NumberOrString, PaginatedRequestParam, ReadResourceRequest, ReadResourceRequestParam,
         ServerJsonRpcMessage, ServerResult,
     };
-    use rmcp::model::AnnotateAble;
     use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
     use rmcp::transport::Transport;
-    use rmcp::RoleServer;
-    use rmcp::ServerHandler;
     use rmcp::transport::{
         streamable_http_server::session::local::LocalSessionManager, StreamableHttpServerConfig,
         StreamableHttpService,
     };
+    use rmcp::ErrorData;
+    use rmcp::RoleServer;
+    use rmcp::ServerHandler;
     use serde::Serialize;
     use serde_json::{json, Value as JsonValue};
     use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::sync::OnceLock;
     use tokio::sync::mpsc;
-    use axum::Router;
-    use tooltest_core::{RunFailure, RunOutcome, RunResult};
+    use tooltest_core::{
+        RunFailure, RunOutcome, RunResult, TooltestInput, TooltestStdioTarget, TooltestTarget,
+    };
     use tooltest_test_support::tool_with_schemas;
 
     struct TestTransport {
@@ -467,7 +532,8 @@ mod tests {
 
         fn receive(
             &mut self,
-        ) -> impl std::future::Future<Output = Option<RxJsonRpcMessage<RoleServer>>> + Send {
+        ) -> impl std::future::Future<Output = Option<RxJsonRpcMessage<RoleServer>>> + Send
+        {
             self.incoming.recv()
         }
 
@@ -476,8 +542,7 @@ mod tests {
         }
     }
 
-    fn test_transport(
-    ) -> (
+    fn test_transport() -> (
         TestTransport,
         mpsc::UnboundedSender<RxJsonRpcMessage<RoleServer>>,
         mpsc::UnboundedReceiver<TxJsonRpcMessage<RoleServer>>,
@@ -574,9 +639,9 @@ mod tests {
         content: &rmcp::model::ResourceContents,
     ) -> Option<(&str, Option<&str>)> {
         match content {
-            rmcp::model::ResourceContents::TextResourceContents { text, mime_type, .. } => {
-                Some((text.as_str(), mime_type.as_deref()))
-            }
+            rmcp::model::ResourceContents::TextResourceContents {
+                text, mime_type, ..
+            } => Some((text.as_str(), mime_type.as_deref())),
             _ => None,
         }
     }
@@ -642,13 +707,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_resources_includes_fix_loop() {
-        let response = send_request(ClientRequest::ListResourcesRequest(
-            ListResourcesRequest {
-                method: Default::default(),
-                params: Some(PaginatedRequestParam { cursor: None }),
-                extensions: Default::default(),
-            },
-        ))
+        let response = send_request(ClientRequest::ListResourcesRequest(ListResourcesRequest {
+            method: Default::default(),
+            params: Some(PaginatedRequestParam { cursor: None }),
+            extensions: Default::default(),
+        }))
         .await;
         let resources = list_resources_from_response(response).expect("list resources response");
         let resource = resources
@@ -706,8 +769,10 @@ mod tests {
 
     #[tokio::test]
     async fn response_helpers_return_none_for_errors() {
-        let response =
-            ServerJsonRpcMessage::error(rmcp::ErrorData::invalid_params("boom", None), NumberOrString::Number(1));
+        let response = ServerJsonRpcMessage::error(
+            rmcp::ErrorData::invalid_params("boom", None),
+            NumberOrString::Number(1),
+        );
         assert!(list_tools_from_response(response.clone()).is_none());
         assert!(list_prompts_from_response(response.clone()).is_none());
         assert!(get_prompt_from_response(response.clone()).is_none());
@@ -730,8 +795,8 @@ mod tests {
 
     #[test]
     fn prompt_text_from_message_returns_none_for_non_text() {
-        let resource = rmcp::model::RawResource::new("tooltest://example", "example")
-            .no_annotation();
+        let resource =
+            rmcp::model::RawResource::new("tooltest://example", "example").no_annotation();
         let message = rmcp::model::PromptMessage {
             role: rmcp::model::PromptMessageRole::User,
             content: rmcp::model::PromptMessageContent::ResourceLink { link: resource },
@@ -818,6 +883,38 @@ mod tests {
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
+    fn minimal_tooltest_input() -> TooltestInput {
+        let stdio = TooltestStdioTarget {
+            command: "noop".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+        };
+        let target = TooltestTarget {
+            stdio: Some(stdio),
+            http: None,
+        };
+        TooltestInput {
+            target,
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+            pre_run_hook: None,
+            full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
+        }
+    }
+
     async fn send_call_tool_request_with_name_unlocked(
         name: &str,
         arguments: Option<JsonObject>,
@@ -886,9 +983,7 @@ mod tests {
         response
     }
 
-    fn call_tool_result_from_response(
-        response: ServerJsonRpcMessage,
-    ) -> Option<CallToolResult> {
+    fn call_tool_result_from_response(response: ServerJsonRpcMessage) -> Option<CallToolResult> {
         match response {
             ServerJsonRpcMessage::Response(response) => match response.result {
                 ServerResult::CallToolResult(result) => Some(result),
@@ -899,9 +994,7 @@ mod tests {
     }
 
     fn run_result_from_tool_result(result: CallToolResult) -> RunResult {
-        let structured = result
-            .structured_content
-            .expect("structured content");
+        let structured = result.structured_content.expect("structured content");
         serde_json::from_value(structured).expect("run result")
     }
 
@@ -920,6 +1013,77 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn run_tooltest_call_reports_worker_error() {
+        let input = minimal_tooltest_input();
+        let error = run_tooltest_call(Err(ErrorData::internal_error("boom", None)), input)
+            .await
+            .expect_err("expected error");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn run_tooltest_call_reports_send_error() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        drop(receiver);
+        let (_done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = TooltestWorker {
+            sender,
+            done: std::sync::Mutex::new(done_rx),
+        };
+        let input = minimal_tooltest_input();
+        let error = run_tooltest_call(Ok(&worker), input)
+            .await
+            .expect_err("expected error");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("tooltest tool execution failed"));
+    }
+
+    #[tokio::test]
+    async fn run_tooltest_call_reports_response_canceled() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (_done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = TooltestWorker {
+            sender,
+            done: std::sync::Mutex::new(done_rx),
+        };
+        let input = minimal_tooltest_input();
+        let handle = tokio::spawn(async move {
+            let work = receiver.recv().await.expect("work");
+            drop(work);
+        });
+        let error = run_tooltest_call(Ok(&worker), input)
+            .await
+            .expect_err("expected error");
+        handle.await.expect("worker task");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("tooltest tool execution failed"));
+    }
+
+    #[tokio::test]
+    async fn run_tooltest_call_reports_response_error() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (_done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = TooltestWorker {
+            sender,
+            done: std::sync::Mutex::new(done_rx),
+        };
+        let input = minimal_tooltest_input();
+        let handle = tokio::spawn(async move {
+            let work = receiver.recv().await.expect("work");
+            let _ = work
+                .respond_to
+                .send(Err(ErrorData::internal_error("boom", None)));
+        });
+        let error = run_tooltest_call(Ok(&worker), input)
+            .await
+            .expect_err("expected error");
+        handle.await.expect("worker task");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("boom"));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn call_tool_runs_stdio_smoke() {
         let server = tooltest_server_command();
@@ -929,8 +1093,8 @@ mod tests {
             "min_sequence_len": 1,
             "max_sequence_len": 1
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let result = call_tool_result_from_response(response).expect("call tool result");
         assert_eq!(result.is_error, Some(false));
         let run_result = run_result_from_tool_result(result);
@@ -971,8 +1135,8 @@ mod tests {
             "max_sequence_len": 1,
             "lenient_sourcing": true
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let result = call_tool_result_from_response(response).expect("call tool result");
         assert_eq!(result.is_error, Some(false));
         let run_result = run_result_from_tool_result(result);
@@ -987,7 +1151,10 @@ mod tests {
     async fn call_tool_returns_failure_outcome_on_tool_error() {
         let server = tooltest_server_command();
         let mut env = stdio_env();
-        env.insert("TOOLTEST_TEST_SERVER_CALL_ERROR".to_string(), "1".to_string());
+        env.insert(
+            "TOOLTEST_TEST_SERVER_CALL_ERROR".to_string(),
+            "1".to_string(),
+        );
         let args = json!({
             "target": { "stdio": { "command": server, "env": env } },
             "cases": 1,
@@ -995,8 +1162,8 @@ mod tests {
             "max_sequence_len": 1,
             "in_band_error_forbidden": true
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let result = call_tool_result_from_response(response).expect("call tool result");
         let run_result = run_result_from_tool_result(result);
         assert!(outcome_is_failure(&run_result.outcome));
@@ -1010,8 +1177,8 @@ mod tests {
             "min_sequence_len": 1,
             "max_sequence_len": 1
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let result = call_tool_result_from_response(response).expect("call tool result");
         let run_result = run_result_from_tool_result(result);
         assert!(outcome_is_failure(&run_result.outcome));
@@ -1022,8 +1189,8 @@ mod tests {
         let args = json!({
             "cases": 1
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let (error, _) = response.into_error().expect("error response");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     }
@@ -1033,8 +1200,8 @@ mod tests {
         let args = json!({
             "stdio": { "command": "server" }
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let (error, _) = response.into_error().expect("error response");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     }
@@ -1045,8 +1212,8 @@ mod tests {
             "target": { "http": { "url": "http://127.0.0.1:0/mcp" } },
             "json": true
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let (error, _) = response.into_error().expect("error response");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     }
@@ -1057,8 +1224,8 @@ mod tests {
             "target": { "http": { "url": "http://127.0.0.1:0/mcp" } },
             "trace_all": "/tmp/tooltest-traces.jsonl"
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let (error, _) = response.into_error().expect("error response");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     }
@@ -1085,16 +1252,12 @@ mod tests {
             "min_sequence_len": 1,
             "max_sequence_len": 1
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let result = call_tool_result_from_response(response).expect("call tool result");
         let structured = result.structured_content.expect("structured content");
         let content = result.content.first().expect("content");
-        let text = content
-            .as_text()
-            .expect("text content")
-            .text
-            .as_str();
+        let text = content.as_text().expect("text content").text.as_str();
         let text_value: JsonValue = serde_json::from_str(text).expect("json content");
         assert_eq!(structured, text_value);
         assert_eq!(result.is_error, Some(false));
@@ -1125,42 +1288,10 @@ mod tests {
             "target": { "http": { "url": "http://127.0.0.1:0/mcp" } },
             "uncallable_limit": 0
         });
-        let response = send_call_tool_request(Some(args.as_object().cloned().expect("args object")))
-            .await;
+        let response =
+            send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
         let (error, _) = response.into_error().expect("error response");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
-    }
-
-    #[tokio::test]
-    async fn call_tool_runtime_build_error_returns_internal_error() {
-        let args = json!({
-            "target": { "http": { "url": "http://127.0.0.1:0/mcp" } }
-        });
-        let response = send_call_tool_request_with_env(
-            TOOLTEST_TOOL_NAME,
-            Some(args.as_object().cloned().expect("args object")),
-            "TOOLTEST_MCP_FORCE_RUNTIME_ERROR",
-            "1",
-        )
-        .await;
-        let (error, _) = response.into_error().expect("error response");
-        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
-    }
-
-    #[tokio::test]
-    async fn call_tool_drop_sender_returns_internal_error() {
-        let args = json!({
-            "target": { "http": { "url": "http://127.0.0.1:0/mcp" } }
-        });
-        let response = send_call_tool_request_with_env(
-            TOOLTEST_TOOL_NAME,
-            Some(args.as_object().cloned().expect("args object")),
-            "TOOLTEST_MCP_DROP_SENDER",
-            "1",
-        )
-        .await;
-        let (error, _) = response.into_error().expect("error response");
-        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[test]
@@ -1188,11 +1319,48 @@ mod tests {
         std::env::remove_var(key);
     }
 
+    #[tokio::test]
+    async fn tooltest_worker_reports_forced_runtime_error() {
+        let _lock = env_lock().lock().await;
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_FORCE_WORKER_RUNTIME_ERROR", "1");
+        let error = TooltestWorker::new().err().expect("expected error");
+        assert!(error.contains("forced runtime error"));
+    }
+
+    #[tokio::test]
+    async fn tooltest_worker_reports_ready_channel_failure() {
+        let _lock = env_lock().lock().await;
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_SKIP_WORKER_READY", "1");
+        let error = TooltestWorker::new().err().expect("expected error");
+        assert!(error.contains("failed to start"));
+    }
+
+    #[test]
+    fn tooltest_worker_inner_reports_cached_error() {
+        let worker = OnceLock::new();
+        let _ = worker.get_or_init(|| Err("boom".to_string()));
+        let error = tooltest_worker_inner(&worker)
+            .err()
+            .expect("expected error");
+        assert!(error.message.contains("failed to start tooltest runtime"));
+    }
+
+    #[tokio::test]
+    async fn tooltest_worker_thread_exits_when_sender_dropped() {
+        let _lock = env_lock().lock().await;
+        let TooltestWorker { sender, done } = TooltestWorker::new().expect("worker");
+        drop(sender);
+        tokio::task::spawn_blocking(move || {
+            done.lock().expect("lock").recv().expect("done");
+        })
+        .await
+        .expect("join");
+    }
+
     #[test]
     fn tooltest_server_command_prefers_env_var() {
         let _lock = tooltest_server_env_lock().lock().expect("server env lock");
-        let _guard =
-            EnvVarGuard::set("CARGO_BIN_EXE_tooltest_test_server", "/tmp/override");
+        let _guard = EnvVarGuard::set("CARGO_BIN_EXE_tooltest_test_server", "/tmp/override");
         let command = tooltest_server_command_locked();
         assert_eq!(command, "/tmp/override");
     }
@@ -1273,7 +1441,8 @@ mod tests {
             &self,
             _request: Option<PaginatedRequestParam>,
             _context: rmcp::service::RequestContext<RoleServer>,
-        ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
+        ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_
+        {
             std::future::ready(Ok(ListToolsResult {
                 tools: vec![self.tool.clone()],
                 ..Default::default()
@@ -1284,7 +1453,8 @@ mod tests {
             &self,
             request: CallToolRequestParam,
             _context: rmcp::service::RequestContext<RoleServer>,
-        ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_ {
+        ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
+        {
             let name = request.name;
             std::future::ready(if name.as_ref() == "echo" {
                 Ok(CallToolResult::structured(json!({ "status": "ok" })))
@@ -1335,37 +1505,4 @@ pub async fn run_stdio() -> Result<(), String> {
     Ok(())
 }
 
-async fn serve_http(listener: tokio::net::TcpListener, app: Router) -> Result<(), std::io::Error> {
-    if std::env::var_os("TOOLTEST_MCP_FORCE_HTTP_ERROR").is_some() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "forced http error",
-        ));
-    }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            if exit_immediately() {
-                return;
-            }
-            std::future::pending::<()>().await;
-        })
-        .await
-}
-
-pub async fn run_http(bind: &str) -> Result<(), String> {
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .map_err(|error| format!("failed to bind MCP HTTP server at {bind}: {error}"))?;
-    let service_factory = || Ok(McpServer::new());
-    let _ = service_factory();
-    let service: StreamableHttpService<McpServer, LocalSessionManager> = StreamableHttpService::new(
-        service_factory,
-        Default::default(),
-        StreamableHttpServerConfig::default(),
-    );
-    let app = Router::new().nest_service("/mcp", service);
-    serve_http(listener, app)
-        .await
-        .map_err(|error| format!("failed to serve MCP HTTP server at {bind}: {error}"))?;
-    Ok(())
-}
+// HTTP transport for tooltest MCP server intentionally removed; use stdio only.

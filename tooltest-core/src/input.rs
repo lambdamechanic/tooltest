@@ -100,10 +100,7 @@ impl TooltestInput {
     /// Builds the run configuration for the run.
     pub fn to_run_config(&self) -> Result<RunConfig, String> {
         self.validate_run_config()?;
-        let mut state_machine = self
-            .state_machine_config
-            .clone()
-            .unwrap_or_default();
+        let mut state_machine = self.state_machine_config.clone().unwrap_or_default();
         if self.lenient_sourcing {
             state_machine.lenient_sourcing = true;
         } else if self.no_lenient_sourcing {
@@ -192,7 +189,9 @@ pub struct TooltestTarget {
 impl TooltestTarget {
     fn validate(&self) -> Result<(), String> {
         match (&self.stdio, &self.http) {
-            (Some(_), Some(_)) => Err("target must include exactly one of stdio or http".to_string()),
+            (Some(_), Some(_)) => {
+                Err("target must include exactly one of stdio or http".to_string())
+            }
             (None, None) => Err("target must include either stdio or http".to_string()),
             (Some(stdio), None) => {
                 if stdio.command.trim().is_empty() {
@@ -211,7 +210,9 @@ impl TooltestTarget {
                 validate_http_url(&http.url)?;
                 Ok(TooltestTargetConfig::Http(http.to_config()))
             }
-            (Some(_), Some(_)) => Err("target must include exactly one of stdio or http".to_string()),
+            (Some(_), Some(_)) => {
+                Err("target must include exactly one of stdio or http".to_string())
+            }
             (None, None) => Err("target must include either stdio or http".to_string()),
         }
     }
@@ -318,10 +319,10 @@ fn build_tool_filters(allowlist: &[String], blocklist: &[String]) -> Option<Tool
     if allowlist.is_empty() && blocklist.is_empty() {
         return None;
     }
-    let allowlist = (!allowlist.is_empty())
-        .then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
-    let blocklist = (!blocklist.is_empty())
-        .then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
+    let allowlist =
+        (!allowlist.is_empty()).then(|| allowlist.iter().cloned().collect::<HashSet<_>>());
+    let blocklist =
+        (!blocklist.is_empty()).then(|| blocklist.iter().cloned().collect::<HashSet<_>>());
     let name_predicate: ToolNamePredicate = Arc::new(move |tool_name| {
         if let Some(allowlist) = allowlist.as_ref() {
             if !allowlist.contains(tool_name) {
@@ -354,8 +355,7 @@ fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<u
 }
 
 fn validate_http_url(url: &str) -> Result<(), String> {
-    let parsed = Url::parse(url)
-        .map_err(|error| format!("invalid http url '{url}': {error}"))?;
+    let parsed = Url::parse(url).map_err(|error| format!("invalid http url '{url}': {error}"))?;
     if !parsed.has_host() {
         return Err(format!("invalid http url '{url}': missing host"));
     }
@@ -391,6 +391,24 @@ mod tests {
             }),
         };
         let error = target.to_config().unwrap_err();
+        assert!(error.contains("exactly one"));
+    }
+
+    #[test]
+    fn target_validate_rejects_multiple_transports() {
+        let target = TooltestTarget {
+            stdio: Some(TooltestStdioTarget {
+                command: "server".to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+            }),
+            http: Some(TooltestHttpTarget {
+                url: "http://localhost:8080/mcp".to_string(),
+                auth_token: None,
+            }),
+        };
+        let error = target.validate().unwrap_err();
         assert!(error.contains("exactly one"));
     }
 

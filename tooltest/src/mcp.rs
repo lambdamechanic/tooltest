@@ -11,13 +11,17 @@ use rmcp::model::{
 };
 use rmcp::transport::stdio;
 use rmcp::{ErrorData, RoleServer, ServiceExt};
+use schemars::{generate::SchemaSettings, transform::AddNullable, JsonSchema};
 use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
-use tooltest_core::{TooltestInput, TooltestRunConfig, TooltestTargetConfig};
+use tooltest_core::{
+    RunFailure, RunOutcome, RunResult, TooltestInput, TooltestRunConfig, TooltestStdioTarget,
+    TooltestTarget, TooltestTargetConfig, TooltestTargetStdio,
+};
 
 const TOOLTEST_TOOL_NAME: &str = "tooltest";
 const TOOLTEST_TOOL_DESCRIPTION: &str =
@@ -382,46 +386,26 @@ fn tooltest_tool() -> Tool {
 }
 
 fn tooltest_input_schema() -> Arc<JsonObject> {
-    if let Ok(command) = std::env::var("TOOLTEST_MCP_DOGFOOD_COMMAND") {
-        return dogfood_input_schema(&command);
-    }
-    schema_for_type::<TooltestInput>()
+    default_tooltest_input_schema()
 }
 
-fn dogfood_input_schema(command: &str) -> Arc<JsonObject> {
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "target": {
-                "type": "object",
-                "properties": {
-                    "stdio": {
-                        "type": "object",
-                        "properties": {
-                            "command": { "const": command }
-                        },
-                        "required": ["command"],
-                        "additionalProperties": false
-                    }
-                },
-                "required": ["stdio"],
-                "additionalProperties": false
-            },
-            "cases": { "type": "integer", "const": 30 },
-            "min_sequence_len": { "type": "integer", "const": 1 },
-            "max_sequence_len": { "type": "integer", "const": 1 },
-            "lenient_sourcing": { "const": true }
-        },
-        "required": [
-            "target",
-            "cases",
-            "min_sequence_len",
-            "max_sequence_len",
-            "lenient_sourcing"
-        ],
-        "additionalProperties": false
-    });
-    Arc::new(schema.as_object().cloned().expect("dogfood schema object"))
+fn default_tooltest_input_schema() -> Arc<JsonObject> {
+    static SCHEMA: OnceLock<Arc<JsonObject>> = OnceLock::new();
+    SCHEMA
+        .get_or_init(inline_schema_for_type::<TooltestInput>)
+        .clone()
+}
+
+fn inline_schema_for_type<T: JsonSchema>() -> Arc<JsonObject> {
+    let mut settings = SchemaSettings::draft2020_12();
+    settings.inline_subschemas = true;
+    settings.transforms = vec![Box::new(AddNullable::default())];
+    let generator = settings.into_generator();
+    let schema = generator.into_root_schema_for::<T>();
+    let value = serde_json::to_value(schema).expect("failed to serialize schema");
+    let object: JsonObject =
+        serde_json::from_value(value).expect("schema serialization produced non-object value");
+    Arc::new(object)
 }
 
 fn fix_loop_prompt() -> Prompt {
@@ -486,13 +470,41 @@ async fn execute_tooltest(input: TooltestInput) -> Result<tooltest_core::RunResu
     if std::env::var_os("TOOLTEST_MCP_PANIC_TOOL").is_some() {
         panic!("tooltest tool panic");
     }
+    let mut input = input;
+    if let Ok(command) = std::env::var("TOOLTEST_MCP_DOGFOOD_COMMAND") {
+        input.target = TooltestTarget::Stdio(TooltestTargetStdio {
+            stdio: TooltestStdioTarget {
+                command,
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+            },
+        });
+        input.cases = 30;
+        input.min_sequence_len = 1;
+        input.max_sequence_len = 1;
+        input.lenient_sourcing = true;
+        input.no_lenient_sourcing = false;
+        input.tool_allowlist.clear();
+        input.tool_blocklist.clear();
+        input.in_band_error_forbidden = false;
+        input.pre_run_hook = None;
+        input.state_machine_config = None;
+        input.mine_text = false;
+        input.dump_corpus = false;
+        input.log_corpus_deltas = false;
+        input.full_trace = false;
+        input.show_uncallable = false;
+        input.uncallable_limit = 1;
+    }
     let TooltestRunConfig {
         target,
         run_config,
         runner_options,
-    } = input
-        .to_configs()
-        .map_err(|error| ErrorData::invalid_params(error, None))?;
+    } = match input.to_configs() {
+        Ok(configs) => configs,
+        Err(error) => return Ok(run_result_from_input_error(error)),
+    };
 
     let result = match target {
         TooltestTargetConfig::Stdio(config) => {
@@ -503,6 +515,17 @@ async fn execute_tooltest(input: TooltestInput) -> Result<tooltest_core::RunResu
         }
     };
     Ok(result)
+}
+
+fn run_result_from_input_error(message: String) -> RunResult {
+    RunResult {
+        outcome: RunOutcome::Failure(RunFailure::new(message)),
+        trace: Vec::new(),
+        minimized: None,
+        warnings: Vec::new(),
+        coverage: None,
+        corpus: None,
+    }
 }
 
 fn run_result_to_call_tool(result: &tooltest_core::RunResult) -> Result<CallToolResult, ErrorData> {
@@ -523,10 +546,11 @@ fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::{
-        run_result_to_call_tool, run_tooltest_call, serialize_value, tooltest_input_schema,
-        tooltest_worker_inner, McpServer, NoopSink, TooltestWorker, TOOLTEST_FIX_LOOP_PROMPT,
-        TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION, TOOLTEST_FIX_LOOP_PROMPT_NAME,
-        TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION, TOOLTEST_TOOL_NAME,
+        execute_tooltest, run_result_to_call_tool, run_tooltest_call, serialize_value,
+        tooltest_input_schema, tooltest_worker_inner, McpServer, NoopSink, TooltestWorker,
+        TOOLTEST_FIX_LOOP_PROMPT, TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION,
+        TOOLTEST_FIX_LOOP_PROMPT_NAME, TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION,
+        TOOLTEST_TOOL_NAME,
     };
     use axum::Router;
     use futures::SinkExt;
@@ -555,6 +579,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tooltest_core::{
         RunFailure, RunOutcome, RunResult, TooltestInput, TooltestStdioTarget, TooltestTarget,
+        TooltestTargetStdio,
     };
     use tooltest_test_support::tool_with_schemas;
 
@@ -688,6 +713,20 @@ mod tests {
             } => Some((text.as_str(), mime_type.as_deref())),
             _ => None,
         }
+    }
+
+    fn schema_has_properties(schema: &JsonValue, keys: &[&str]) -> bool {
+        if let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) {
+            return keys.iter().all(|key| properties.contains_key(*key));
+        }
+        for keyword in ["anyOf", "oneOf", "allOf"] {
+            if let Some(items) = schema.get(keyword).and_then(|value| value.as_array()) {
+                if items.iter().any(|item| schema_has_properties(item, keys)) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     #[tokio::test]
@@ -936,10 +975,7 @@ mod tests {
             env: BTreeMap::new(),
             cwd: None,
         };
-        let target = TooltestTarget {
-            stdio: Some(stdio),
-            http: None,
-        };
+        let target = TooltestTarget::Stdio(TooltestTargetStdio { stdio });
         TooltestInput {
             target,
             cases: 1,
@@ -1046,6 +1082,13 @@ mod tests {
 
     fn outcome_is_failure(outcome: &RunOutcome) -> bool {
         matches!(outcome, RunOutcome::Failure(_))
+    }
+
+    fn expect_failure(outcome: RunOutcome) -> RunFailure {
+        match outcome {
+            RunOutcome::Failure(failure) => failure,
+            RunOutcome::Success => panic!("expected failure outcome"),
+        }
     }
 
     struct BrokenSerialize;
@@ -1342,8 +1385,9 @@ mod tests {
         });
         let response =
             send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;
-        let (error, _) = response.into_error().expect("error response");
-        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        let result = call_tool_result_from_response(response).expect("call tool result");
+        let run_result = run_result_from_tool_result(result);
+        assert!(outcome_is_failure(&run_result.outcome));
     }
 
     #[test]
@@ -1417,34 +1461,79 @@ mod tests {
         assert_eq!(command, "/tmp/override");
     }
 
+    fn assert_target_branches(has_stdio: bool, has_http: bool) {
+        assert!(has_stdio, "target anyOf missing stdio branch");
+        assert!(has_http, "target anyOf missing http branch");
+    }
+
     #[test]
-    fn tooltest_input_schema_uses_dogfood_command_env() {
+    fn tooltest_input_schema_inlines_nested_types() {
         let _lock = tooltest_server_env_lock().lock().expect("server env lock");
-        let _guard = EnvVarGuard::set("TOOLTEST_MCP_DOGFOOD_COMMAND", "dogfood-bin");
+        std::env::remove_var("TOOLTEST_MCP_DOGFOOD_COMMAND");
         let schema = tooltest_input_schema();
         let schema_value = JsonValue::Object(schema.as_ref().clone());
-        assert_eq!(
-            schema_value["properties"]["target"]["properties"]["stdio"]["properties"]["command"]
-                ["const"],
-            "dogfood-bin"
-        );
-        assert_eq!(schema_value["properties"]["cases"]["const"], 30);
-        assert_eq!(schema_value["properties"]["min_sequence_len"]["const"], 1);
-        assert_eq!(schema_value["properties"]["max_sequence_len"]["const"], 1);
-        assert_eq!(
-            schema_value["properties"]["lenient_sourcing"]["const"],
-            true
-        );
-        assert_eq!(
-            schema_value["required"],
-            json!([
-                "target",
-                "cases",
-                "min_sequence_len",
-                "max_sequence_len",
-                "lenient_sourcing"
-            ])
-        );
+        let target = &schema_value["properties"]["target"];
+        let any_of = target
+            .get("anyOf")
+            .and_then(|value| value.as_array())
+            .expect("target anyOf");
+        let mut has_stdio = false;
+        let mut has_http = false;
+        for branch in any_of {
+            if schema_has_properties(branch, &["stdio"]) {
+                has_stdio = true;
+            }
+            if schema_has_properties(branch, &["http"]) {
+                has_http = true;
+            }
+        }
+        assert_target_branches(has_stdio, has_http);
+        let state_machine = &schema_value["properties"]["state_machine_config"];
+        assert!(schema_has_properties(
+            state_machine,
+            &["seed_numbers", "seed_strings"]
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "target anyOf missing stdio branch")]
+    fn assert_target_branches_panics_on_missing_stdio() {
+        assert_target_branches(false, true);
+    }
+
+    #[test]
+    #[should_panic(expected = "target anyOf missing http branch")]
+    fn assert_target_branches_panics_on_missing_http() {
+        assert_target_branches(true, false);
+    }
+
+    #[test]
+    fn schema_has_properties_traverses_unions() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "object", "properties": { "alpha": { "type": "string" } } },
+                { "type": "object", "properties": { "bravo": { "type": "string" } } }
+            ]
+        });
+        assert!(schema_has_properties(&schema, &["bravo"]));
+        assert!(!schema_has_properties(&schema, &["charlie"]));
+    }
+
+    #[tokio::test]
+    async fn execute_tooltest_applies_dogfood_overrides() {
+        let _lock = env_lock().lock().await;
+        let _guard = EnvVarGuard::set("TOOLTEST_MCP_DOGFOOD_COMMAND", "");
+        let input = minimal_tooltest_input();
+        let result = execute_tooltest(input).await.expect("run result");
+        assert!(outcome_is_failure(&result.outcome));
+        let failure = expect_failure(result.outcome);
+        assert!(failure.reason.contains("stdio command"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected failure outcome")]
+    fn expect_failure_panics_on_success() {
+        let _ = expect_failure(RunOutcome::Success);
     }
 
     #[test]

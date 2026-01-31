@@ -2021,6 +2021,7 @@ dependencies = [
  "env_logger",
  "futures",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

@@ -4,19 +4,19 @@ use serde_json::json;
 
 use crate::{
     TooltestHttpTarget, TooltestInput, TooltestStdioTarget, TooltestTarget, TooltestTargetConfig,
+    TooltestTargetHttp, TooltestTargetStdio,
 };
 
 fn stdio_input() -> TooltestInput {
     TooltestInput {
-        target: TooltestTarget {
-            stdio: Some(TooltestStdioTarget {
+        target: TooltestTarget::Stdio(TooltestTargetStdio {
+            stdio: TooltestStdioTarget {
                 command: "server".to_string(),
                 args: Vec::new(),
                 env: BTreeMap::new(),
                 cwd: None,
-            }),
-            http: None,
-        },
+            },
+        }),
         cases: 32,
         min_sequence_len: 1,
         max_sequence_len: 3,
@@ -121,7 +121,7 @@ fn shared_input_rejects_env_list_for_stdio() {
         }
     });
     let error = serde_json::from_value::<TooltestInput>(payload).unwrap_err();
-    assert!(error.to_string().contains("map"));
+    assert!(error.to_string().contains("TooltestTarget"));
 }
 
 #[test]
@@ -164,10 +164,12 @@ fn shared_input_rejects_uncallable_limit_under_one() {
 
 #[test]
 fn shared_input_run_config_rejects_invalid_target() {
-    let payload = json!({ "target": {} });
+    let payload = json!({
+        "target": { "stdio": { "command": "   " } }
+    });
     let input: TooltestInput = serde_json::from_value(payload).expect("input");
     let error = input.to_run_config().unwrap_err();
-    assert!(error.contains("target"));
+    assert!(error.contains("stdio command"));
 }
 
 #[test]
@@ -310,13 +312,12 @@ fn shared_input_builds_target_config() {
 #[test]
 fn shared_input_accepts_http_target_struct() {
     let input = TooltestInput {
-        target: TooltestTarget {
-            stdio: None,
-            http: Some(TooltestHttpTarget {
+        target: TooltestTarget::Http(TooltestTargetHttp {
+            http: TooltestHttpTarget {
                 url: "http://localhost:8080/mcp".to_string(),
                 auth_token: None,
-            }),
-        },
+            },
+        }),
         ..stdio_input()
     };
 
@@ -419,9 +420,11 @@ fn shared_input_to_configs_rejects_run_config_error() {
 #[test]
 fn shared_input_to_configs_rejects_invalid_target() {
     let payload = json!({
-        "target": {}
+        "target": {
+            "http": { "url": "http://[::1" }
+        }
     });
     let input: TooltestInput = serde_json::from_value(payload).expect("input");
     let error = input.to_configs().unwrap_err();
-    assert!(error.contains("target"));
+    assert!(error.contains("invalid http url"));
 }

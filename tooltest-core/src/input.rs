@@ -176,44 +176,50 @@ impl TooltestInput {
 
 /// Target configuration input wrapper.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct TooltestTarget {
+#[serde(rename_all = "snake_case", untagged)]
+pub enum TooltestTarget {
     /// Stdio transport configuration.
-    #[serde(default)]
-    pub stdio: Option<TooltestStdioTarget>,
+    Stdio(TooltestTargetStdio),
     /// HTTP transport configuration.
-    #[serde(default)]
-    pub http: Option<TooltestHttpTarget>,
+    Http(TooltestTargetHttp),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct TooltestTargetStdio {
+    /// Stdio transport configuration.
+    pub stdio: TooltestStdioTarget,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct TooltestTargetHttp {
+    /// HTTP transport configuration.
+    pub http: TooltestHttpTarget,
 }
 
 impl TooltestTarget {
     fn validate(&self) -> Result<(), String> {
-        match (&self.stdio, &self.http) {
-            (Some(_), Some(_)) => {
-                Err("target must include exactly one of stdio or http".to_string())
-            }
-            (None, None) => Err("target must include either stdio or http".to_string()),
-            (Some(stdio), None) => {
-                if stdio.command.trim().is_empty() {
+        match self {
+            TooltestTarget::Stdio(wrapper) => {
+                if wrapper.stdio.command.trim().is_empty() {
                     return Err("stdio command must not be empty".to_string());
                 }
                 Ok(())
             }
-            (None, Some(http)) => validate_http_url(&http.url),
+            TooltestTarget::Http(wrapper) => validate_http_url(&wrapper.http.url),
         }
     }
 
     fn to_config(&self) -> Result<TooltestTargetConfig, String> {
-        match (&self.stdio, &self.http) {
-            (Some(stdio), None) => Ok(TooltestTargetConfig::Stdio(stdio.to_config())),
-            (None, Some(http)) => {
-                validate_http_url(&http.url)?;
-                Ok(TooltestTargetConfig::Http(http.to_config()))
+        match self {
+            TooltestTarget::Stdio(wrapper) => {
+                Ok(TooltestTargetConfig::Stdio(wrapper.stdio.to_config()))
             }
-            (Some(_), Some(_)) => {
-                Err("target must include exactly one of stdio or http".to_string())
+            TooltestTarget::Http(wrapper) => {
+                validate_http_url(&wrapper.http.url)?;
+                Ok(TooltestTargetConfig::Http(wrapper.http.to_config()))
             }
-            (None, None) => Err("target must include either stdio or http".to_string()),
         }
     }
 }
@@ -223,6 +229,7 @@ impl TooltestTarget {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestStdioTarget {
     /// Command to execute for the MCP server.
+    #[schemars(length(min = 1))]
     pub command: String,
     /// Command-line arguments passed to the MCP server.
     #[serde(default)]
@@ -251,6 +258,9 @@ impl TooltestStdioTarget {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestHttpTarget {
     /// MCP endpoint URL.
+    #[schemars(regex(
+        pattern = r"^https?://[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*(?::[0-9]{1,5})?(?:/[^\s]*)?$"
+    ))]
     pub url: String,
     /// Authorization bearer token.
     #[serde(default)]
@@ -367,60 +377,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_to_config_rejects_empty_target() {
-        let target = TooltestTarget {
-            stdio: None,
-            http: None,
-        };
-        let error = target.to_config().unwrap_err();
-        assert!(error.contains("target must include"));
-    }
-
-    #[test]
-    fn target_to_config_rejects_multiple_transports() {
-        let target = TooltestTarget {
-            stdio: Some(TooltestStdioTarget {
-                command: "server".to_string(),
+    fn target_validate_rejects_empty_command() {
+        let target = TooltestTarget::Stdio(TooltestTargetStdio {
+            stdio: TooltestStdioTarget {
+                command: "  ".to_string(),
                 args: Vec::new(),
                 env: BTreeMap::new(),
                 cwd: None,
-            }),
-            http: Some(TooltestHttpTarget {
-                url: "http://localhost:8080/mcp".to_string(),
-                auth_token: None,
-            }),
-        };
-        let error = target.to_config().unwrap_err();
-        assert!(error.contains("exactly one"));
-    }
-
-    #[test]
-    fn target_validate_rejects_multiple_transports() {
-        let target = TooltestTarget {
-            stdio: Some(TooltestStdioTarget {
-                command: "server".to_string(),
-                args: Vec::new(),
-                env: BTreeMap::new(),
-                cwd: None,
-            }),
-            http: Some(TooltestHttpTarget {
-                url: "http://localhost:8080/mcp".to_string(),
-                auth_token: None,
-            }),
-        };
+            },
+        });
         let error = target.validate().unwrap_err();
-        assert!(error.contains("exactly one"));
+        assert!(error.contains("stdio command"));
     }
 
     #[test]
     fn target_to_config_rejects_invalid_http_url() {
-        let target = TooltestTarget {
-            stdio: None,
-            http: Some(TooltestHttpTarget {
+        let target = TooltestTarget::Http(TooltestTargetHttp {
+            http: TooltestHttpTarget {
                 url: "localhost:8080/mcp".to_string(),
                 auth_token: None,
-            }),
-        };
+            },
+        });
         let error = target.to_config().unwrap_err();
         assert!(error.contains("invalid http url"));
     }

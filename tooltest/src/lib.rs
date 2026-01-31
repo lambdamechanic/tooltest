@@ -7,7 +7,8 @@ use serde::Serialize;
 use tooltest_core::{
     CoverageWarningReason, RunOutcome, RunResult, RunWarning, RunWarningCode, StateMachineConfig,
     TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
-    TooltestTarget, TooltestTargetConfig, TraceEntry, TraceSink,
+    TooltestTarget, TooltestTargetConfig, TooltestTargetHttp, TooltestTargetStdio, TraceEntry,
+    TraceSink,
 };
 
 mod mcp;
@@ -183,23 +184,21 @@ fn build_tooltest_input(cli: &Cli) -> Result<TooltestInput, String> {
             cwd,
         } => {
             let env = parse_env_vars(env.clone())?;
-            TooltestTarget {
-                stdio: Some(TooltestStdioTarget {
+            TooltestTarget::Stdio(TooltestTargetStdio {
+                stdio: TooltestStdioTarget {
                     command: command.clone(),
                     args: args.clone(),
                     env,
                     cwd: cwd.clone(),
-                }),
-                http: None,
-            }
+                },
+            })
         }
-        Command::Http { url, auth_token } => TooltestTarget {
-            stdio: None,
-            http: Some(TooltestHttpTarget {
+        Command::Http { url, auth_token } => TooltestTarget::Http(TooltestTargetHttp {
+            http: TooltestHttpTarget {
                 url: url.clone(),
                 auth_token: auth_token.clone(),
-            }),
-        },
+            },
+        }),
         Command::Mcp { .. } => return Err("mcp command does not accept tooltest input".to_string()),
     };
     Ok(TooltestInput {
@@ -504,6 +503,20 @@ mod tests {
     use tooltest_test_support::{
         stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
     };
+
+    fn expect_stdio_target(target: TooltestTarget) -> TooltestStdioTarget {
+        match target {
+            TooltestTarget::Stdio(wrapper) => wrapper.stdio,
+            TooltestTarget::Http(_) => panic!("expected stdio target"),
+        }
+    }
+
+    fn expect_http_target(target: TooltestTarget) -> TooltestHttpTarget {
+        match target {
+            TooltestTarget::Http(wrapper) => wrapper.http,
+            TooltestTarget::Stdio(_) => panic!("expected http target"),
+        }
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -885,12 +898,11 @@ mod tests {
             "/tmp",
         ]);
         let input = build_tooltest_input(&cli).expect("input");
-        let stdio = input.target.stdio.expect("stdio target");
+        let stdio = expect_stdio_target(input.target);
         assert_eq!(stdio.command, "server");
         assert_eq!(stdio.args, vec!["flag".to_string()]);
         assert_eq!(stdio.env.get("FOO"), Some(&"bar".to_string()));
         assert_eq!(stdio.cwd.as_deref(), Some("/tmp"));
-        assert!(input.target.http.is_none());
     }
 
     #[test]
@@ -904,10 +916,25 @@ mod tests {
             "secret",
         ]);
         let input = build_tooltest_input(&cli).expect("input");
-        let http = input.target.http.expect("http target");
+        let http = expect_http_target(input.target);
         assert_eq!(http.url, "http://127.0.0.1:0/mcp");
         assert_eq!(http.auth_token.as_deref(), Some("secret"));
-        assert!(input.target.stdio.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "expected stdio target")]
+    fn expect_stdio_target_panics_on_http() {
+        let cli = Cli::parse_from(["tooltest", "http", "--url", "http://127.0.0.1:0/mcp"]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let _ = expect_stdio_target(input.target);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected http target")]
+    fn expect_http_target_panics_on_stdio() {
+        let cli = Cli::parse_from(["tooltest", "stdio", "--command", "server"]);
+        let input = build_tooltest_input(&cli).expect("input");
+        let _ = expect_http_target(input.target);
     }
 
     #[test]

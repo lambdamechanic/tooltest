@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v flamegraph >/dev/null 2>&1; then
+  echo "tooltest-prof: flamegraph is not installed or not on PATH" >&2
+  exit 1
+fi
+
+if ! command -v tooltest >/dev/null 2>&1; then
+  echo "tooltest-prof: tooltest is not installed or not on PATH" >&2
+  exit 1
+fi
+
+profile_path="${TOOLTEST_PROFILE_PATH:-}"
+flamegraph_args=()
+
+if [ -n "${profile_path}" ]; then
+  if [ -d "${profile_path}" ]; then
+    echo "tooltest-prof: TOOLTEST_PROFILE_PATH points to a directory: ${profile_path}" >&2
+    exit 1
+  fi
+
+  profile_dir="$(dirname -- "${profile_path}")"
+  if [ -n "${profile_dir}" ] && [ "${profile_dir}" != "." ]; then
+    mkdir -p "${profile_dir}"
+  fi
+
+  : > "${profile_path}"
+  flamegraph_args+=(--output "${profile_path}")
+fi
+
+exec flamegraph "${flamegraph_args[@]}" -- tooltest "$@"

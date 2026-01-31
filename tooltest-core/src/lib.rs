@@ -22,7 +22,7 @@ mod validation;
 
 pub use input::{
     TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
-    TooltestTarget, TooltestTargetConfig,
+    TooltestTarget, TooltestTargetConfig, TooltestTargetHttp, TooltestTargetStdio,
 };
 pub use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,

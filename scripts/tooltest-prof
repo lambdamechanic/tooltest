@@ -6,9 +6,18 @@ if ! command -v flamegraph >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v tooltest >/dev/null 2>&1; then
-  echo "tooltest-prof: tooltest is not installed or not on PATH" >&2
-  exit 1
+tooltest_path="${TOOLTEST_PROFILE_TOOLTEST_PATH:-}"
+if [ -n "${tooltest_path}" ]; then
+  if [ ! -x "${tooltest_path}" ]; then
+    echo "tooltest-prof: TOOLTEST_PROFILE_TOOLTEST_PATH is not executable: ${tooltest_path}" >&2
+    exit 1
+  fi
+else
+  if ! command -v tooltest >/dev/null 2>&1; then
+    echo "tooltest-prof: tooltest is not installed or not on PATH" >&2
+    exit 1
+  fi
+  tooltest_path="$(command -v tooltest)"
 fi
 
 profile_path="${TOOLTEST_PROFILE_PATH:-}"
@@ -29,4 +38,4 @@ if [ -n "${profile_path}" ]; then
   flamegraph_args+=(--output "${profile_path}")
 fi
 
-exec flamegraph "${flamegraph_args[@]}" -- tooltest "$@"
+exec flamegraph "${flamegraph_args[@]}" -- "${tooltest_path}" "$@"

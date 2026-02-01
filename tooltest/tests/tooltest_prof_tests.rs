@@ -71,7 +71,7 @@ mod tooltest_prof_tests {
             "--output",
             profile_path.to_str().expect("profile path"),
             "--",
-            "tooltest",
+            tooltest.to_str().expect("tooltest path"),
             "stdio",
             "--command",
             "server",
@@ -120,7 +120,65 @@ mod tooltest_prof_tests {
 
         let args = fs::read_to_string(&args_file).expect("read args");
         let args: Vec<&str> = args.lines().collect();
-        let expected = vec!["--", "tooltest", "http", "--url", "http://example.com"];
+        let expected = vec![
+            "--",
+            tooltest.to_str().expect("tooltest path"),
+            "http",
+            "--url",
+            "http://example.com",
+        ];
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn tooltest_prof_uses_override_tooltest_path() {
+        let root = temp_dir("override-tooltest");
+        fs::create_dir_all(&root).expect("create temp dir");
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+
+        let args_file = root.join("flamegraph.args");
+        let flamegraph = bin_dir.join("flamegraph");
+        let tooltest_override = root.join("tooltest-override");
+        let tooltest_in_path = bin_dir.join("tooltest");
+
+        write_executable(
+            &flamegraph,
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$@\" > \"$FLAMEGRAPH_ARGS_FILE\"\n",
+        );
+        write_executable(&tooltest_override, "#!/usr/bin/env bash\nexit 0\n");
+        write_executable(&tooltest_in_path, "#!/usr/bin/env bash\nexit 0\n");
+
+        let script = tooltest_prof_path();
+        let mut command = Command::new(script);
+        command.arg("stdio").arg("--command").arg("server");
+        command.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        );
+        command.env("FLAMEGRAPH_ARGS_FILE", &args_file);
+        command.env("TOOLTEST_PROFILE_TOOLTEST_PATH", &tooltest_override);
+
+        let output = command.output().expect("run tooltest-prof");
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let args = fs::read_to_string(&args_file).expect("read args");
+        let args: Vec<&str> = args.lines().collect();
+        let expected = vec![
+            "--",
+            tooltest_override.to_str().expect("override path"),
+            "stdio",
+            "--command",
+            "server",
+        ];
         assert_eq!(args, expected);
     }
 

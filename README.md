@@ -68,6 +68,26 @@ TOOLTEST_PROFILE_PATH="$PWD/tooltest.svg" \
 
 For MCP usage, configure your launcher to invoke `tooltest-prof` instead of `tooltest`.
 
+If your flamegraph is mostly "unknown", rebuild tooltest with symbols + frame pointers and
+point the wrapper at the new binary:
+
+```bash
+./scripts/tooltest-prof-build
+TOOLTEST_PROFILE_TOOLTEST_PATH="$PWD/target/release/tooltest" \
+  TOOLTEST_PROFILE_PATH="$PWD/tooltest.svg" \
+  tooltest-prof stdio --command ./path/to/your-mcp-server
+```
+
+Manual rebuild (if you prefer):
+
+```bash
+RUSTFLAGS="-C force-frame-pointers=yes" \
+  CARGO_PROFILE_RELEASE_DEBUG=1 \
+  CARGO_PROFILE_RELEASE_STRIP=none \
+  CARGO_PROFILE_RELEASE_LTO=false \
+  cargo build -p tooltest --bin tooltest --release
+```
+
 ### Test a stdio MCP server
 
 ```bash

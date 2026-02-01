@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+
+manifest_path="${TOOLTEST_PROFILE_MANIFEST_PATH:-${repo_root}/Cargo.toml}"
+if [ ! -f "${manifest_path}" ]; then
+  echo "tooltest-prof-build: Cargo.toml not found at ${manifest_path}" >&2
+  exit 1
+fi
+
+profile_rustflags="${TOOLTEST_PROFILE_RUSTFLAGS:--C force-frame-pointers=yes}"
+if [ -n "${RUSTFLAGS:-}" ]; then
+  export RUSTFLAGS="${RUSTFLAGS} ${profile_rustflags}"
+else
+  export RUSTFLAGS="${profile_rustflags}"
+fi
+
+export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-1}"
+export CARGO_PROFILE_RELEASE_STRIP="${CARGO_PROFILE_RELEASE_STRIP:-none}"
+export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
+
+target_dir="${TOOLTEST_PROFILE_TARGET_DIR:-${repo_root}/target}"
+
+cargo --manifest-path "${manifest_path}" \
+  build -p tooltest --bin tooltest --release --target-dir "${target_dir}"
+
+echo "Built tooltest with profiling symbols at: ${target_dir}/release/tooltest"

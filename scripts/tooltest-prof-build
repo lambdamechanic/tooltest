@@ -23,7 +23,7 @@ export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
 
 target_dir="${TOOLTEST_PROFILE_TARGET_DIR:-${repo_root}/target}"
 
-cargo --manifest-path "${manifest_path}" \
-  build -p tooltest --bin tooltest --release --target-dir "${target_dir}"
+cargo build --manifest-path "${manifest_path}" \
+  -p tooltest --bin tooltest --release --target-dir "${target_dir}"
 
 echo "Built tooltest with profiling symbols at: ${target_dir}/release/tooltest"

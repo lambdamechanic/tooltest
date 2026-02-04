@@ -14,6 +14,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Preflight: block on open release-plz PRs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          prefix="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          path = Path("release-plz.toml")
+          if path.exists():
+              with path.open("rb") as handle:
+                  data = tomllib.load(handle)
+              print(data.get("workspace", {}).get("pr_branch_prefix", "release-plz-"))
+          else:
+              print("release-plz-")
+          PY
+          )"
+
+          prs_json="$(curl -sSf \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100")"
+
+          echo "${prs_json}" | python3 - "${prefix}" <<'PY'
+          import json
+          import sys
+          prefix = sys.argv[1]
+          prs = json.load(sys.stdin)
+          matches = [pr for pr in prs if pr["head"]["ref"].startswith(prefix)]
+          if matches:
+              print(f"::error::Open release-plz PRs found (prefix '{prefix}'). Close/delete them to avoid update conflicts.")
+              for pr in matches:
+                  print(f"- #{pr['number']} {pr['head']['ref']} {pr['html_url']}")
+              sys.exit(1)
+          PY
       - uses: release-plz/action@v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

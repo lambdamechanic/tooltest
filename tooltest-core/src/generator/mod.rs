@@ -2,13 +2,16 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::ops::Deref;
 
 use nonempty::NonEmpty;
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, TestRunner};
 use regex::Regex;
+use regex_syntax::hir::Hir;
+use regex_syntax::ParserBuilder;
 use rmcp::model::{JsonObject, Tool};
 use serde_json::{Number, Value as JsonValue};
 
@@ -56,6 +59,104 @@ pub(crate) fn set_reject_context_for_test(context: String) {
     record_reject_context(context);
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedTool {
+    tool: Tool,
+    patterns: SchemaRegexIndex,
+}
+
+impl PreparedTool {
+    pub(crate) fn new(tool: Tool) -> Self {
+        let patterns = SchemaRegexIndex::from_schema(tool.input_schema.as_ref());
+        Self { tool, patterns }
+    }
+
+    pub(crate) fn patterns(&self) -> &SchemaRegexIndex {
+        &self.patterns
+    }
+}
+
+impl From<Tool> for PreparedTool {
+    fn from(tool: Tool) -> Self {
+        Self::new(tool)
+    }
+}
+
+pub(crate) fn prepare_tools(tools: Vec<Tool>) -> Vec<PreparedTool> {
+    tools.into_iter().map(PreparedTool::from).collect()
+}
+
+impl Deref for PreparedTool {
+    type Target = Tool;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tool
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SchemaRegexIndex {
+    patterns: HashMap<String, CompiledPattern>,
+}
+
+impl SchemaRegexIndex {
+    pub(crate) fn from_schema(schema: &JsonObject) -> Self {
+        let mut pattern_set = HashSet::new();
+        collect_pattern_strings_from_object(schema, &mut pattern_set);
+        let patterns = pattern_set
+            .into_iter()
+            .map(|pattern| {
+                let compiled = CompiledPattern::new(&pattern);
+                (pattern, compiled)
+            })
+            .collect();
+        Self { patterns }
+    }
+
+    fn pattern(&self, pattern: &str) -> Option<&CompiledPattern> {
+        self.patterns.get(pattern)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CompiledPattern {
+    generation: Result<CompiledGenerationPattern, PatternGenerationError>,
+    validation: Result<Regex, regex::Error>,
+}
+
+impl CompiledPattern {
+    fn new(pattern: &str) -> Self {
+        let validation = Regex::new(pattern);
+        let generation = compile_generation_pattern(pattern);
+        Self {
+            generation,
+            validation,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CompiledGenerationPattern {
+    hir: Hir,
+}
+
+#[derive(Clone, Debug)]
+enum PatternGenerationError {
+    Unsupported(String),
+    Parse(String),
+}
+
+impl PatternGenerationError {
+    fn reason(&self) -> String {
+        match self {
+            PatternGenerationError::Unsupported(reason) => reason.clone(),
+            PatternGenerationError::Parse(error) => {
+                format!("pattern must be a valid regex: {error}")
+            }
+        }
+    }
+}
+
 /// Errors emitted while generating tool invocations from schema data.
 #[derive(Debug)]
 pub(crate) enum InvocationError {
@@ -91,7 +192,7 @@ impl StateMachineSequence {
 
 /// Builds a proptest strategy that yields tool invocations from MCP tool schemas.
 pub(crate) fn invocation_strategy(
-    tools: &[Tool],
+    tools: &[PreparedTool],
     predicate: Option<&ToolPredicate>,
 ) -> Result<BoxedStrategy<ToolInvocation>, InvocationError> {
     let mut strategies = Vec::new();
@@ -133,7 +234,7 @@ pub(crate) fn invocation_strategy(
 
 /// Builds a strategy that yields sequences of tool invocations.
 pub(crate) fn invocation_sequence_strategy(
-    tools: &[Tool],
+    tools: &[PreparedTool],
     predicate: Option<&ToolPredicate>,
     len_range: std::ops::RangeInclusive<usize>,
 ) -> Result<BoxedStrategy<Vec<ToolInvocation>>, InvocationError> {
@@ -142,7 +243,7 @@ pub(crate) fn invocation_sequence_strategy(
 }
 
 pub(crate) fn invocation_strategy_from_corpus(
-    tools: &[Tool],
+    tools: &[PreparedTool],
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,
     lenient_sourcing: bool,
@@ -167,7 +268,7 @@ pub(crate) fn invocation_strategy_from_corpus(
 }
 
 pub(crate) fn invocation_from_corpus_seeded(
-    tools: &[Tool],
+    tools: &[PreparedTool],
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,
     lenient_sourcing: bool,
@@ -214,7 +315,7 @@ fn seed_bytes(seed: u64, len: usize) -> Vec<u8> {
 }
 
 pub(crate) fn state_machine_sequence_strategy(
-    tools: &[Tool],
+    tools: &[PreparedTool],
     predicate: Option<&ToolPredicate>,
     config: &StateMachineConfig,
     len_range: std::ops::RangeInclusive<usize>,
@@ -234,7 +335,7 @@ pub(crate) fn state_machine_sequence_strategy(
         .boxed())
 }
 
-fn validate_state_machine_tools(tools: &[Tool]) -> Result<(), InvocationError> {
+fn validate_state_machine_tools(tools: &[PreparedTool]) -> Result<(), InvocationError> {
     for tool in tools {
         let schema = tool.input_schema.as_ref();
         match schema.get("type") {
@@ -328,7 +429,7 @@ fn schema_error_detail(error: InvocationError) -> String {
     }
 }
 
-fn missing_properties_required_error(tool: &Tool) -> InvocationError {
+fn missing_properties_required_error(tool: &PreparedTool) -> InvocationError {
     InvocationError::UnsupportedSchema {
         tool: tool.name.to_string(),
         reason: "inputSchema required must be empty when no properties exist".to_string(),
@@ -336,7 +437,7 @@ fn missing_properties_required_error(tool: &Tool) -> InvocationError {
 }
 
 fn invocation_from_corpus(
-    tool: &Tool,
+    tool: &PreparedTool,
     predicate: Option<&ToolPredicate>,
     corpus: &ValueCorpus,
     lenient_sourcing: bool,
@@ -373,7 +474,7 @@ fn invocation_from_corpus(
 }
 
 fn invocation_from_corpus_unfiltered(
-    tool: &Tool,
+    tool: &PreparedTool,
     corpus: &ValueCorpus,
     lenient_sourcing: bool,
 ) -> Option<BoxedStrategy<ToolInvocation>> {
@@ -417,7 +518,7 @@ fn invocation_from_corpus_unfiltered(
 }
 
 fn invocation_from_corpus_for_schema(
-    tool: &Tool,
+    tool: &PreparedTool,
     schema: &JsonObject,
     corpus: &ValueCorpus,
     omit_optional: bool,
@@ -547,7 +648,7 @@ fn property_strategy_from_corpus(
     schema: &JsonObject,
     required: bool,
     corpus: &ValueCorpus,
-    tool: &Tool,
+    tool: &PreparedTool,
     lenient_sourcing: bool,
 ) -> PropertyOutcome {
     if schema.get("enum").is_some() {
@@ -568,7 +669,7 @@ fn property_strategy_from_corpus(
                 .strings()
                 .iter()
                 .map(|value| JsonValue::String(value.clone()))
-                .filter(|value| schema_violations(schema, value).is_empty())
+                .filter(|value| schema_violations(schema, value, tool.patterns()).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
                 return if required {
@@ -591,7 +692,7 @@ fn property_strategy_from_corpus(
                 .integers()
                 .iter()
                 .map(|value| JsonValue::Number(Number::from(*value)))
-                .filter(|value| schema_violations(schema, value).is_empty())
+                .filter(|value| schema_violations(schema, value, tool.patterns()).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
                 return if required {
@@ -614,7 +715,7 @@ fn property_strategy_from_corpus(
                 .numbers()
                 .iter()
                 .map(|value| JsonValue::Number(value.clone()))
-                .filter(|value| schema_violations(schema, value).is_empty())
+                .filter(|value| schema_violations(schema, value, tool.patterns()).is_empty())
                 .collect::<Vec<_>>();
             if values.is_empty() {
                 return if required {
@@ -672,7 +773,7 @@ fn schema_type_hint(schema: &JsonObject) -> Option<SchemaType> {
 }
 
 pub(crate) fn uncallable_reason(
-    tool: &Tool,
+    tool: &PreparedTool,
     corpus: &ValueCorpus,
     lenient_sourcing: bool,
 ) -> Option<UncallableReason> {
@@ -722,7 +823,9 @@ pub(crate) fn uncallable_reason(
                     .strings()
                     .iter()
                     .map(|value| JsonValue::String(value.clone()))
-                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                    .any(|value| {
+                        schema_violations(schema_object, &value, tool.patterns()).is_empty()
+                    });
                 if has_match {
                     None
                 } else if lenient_sourcing {
@@ -740,7 +843,9 @@ pub(crate) fn uncallable_reason(
                     .integers()
                     .iter()
                     .map(|value| JsonValue::Number(Number::from(*value)))
-                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                    .any(|value| {
+                        schema_violations(schema_object, &value, tool.patterns()).is_empty()
+                    });
                 if has_match {
                     None
                 } else if lenient_sourcing {
@@ -758,7 +863,9 @@ pub(crate) fn uncallable_reason(
                     .numbers()
                     .iter()
                     .map(|value| JsonValue::Number(value.clone()))
-                    .any(|value| schema_violations(schema_object, &value).is_empty());
+                    .any(|value| {
+                        schema_violations(schema_object, &value, tool.patterns()).is_empty()
+                    });
                 if has_match {
                     None
                 } else if lenient_sourcing {
@@ -783,14 +890,16 @@ pub(crate) fn uncallable_reason(
     None
 }
 
-fn input_object_strategy(tool: &Tool) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
+fn input_object_strategy(
+    tool: &PreparedTool,
+) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
     let omit_keys = HashSet::new();
     input_object_strategy_for_schema(tool.input_schema.as_ref(), tool, false, &omit_keys)
 }
 
 fn input_object_strategy_for_schema(
     schema: &JsonObject,
-    tool: &Tool,
+    tool: &PreparedTool,
     omit_optional: bool,
     omit_keys: &HashSet<String>,
 ) -> Result<BoxedStrategy<JsonObject>, InvocationError> {
@@ -928,7 +1037,7 @@ fn input_object_strategy_for_schema(
 
 fn schema_value_strategy(
     schema: &JsonObject,
-    tool: &Tool,
+    tool: &PreparedTool,
 ) -> Result<BoxedStrategy<JsonValue>, InvocationError> {
     if let Some(resolved) = resolve_schema_ref(schema, tool)? {
         return schema_value_strategy(&resolved, tool);
@@ -991,19 +1100,25 @@ fn schema_value_strategy(
             }
 
             if let Some(pattern) = schema.get("pattern").and_then(JsonValue::as_str) {
-                let pattern = pattern.to_string();
-                let normalized = normalize_pattern_for_generation(&pattern).map_err(|reason| {
+                let compiled = tool.patterns().pattern(pattern).ok_or_else(|| {
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
-                        reason,
+                        reason: "pattern was not compiled".to_string(),
                     }
                 })?;
-                let strategy = proptest::string::string_regex(&normalized).map_err(|err| {
+                let generation = compiled.generation.as_ref().map_err(|error| {
                     InvocationError::UnsupportedSchema {
                         tool: tool.name.to_string(),
-                        reason: format!("pattern must be a valid regex: {err}"),
+                        reason: error.reason(),
                     }
                 })?;
+                let strategy =
+                    proptest::string::string_regex_parsed(&generation.hir).map_err(|err| {
+                        InvocationError::UnsupportedSchema {
+                            tool: tool.name.to_string(),
+                            reason: format!("pattern must be a valid regex: {err}"),
+                        }
+                    })?;
                 Ok(strategy
                     .prop_filter("string length out of bounds", move |value| {
                         let len = value.chars().count();
@@ -1420,6 +1535,42 @@ fn is_escaped(bytes: &[u8], idx: usize) -> bool {
     count % 2 == 1
 }
 
+fn collect_pattern_strings_from_object(schema: &JsonObject, patterns: &mut HashSet<String>) {
+    if let Some(JsonValue::String(pattern)) = schema.get("pattern") {
+        patterns.insert(pattern.clone());
+    }
+    for value in schema.values() {
+        collect_pattern_strings(value, patterns);
+    }
+}
+
+fn collect_pattern_strings(value: &JsonValue, patterns: &mut HashSet<String>) {
+    match value {
+        JsonValue::Object(map) => collect_pattern_strings_from_object(map, patterns),
+        JsonValue::Array(values) => {
+            for value in values {
+                collect_pattern_strings(value, patterns);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn compile_generation_pattern(
+    pattern: &str,
+) -> Result<CompiledGenerationPattern, PatternGenerationError> {
+    let normalized =
+        normalize_pattern_for_generation(pattern).map_err(PatternGenerationError::Unsupported)?;
+    let hir = ParserBuilder::new()
+        .build()
+        .parse(&normalized)
+        .map_err(|error| PatternGenerationError::Parse(error.to_string()))?;
+    if let Err(error) = proptest::string::string_regex_parsed(&hir) {
+        return Err(PatternGenerationError::Parse(error.to_string()));
+    }
+    Ok(CompiledGenerationPattern { hir })
+}
+
 fn nonempty_path(path: &[PathSegment]) -> NonEmpty<PathSegment> {
     match path.split_first() {
         Some((head, tail)) => NonEmpty {
@@ -1430,10 +1581,14 @@ fn nonempty_path(path: &[PathSegment]) -> NonEmpty<PathSegment> {
     }
 }
 
-pub(crate) fn schema_violations(schema: &JsonObject, value: &JsonValue) -> Vec<Constraint> {
+pub(crate) fn schema_violations(
+    schema: &JsonObject,
+    value: &JsonValue,
+    patterns: &SchemaRegexIndex,
+) -> Vec<Constraint> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    collect_violations(schema, value, &mut path, &mut violations);
+    collect_violations(schema, value, &mut path, &mut violations, patterns);
     violations
 }
 
@@ -1442,8 +1597,9 @@ fn collect_violations(
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
+    patterns: &SchemaRegexIndex,
 ) {
-    collect_violations_inner(schema, value, path, violations, schema);
+    collect_violations_inner(schema, value, path, violations, patterns, schema);
 }
 
 fn collect_violations_inner(
@@ -1451,17 +1607,18 @@ fn collect_violations_inner(
     value: &JsonValue,
     path: &mut Vec<PathSegment>,
     violations: &mut Vec<Constraint>,
+    patterns: &SchemaRegexIndex,
     root: &JsonObject,
 ) {
     if let Some(resolved) = resolve_schema_for_validation(schema, root) {
-        collect_violations_inner(&resolved, value, path, violations, root);
+        collect_violations_inner(&resolved, value, path, violations, patterns, root);
         return;
     }
 
     match schema_oneof_branches(schema) {
         Ok(Some(one_of)) => {
             let base = schema_without_oneof(schema);
-            let mut base_violations = schema_violations_inner(&base, value, root);
+            let mut base_violations = schema_violations_inner(&base, value, patterns, root);
             if !base_violations.is_empty() {
                 violations.append(&mut base_violations);
                 return;
@@ -1469,7 +1626,7 @@ fn collect_violations_inner(
             let mut matches = 0;
             let mut best: Option<Vec<Constraint>> = None;
             for branch in &one_of {
-                let branch_violations = schema_violations_inner(branch, value, root);
+                let branch_violations = schema_violations_inner(branch, value, patterns, root);
                 if branch_violations.is_empty() {
                     matches += 1;
                     continue;
@@ -1509,14 +1666,14 @@ fn collect_violations_inner(
     match schema_anyof_branches(schema) {
         Ok(Some(any_of)) => {
             let base = schema_without_anyof(schema);
-            let mut base_violations = schema_violations_inner(&base, value, root);
+            let mut base_violations = schema_violations_inner(&base, value, patterns, root);
             if !base_violations.is_empty() {
                 violations.append(&mut base_violations);
                 return;
             }
             let mut best: Option<Vec<Constraint>> = None;
             for branch in &any_of {
-                let branch_violations = schema_violations_inner(branch, value, root);
+                let branch_violations = schema_violations_inner(branch, value, patterns, root);
                 if branch_violations.is_empty() {
                     return;
                 }
@@ -1545,7 +1702,7 @@ fn collect_violations_inner(
     if let Some(type_union) = schema_type_union_branches(schema) {
         let mut best: Option<Vec<Constraint>> = None;
         for branch in &type_union {
-            let branch_violations = schema_violations_inner(branch, value, root);
+            let branch_violations = schema_violations_inner(branch, value, patterns, root);
             if branch_violations.is_empty() {
                 return;
             }
@@ -1609,14 +1766,12 @@ fn collect_violations_inner(
                 }
             }
             if let Some(JsonValue::String(pattern)) = schema.get("pattern") {
-                if let Ok(regex) = Regex::new(pattern) {
-                    if !regex.is_match(value_str) {
-                        violations.push(Constraint {
-                            path: nonempty_path(path),
-                            kind: ConstraintKind::Pattern(pattern.clone()),
-                        });
-                    }
-                } else {
+                let compiled = patterns.pattern(pattern);
+                let is_match = compiled
+                    .and_then(|compiled| compiled.validation.as_ref().ok())
+                    .map(|regex| regex.is_match(value_str))
+                    .unwrap_or(false);
+                if !is_match {
                     violations.push(Constraint {
                         path: nonempty_path(path),
                         kind: ConstraintKind::Pattern(pattern.clone()),
@@ -1662,7 +1817,7 @@ fn collect_violations_inner(
             if let Some(JsonValue::Object(item_schema)) = schema.get("items") {
                 for (index, item) in items.iter().enumerate() {
                     path.push(PathSegment::Index(index));
-                    collect_violations_inner(item_schema, item, path, violations, root);
+                    collect_violations_inner(item_schema, item, path, violations, patterns, root);
                     path.pop();
                 }
             }
@@ -1688,6 +1843,7 @@ fn collect_violations_inner(
                                 property_value,
                                 path,
                                 violations,
+                                patterns,
                                 root,
                             );
                             path.pop();
@@ -1703,11 +1859,12 @@ fn collect_violations_inner(
 fn schema_violations_inner(
     schema: &JsonObject,
     value: &JsonValue,
+    patterns: &SchemaRegexIndex,
     root: &JsonObject,
 ) -> Vec<Constraint> {
     let mut violations = Vec::new();
     let mut path = Vec::new();
-    collect_violations_inner(schema, value, &mut path, &mut violations, root);
+    collect_violations_inner(schema, value, &mut path, &mut violations, patterns, root);
     violations
 }
 

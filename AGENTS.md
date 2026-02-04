@@ -54,6 +54,10 @@ These dependencies are considered core and can be used freely:
 - proptest (do not expose proptest types in the public API)
 - rmcp
 
+## Schema/Type Integrity
+
+- Never override schemas or types for tests. If a test needs different behavior, report it as a problem to fix in the implementation and notify the user instead of mutating schemas/types.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

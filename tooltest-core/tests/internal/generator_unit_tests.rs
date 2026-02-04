@@ -1,12 +1,13 @@
 use super::*;
+use regex_syntax::hir::Look;
 use rmcp::model::Tool;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-fn tool_with_schema(name: &str, schema: JsonValue) -> Tool {
-    Tool {
+fn tool_with_schema(name: &str, schema: JsonValue) -> PreparedTool {
+    PreparedTool::new(Tool {
         name: name.to_string().into(),
         title: None,
         description: None,
@@ -15,7 +16,7 @@ fn tool_with_schema(name: &str, schema: JsonValue) -> Tool {
         annotations: None,
         icons: None,
         meta: None,
-    }
+    })
 }
 
 fn sample<T: fmt::Debug>(strategy: BoxedStrategy<T>) -> T {
@@ -406,6 +407,68 @@ fn schema_value_strategy_rejects_invalid_pattern() {
         .cloned()
         .expect("schema");
     let error = schema_value_strategy(&schema, &tool).expect_err("invalid pattern");
+    assert!(matches!(
+        error,
+        InvocationError::UnsupportedSchema { reason, .. }
+            if reason.contains("pattern must be a valid regex")
+    ));
+}
+
+#[test]
+fn compile_generation_pattern_rejects_unsupported_repetition() {
+    let error = compile_generation_pattern("a{4294967295}").expect_err("unsupported repetition");
+    assert!(matches!(
+        error,
+        PatternGenerationError::Parse(reason) if reason.contains("u32::MAX")
+    ));
+}
+
+#[test]
+fn schema_value_strategy_reports_unexpected_regex_failure() {
+    let pattern = "a";
+    let schema = json!({ "type": "string", "pattern": pattern })
+        .as_object()
+        .cloned()
+        .expect("schema");
+    let mut patterns = HashMap::new();
+    patterns.insert(
+        pattern.to_string(),
+        CompiledPattern {
+            generation: Ok(CompiledGenerationPattern {
+                hir: Hir::look(Look::Start),
+            }),
+            validation: Regex::new(pattern),
+        },
+    );
+    let tool = Tool {
+        name: "echo".to_string().into(),
+        title: None,
+        description: None,
+        input_schema: Arc::new(
+            json!({
+                "type": "object",
+                "properties": { "text": schema }
+            })
+            .as_object()
+            .cloned()
+            .expect("input schema"),
+        ),
+        output_schema: None,
+        annotations: None,
+        icons: None,
+        meta: None,
+    };
+    let prepared = PreparedTool {
+        tool,
+        patterns: SchemaRegexIndex { patterns },
+    };
+    let error = schema_value_strategy(
+        json!({ "type": "string", "pattern": pattern })
+            .as_object()
+            .expect("schema"),
+        &prepared,
+    )
+    .expect_err("regex failure");
     assert!(matches!(
         error,
         InvocationError::UnsupportedSchema { reason, .. }
@@ -1977,7 +2040,8 @@ fn input_object_strategy_supports_ref_items_with_oneof_required() {
     let has_vendor = object.contains_key("vendor");
     let has_product = object.contains_key("product");
     assert!(has_vendor || has_product);
-    let violations = schema_violations(schema, &JsonValue::Object(object.clone()));
+    let patterns = SchemaRegexIndex::from_schema(schema);
+    let violations = schema_violations(schema, &JsonValue::Object(object.clone()), &patterns);
     assert!(violations.is_empty());
     let items = object
         .get("fields")
@@ -2137,7 +2201,8 @@ fn schema_branch_helpers_return_none_for_non_array_values() {
 #[test]
 fn schema_violations_include_schema_error_for_invalid_anyof() {
     let schema = json!({ "anyOf": [] }).as_object().cloned().expect("schema");
-    let violations = schema_violations(&schema, &json!(true));
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!(true), &patterns);
     assert!(violations.iter().any(|constraint| {
         matches!(
             &constraint.kind,
@@ -2150,7 +2215,8 @@ fn schema_violations_include_schema_error_for_invalid_anyof() {
 #[test]
 fn schema_violations_include_schema_error_for_invalid_oneof() {
     let schema = json!({ "oneOf": [] }).as_object().cloned().expect("schema");
-    let violations = schema_violations(&schema, &json!(true));
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!(true), &patterns);
     assert!(violations.iter().any(|constraint| {
         matches!(
             &constraint.kind,

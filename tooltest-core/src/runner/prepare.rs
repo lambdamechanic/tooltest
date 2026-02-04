@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::generator::{prepare_tools, PreparedTool};
 use crate::{RunConfig, RunFailure, RunResult, RunWarning, SessionDriver, Tool, TraceEntry};
 
 use super::pre_run::run_pre_run_hook;
@@ -7,7 +8,7 @@ use super::result::failure_result;
 use super::schema::{build_output_validators, collect_schema_warnings, validate_tools};
 
 pub(super) struct PreparedRun {
-    pub(super) tools: Vec<Tool>,
+    pub(super) tools: Vec<PreparedTool>,
     pub(super) warnings: Vec<RunWarning>,
     pub(super) validators: BTreeMap<String, jsonschema::Validator>,
     pub(super) prelude_trace: Vec<TraceEntry>,
@@ -89,6 +90,8 @@ pub(super) async fn prepare_run(
             None,
         ));
     }
+
+    let tools = prepare_tools(tools);
 
     Ok(PreparedRun {
         tools,

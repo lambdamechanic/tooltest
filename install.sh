@@ -106,3 +106,20 @@ mv "${tmp_dir}/${asset}" "${install_path}"
 chmod +x "${install_path}"
 
 echo "Installed ${binary_name} to ${install_path}"
+
+if [ -n "${TOOLTEST_INSTALL_DEBUG_TOOLS:-}" ]; then
+  debug_url="https://raw.githubusercontent.com/${REPO}/main/scripts/tooltest-prof"
+  debug_path="${INSTALL_DIR}/tooltest-prof"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${debug_url}" -o "${debug_path}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "${debug_url}" -O "${debug_path}"
+  else
+    echo "curl or wget is required to download tooltest-prof" >&2
+    exit 1
+  fi
+
+  chmod +x "${debug_path}"
+  echo "Installed tooltest-prof to ${debug_path}"
+fi

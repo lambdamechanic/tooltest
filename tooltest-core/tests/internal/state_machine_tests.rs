@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::generator::{
     invocation_from_corpus_seeded, invocation_strategy_from_corpus,
-    state_machine_sequence_strategy, InvocationError, ValueCorpus,
+    state_machine_sequence_strategy, InvocationError, PreparedTool, ValueCorpus,
 };
 use crate::{StateMachineConfig, ToolPredicate};
 use proptest::prelude::*;
@@ -22,8 +22,8 @@ fn sample<T: fmt::Debug>(strategy: BoxedStrategy<T>) -> T {
         .current()
 }
 
-fn tool_with_schema(name: &str, schema: JsonValue) -> Tool {
-    Tool {
+fn tool_with_schema(name: &str, schema: JsonValue) -> PreparedTool {
+    PreparedTool::new(Tool {
         name: name.to_string().into(),
         title: None,
         description: None,
@@ -32,7 +32,7 @@ fn tool_with_schema(name: &str, schema: JsonValue) -> Tool {
         annotations: None,
         icons: None,
         meta: None,
-    }
+    })
 }
 
 #[test]

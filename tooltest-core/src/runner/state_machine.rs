@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 
-use rmcp::model::Tool;
-
 use crate::generator::{
-    invocation_from_corpus_seeded, record_reject_context, StateMachineSequence,
+    invocation_from_corpus_seeded, record_reject_context, PreparedTool, StateMachineSequence,
 };
 use crate::{AssertionSet, RunFailure, SessionDriver, ToolPredicate, TraceEntry};
 
@@ -17,7 +15,7 @@ use super::result::FailureContext;
 
 pub(super) struct StateMachineExecution<'a> {
     pub(super) session: &'a SessionDriver,
-    pub(super) tools: &'a [Tool],
+    pub(super) tools: &'a [PreparedTool],
     pub(super) validators: &'a BTreeMap<String, jsonschema::Validator>,
     pub(super) assertions: &'a AssertionSet,
     pub(super) predicate: Option<&'a ToolPredicate>,

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
-use rmcp::model::{CallToolResult, Tool};
+use rmcp::model::CallToolResult;
 use serde_json::{json, Number, Value as JsonValue};
 
-use crate::generator::{uncallable_reason, UncallableReason, ValueCorpus};
+use crate::generator::{uncallable_reason, PreparedTool, UncallableReason, ValueCorpus};
 use crate::{
     CorpusReport, CoverageReport, CoverageRule, CoverageWarning, CoverageWarningReason, RunFailure,
     StateMachineConfig, ToolInvocation, UncallableToolCall,
@@ -18,7 +18,7 @@ pub(super) struct CoverageValidationFailure {
 }
 
 pub(super) struct CoverageTracker<'a> {
-    tools: &'a [Tool],
+    tools: &'a [PreparedTool],
     corpus: ValueCorpus,
     counts: BTreeMap<String, u64>,
     failures: BTreeMap<String, u64>,
@@ -63,7 +63,7 @@ impl CorpusSnapshot {
 
 impl<'a> CoverageTracker<'a> {
     pub(super) fn new(
-        tools: &'a [Tool],
+        tools: &'a [PreparedTool],
         config: &StateMachineConfig,
         uncallable_limit: usize,
     ) -> Self {
@@ -332,7 +332,7 @@ impl<'a> CoverageTracker<'a> {
         Ok(())
     }
 
-    pub(super) fn eligible_tools(&self) -> Vec<&Tool> {
+    pub(super) fn eligible_tools(&self) -> Vec<&PreparedTool> {
         let allowlist = self.allowlist.as_ref();
         let blocklist = self.blocklist.as_ref();
         self.tools

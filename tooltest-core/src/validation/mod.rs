@@ -5,7 +5,7 @@ use std::env;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::generator::invocation_strategy;
+use crate::generator::{invocation_strategy, PreparedTool};
 use crate::{RunConfig, RunFailure, SessionDriver, SessionError, TraceEntry};
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
@@ -263,8 +263,12 @@ async fn run_tool_cases(
     config: &ToolValidationConfig,
     tool: &Tool,
 ) -> Result<(), ToolValidationError> {
-    let strategy = invocation_strategy(std::slice::from_ref(tool), config.run.predicate.as_ref())
-        .map_err(|error| ToolValidationError::Generation {
+    let prepared = PreparedTool::new(tool.clone());
+    let strategy = invocation_strategy(
+        std::slice::from_ref(&prepared),
+        config.run.predicate.as_ref(),
+    )
+    .map_err(|error| ToolValidationError::Generation {
         tool: tool.name.to_string(),
         reason: error.to_string(),
     })?;

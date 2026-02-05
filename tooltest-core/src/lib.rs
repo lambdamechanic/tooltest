@@ -33,8 +33,8 @@ pub use lint::{
 };
 pub use lint_config::{default_tooltest_toml, load_lint_suite};
 pub use lints::{
-    JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, McpSchemaMinVersionLint,
-    MissingStructuredContentLint, MaxToolsLint,
+    CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 pub use rmcp::model::{
@@ -47,11 +47,7 @@ pub use schema::{
     SchemaError,
 };
 pub use session::{SessionDriver, SessionError};
-pub use validation::{
-    list_tools_http, list_tools_stdio, list_tools_with_session, validate_tool, validate_tools,
-    BulkToolValidationSummary, ListToolsError, ToolValidationConfig, ToolValidationDecision,
-    ToolValidationError, ToolValidationFailure, ToolValidationFn,
-};
+pub use validation::{list_tools_http, list_tools_stdio, list_tools_with_session, ListToolsError};
 
 #[cfg(test)]
 #[path = "../tests/internal/mod.rs"]
@@ -90,8 +86,6 @@ pub struct StateMachineConfig {
     pub coverage_allowlist: Option<Vec<String>>,
     /// Optional blocklist for coverage warnings and validation.
     pub coverage_blocklist: Option<Vec<String>>,
-    /// Coverage validation rules applied after state-machine runs.
-    pub coverage_rules: Vec<CoverageRule>,
 }
 
 impl StateMachineConfig {
@@ -140,12 +134,6 @@ impl StateMachineConfig {
     /// Sets the coverage blocklist for state-machine runs.
     pub fn with_coverage_blocklist(mut self, coverage_blocklist: Vec<String>) -> Self {
         self.coverage_blocklist = Some(coverage_blocklist);
-        self
-    }
-
-    /// Sets the coverage validation rules for state-machine runs.
-    pub fn with_coverage_rules(mut self, coverage_rules: Vec<CoverageRule>) -> Self {
-        self.coverage_rules = coverage_rules;
         self
     }
 }
@@ -684,7 +672,7 @@ pub struct CorpusReport {
 
 /// Coverage validation rules for state-machine runs.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "rule", rename_all = "snake_case")]
+#[serde(tag = "rule", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CoverageRule {
     /// Require a minimum number of successful calls per tool.
     MinCallsPerTool { min: u64 },

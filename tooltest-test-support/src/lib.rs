@@ -110,15 +110,14 @@ impl Transport<RoleClient> for ListToolsTransport {
         let response_tx = self.response_tx.clone();
         let tools = self.tools.clone();
         if let JsonRpcMessage::Request(request) = &item {
-            let mut response = None;
-            if let ClientRequest::InitializeRequest(_) = &request.request {
-                response = Some(init_response(request.id.clone()));
-            } else if let ClientRequest::ListToolsRequest(_) = &request.request {
-                response = Some(list_tools_response(request.id.clone(), tools));
-            }
-            if let Some(response) = response {
-                let _ = response_tx.send(response);
-            }
+            let response = match &request.request {
+                ClientRequest::InitializeRequest(_) => Some(init_response(request.id.clone())),
+                ClientRequest::ListToolsRequest(_) => {
+                    Some(list_tools_response(request.id.clone(), tools))
+                }
+                _ => None,
+            };
+            let _ = response.map(|response| response_tx.send(response));
         }
         std::future::ready(Ok(()))
     }
@@ -292,7 +291,8 @@ impl Transport<RoleClient> for RunnerTransport {
 mod tests {
     use super::*;
     use rmcp::model::{
-        ClientRequest, InitializeRequest, InitializeRequestParam, ListToolsRequest, NumberOrString,
+        ClientNotification, ClientRequest, InitializeRequest, InitializeRequestParam,
+        InitializedNotification, ListPromptsRequest, ListToolsRequest, NumberOrString,
         PaginatedRequestParam, ServerJsonRpcMessage, ServerResult,
     };
 
@@ -323,6 +323,23 @@ mod tests {
         )
     }
 
+    fn list_prompts_message(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::request(
+            ClientRequest::ListPromptsRequest(ListPromptsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(id),
+        )
+    }
+
+    fn initialized_notification_message() -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::notification(ClientNotification::InitializedNotification(
+            InitializedNotification::default(),
+        ))
+    }
+
     fn assert_init_response(response: ServerJsonRpcMessage) {
         match response {
             ServerJsonRpcMessage::Response(response) => match response.result {
@@ -333,10 +350,30 @@ mod tests {
         }
     }
 
+    fn assert_list_tools_response(response: ServerJsonRpcMessage, expected: &Tool) {
+        match response {
+            ServerJsonRpcMessage::Response(response) => match response.result {
+                ServerResult::ListToolsResult(result) => {
+                    assert!(result.tools.iter().any(|tool| tool.name == expected.name));
+                }
+                other => panic!("unexpected result: {other:?}"),
+            },
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
     #[test]
     fn transport_error_formats_message() {
         let error = TransportError("boom");
         assert_eq!(error.to_string(), "boom");
+    }
+
+    #[test]
+    fn list_tools_transport_close_ok() {
+        run_async(async {
+            let mut transport = ListToolsTransport::new(vec![stub_tool("echo")]);
+            transport.close().await.expect("close");
+        });
     }
 
     #[test]
@@ -353,6 +390,80 @@ mod tests {
             assert_eq!(error.to_string(), "list tools");
             transport.close().await.expect("close");
         });
+    }
+
+    #[test]
+    fn list_tools_transport_handles_list_tools_request() {
+        run_async(async {
+            let tool = stub_tool("echo");
+            let mut transport = ListToolsTransport::new(vec![tool.clone()]);
+            transport.send(init_message(1)).await.expect("init send");
+            let response = transport.receive().await.expect("init response");
+            assert_init_response(response);
+
+            transport
+                .send(list_tools_message(2))
+                .await
+                .expect("list tools send");
+            let response = transport.receive().await.expect("list tools response");
+            assert_list_tools_response(response, &tool);
+            transport.close().await.expect("close");
+        });
+    }
+
+    #[test]
+    fn list_tools_transport_ignores_unhandled_requests() {
+        run_async(async {
+            let mut transport = ListToolsTransport::new(vec![stub_tool("echo")]);
+            transport
+                .send(list_prompts_message(3))
+                .await
+                .expect("send");
+            {
+                let mut receiver = transport.responses.lock().await;
+                assert!(receiver.try_recv().is_err());
+            }
+            transport.close().await.expect("close");
+        });
+    }
+
+    #[test]
+    fn list_tools_transport_ignores_notifications() {
+        run_async(async {
+            let mut transport = ListToolsTransport::new(vec![stub_tool("echo")]);
+            transport
+                .send(initialized_notification_message())
+                .await
+                .expect("send");
+            {
+                let mut receiver = transport.responses.lock().await;
+                assert!(receiver.try_recv().is_err());
+            }
+            transport.close().await.expect("close");
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected result")]
+    fn assert_list_tools_response_panics_on_unexpected_result() {
+        let message = ServerJsonRpcMessage::Response(rmcp::model::JsonRpcResponse {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id: rmcp::model::RequestId::Number(1),
+            result: ServerResult::InitializeResult(InitializeResult::default()),
+        });
+        assert_list_tools_response(message, &stub_tool("echo"));
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected message")]
+    fn assert_list_tools_response_panics_on_unexpected_message() {
+        let message = ServerJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            notification: rmcp::model::ServerNotification::CustomNotification(
+                rmcp::model::CustomNotification::new("test", None),
+            ),
+        });
+        assert_list_tools_response(message, &stub_tool("echo"));
     }
 
     #[test]

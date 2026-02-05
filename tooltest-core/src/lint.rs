@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::{CallToolResult, CorpusReport, CoverageReport, Tool, ToolInvocation};
+use crate::{CallToolResult, CorpusReport, CoverageReport, RunOutcome, Tool, ToolInvocation};
 /// Severity levels for lint findings.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +75,7 @@ impl LintDefinition {
 pub struct LintFinding {
     pub message: String,
     pub details: Option<JsonValue>,
+    pub code: Option<String>,
 }
 
 impl LintFinding {
@@ -82,11 +83,17 @@ impl LintFinding {
         Self {
             message: message.into(),
             details: None,
+            code: None,
         }
     }
 
     pub fn with_details(mut self, details: JsonValue) -> Self {
         self.details = Some(details);
+        self
+    }
+
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
         self
     }
 }
@@ -117,6 +124,9 @@ pub struct ResponseLintContext<'a> {
 pub struct RunLintContext<'a> {
     pub coverage: Option<&'a CoverageReport>,
     pub corpus: Option<&'a CorpusReport>,
+    pub coverage_allowlist: Option<&'a [String]>,
+    pub coverage_blocklist: Option<&'a [String]>,
+    pub outcome: &'a RunOutcome,
 }
 
 /// Trait for implementing lint checks.

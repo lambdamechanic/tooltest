@@ -15,17 +15,19 @@ use crate::generator::{
     clear_reject_context, prepare_tools, set_reject_context_for_test, PreparedTool,
     StateMachineSequence, UncallableReason,
 };
+use crate::lints::{
+    CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint,
+    DEFAULT_JSON_SCHEMA_DIALECT,
+};
 use crate::{
-    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
+    AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageReport, CoverageRule,
     CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, LintDefinition,
     LintFinding, LintLevel, LintPhase, LintRule, LintSuite, PreRunHook, ResponseAssertion,
-    ResponseLintContext, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
-    RunnerOptions, SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig,
-    StdioConfig, ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry, TraceSink,
-};
-use crate::lints::{
-    JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, McpSchemaMinVersionLint,
-    MissingStructuredContentLint, MaxToolsLint, DEFAULT_JSON_SCHEMA_DIALECT,
+    ResponseLintContext, RunConfig, RunFailure, RunOutcome, RunResult, RunWarningCode,
+    RunnerOptions, SchemaConfig, SequenceAssertion, SessionDriver, SessionError,
+    StateMachineConfig, StdioConfig, ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry,
+    TraceSink,
 };
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
@@ -105,8 +107,43 @@ fn trace_entry_with(name: &str, args: Option<JsonValue>, response: CallToolResul
     )
 }
 
-fn default_assertion_context() -> (Vec<RunWarning>, std::collections::HashSet<String>) {
-    (Vec::new(), std::collections::HashSet::new())
+fn coverage_lint_suite(rules: Vec<CoverageRule>) -> LintSuite {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        rules,
+    )
+    .expect("coverage lint");
+    LintSuite::new(vec![Arc::new(lint)])
+}
+
+fn no_crash_lint_suite() -> LintSuite {
+    let lint = NoCrashLint::new(LintDefinition::new(
+        "no_crash",
+        LintPhase::Run,
+        LintLevel::Error,
+    ))
+    .expect("no_crash lint");
+    LintSuite::new(vec![Arc::new(lint)])
+}
+
+fn run_coverage_lint(
+    report: &CoverageReport,
+    config: &StateMachineConfig,
+    rules: Vec<CoverageRule>,
+) -> Vec<LintFinding> {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        rules,
+    )
+    .expect("coverage lint");
+    let context = crate::RunLintContext {
+        coverage: Some(report),
+        corpus: None,
+        coverage_allowlist: config.coverage_allowlist.as_deref(),
+        coverage_blocklist: config.coverage_blocklist.as_deref(),
+        outcome: &RunOutcome::Success,
+    };
+    lint.check_run(&context)
 }
 
 #[derive(Default)]
@@ -118,6 +155,14 @@ impl TraceSink for CaptureSink {
     fn record(&self, case_index: u64, trace: &[TraceEntry]) {
         let mut records = self.traces.lock().expect("trace sink lock");
         records.push((case_index, trace.to_vec()));
+    }
+}
+
+struct PanicSink;
+
+impl TraceSink for PanicSink {
+    fn record(&self, _case_index: u64, _trace: &[TraceEntry]) {
+        panic!("trace sink panic");
     }
 }
 
@@ -143,7 +188,6 @@ async fn execute_sequence_for_test(
         in_band_error_forbidden,
         full_trace: false,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
@@ -153,6 +197,19 @@ async fn execute_sequence_for_test(
 
 fn connect_result(result: Result<SessionDriver, SessionError>) -> ConnectFuture<'static> {
     Box::pin(async move { result })
+}
+
+fn coverage_report_for(counts: &[(&str, u64)]) -> CoverageReport {
+    let mut map = BTreeMap::new();
+    for (name, count) in counts {
+        map.insert((*name).to_string(), *count);
+    }
+    CoverageReport {
+        counts: map,
+        failures: BTreeMap::new(),
+        warnings: Vec::new(),
+        uncallable_traces: BTreeMap::new(),
+    }
 }
 
 fn is_list_tools(entry: &TraceEntry) -> bool {
@@ -228,15 +285,8 @@ fn apply_default_assertions_reports_tool_error() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let result = apply_default_assertions(
-        invocation,
-        response.expect("response"),
-        &validators,
-        true,
-        &mut warnings,
-        &mut warned,
-    );
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, true);
     assert!(result.is_some());
 }
 
@@ -249,20 +299,13 @@ fn apply_default_assertions_allows_tool_error_when_allowed() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let result = apply_default_assertions(
-        invocation,
-        response.expect("response"),
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_none());
 }
 
 #[test]
-fn apply_default_assertions_reports_missing_structured_content() {
+fn apply_default_assertions_allows_missing_structured_content() {
     let schema = json!({
         "type": "object",
         "properties": { "status": { "type": "string" } },
@@ -277,56 +320,9 @@ fn apply_default_assertions_reports_missing_structured_content() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let result = apply_default_assertions(
-        invocation,
-        response.expect("response"),
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_none());
-    assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].code, RunWarningCode::MissingStructuredContent);
-}
-
-#[test]
-fn apply_default_assertions_dedupes_missing_structured_warnings() {
-    let entry = trace_entry_with(
-        "echo",
-        None,
-        CallToolResult::success(vec![Content::text("ok")]),
-    );
-    let schema = json!({ "type": "object", "properties": {} });
-    let validator = draft202012::new(&schema).expect("validator");
-    let mut validators = BTreeMap::new();
-    validators.insert("echo".to_string(), validator);
-    let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let response = response.expect("response");
-
-    let first = apply_default_assertions(
-        invocation,
-        response,
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
-    let second = apply_default_assertions(
-        invocation,
-        response,
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
-
-    assert!(first.is_none());
-    assert!(second.is_none());
-    assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].code, RunWarningCode::MissingStructuredContent);
 }
 
 #[test]
@@ -345,15 +341,8 @@ fn apply_default_assertions_reports_schema_violation() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let result = apply_default_assertions(
-        invocation,
-        response.expect("response"),
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_some());
 }
 
@@ -373,15 +362,8 @@ fn apply_default_assertions_accepts_valid_structured_content() {
     let mut validators = BTreeMap::new();
     validators.insert("echo".to_string(), validator);
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let result = apply_default_assertions(
-        invocation,
-        response.expect("response"),
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_none());
 }
 
@@ -394,15 +376,8 @@ fn apply_default_assertions_skips_when_missing_validator() {
     );
     let validators = BTreeMap::new();
     let (invocation, response) = entry.as_tool_call().expect("tool call");
-    let (mut warnings, mut warned) = default_assertion_context();
-    let result = apply_default_assertions(
-        invocation,
-        response.expect("response"),
-        &validators,
-        false,
-        &mut warnings,
-        &mut warned,
-    );
+    let result =
+        apply_default_assertions(invocation, response.expect("response"), &validators, false);
     assert!(result.is_none());
 }
 
@@ -883,6 +858,22 @@ async fn run_with_session_reports_list_tools_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_no_crash_fails_on_list_tools_error() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response).with_list_tools_error(ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        "nope",
+        None,
+    ));
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new().with_lints(no_crash_lint_suite());
+
+    let result = run_with_session(&session, &config, RunnerOptions::default()).await;
+    assert_failure_reason_contains(&result, "failed to list tools");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_reports_pre_run_hook_failure_before_validation() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
@@ -1074,9 +1065,9 @@ async fn run_with_session_state_machine_allows_in_band_error_by_default() {
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new().with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -1097,9 +1088,20 @@ async fn run_with_session_state_machine_requires_structured_content_on_error_wit
     let response = CallToolResult::error(vec![Content::text("boom")]);
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new().with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let coverage = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        vec![CoverageRule::percent_called(0.0)],
+    )
+    .expect("coverage lint");
+    let missing = MissingStructuredContentLint::new(LintDefinition::new(
+        "missing_structured_content",
+        LintPhase::Response,
+        LintLevel::Warning,
+    ));
+    let suite = LintSuite::new(vec![Arc::new(coverage), Arc::new(missing)]);
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(suite);
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -1134,9 +1136,9 @@ async fn run_with_session_state_machine_accepts_structured_content_on_error_with
     };
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let config = RunConfig::new().with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -1152,17 +1154,25 @@ async fn run_with_session_state_machine_min_calls_per_tool_failure() {
     let response = CallToolResult::structured(json!({ "value": 1 }));
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let state_machine = StateMachineConfig::default()
-        .with_dump_corpus(true)
-        .with_coverage_rules(vec![CoverageRule::MinCallsPerTool { min: 2 }]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+    let state_machine = StateMachineConfig::default().with_dump_corpus(true);
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::MinCallsPerTool {
+            min: 2,
+        }]));
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
     };
 
     let result = run_with_session(&session, &config, options).await;
-    assert_failure_reason_contains(&result, "coverage validation failed");
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
+            assert!(failure.details.is_some());
+        }
+        _ => panic!("expected failure"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1172,16 +1182,23 @@ async fn run_with_session_state_machine_no_uncalled_tools_failure() {
     let response = CallToolResult::structured(json!({ "value": 1 }));
     let transport = RunnerTransport::new_with_tools(vec![tool_a, tool_b], response);
     let session = connect_runner_transport(transport).await.expect("connect");
-    let state_machine =
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::NoUncalledTools]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+    let state_machine = StateMachineConfig::default();
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::NoUncalledTools]));
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
     };
 
     let result = run_with_session(&session, &config, options).await;
-    assert_failure_reason_contains(&result, "coverage validation failed");
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("coverage_validation_failed"));
+            assert!(failure.details.is_some());
+        }
+        _ => panic!("expected failure"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1299,7 +1316,6 @@ async fn execute_state_machine_sequence_full_trace_success_records_trace() {
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 7,
         trace_sink: Some(sink.clone()),
@@ -1337,7 +1353,6 @@ async fn execute_state_machine_sequence_full_trace_reports_generation_error() {
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 3,
         trace_sink: Some(sink.clone()),
@@ -1378,7 +1393,6 @@ async fn execute_state_machine_sequence_full_trace_reports_session_error() {
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 2,
         trace_sink: Some(sink.clone()),
@@ -1401,6 +1415,30 @@ async fn execute_state_machine_sequence_full_trace_reports_session_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_no_crash_fails_on_panic() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::structured(json!({ "value": 1 }));
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let config = RunConfig::new()
+        .with_trace_sink(Arc::new(PanicSink))
+        .with_lints(no_crash_lint_suite());
+    let options = RunnerOptions {
+        cases: 1,
+        sequence_len: 1..=1,
+    };
+
+    let result = run_with_session(&session, &config, options).await;
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert_eq!(failure.code.as_deref(), Some("run_panicked"));
+            assert!(failure.reason.contains("run panicked"));
+        }
+        _ => panic!("expected failure"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn execute_state_machine_sequence_full_trace_reports_default_assertion_failure() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::error(vec![Content::text("boom")]);
@@ -1420,7 +1458,6 @@ async fn execute_state_machine_sequence_full_trace_reports_default_assertion_fai
         in_band_error_forbidden: true,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
@@ -1467,7 +1504,6 @@ async fn execute_state_machine_sequence_full_trace_reports_response_assertion_fa
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
@@ -1510,7 +1546,6 @@ async fn execute_state_machine_sequence_full_trace_reports_sequence_assertion_fa
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
@@ -1550,7 +1585,6 @@ async fn execute_state_machine_sequence_full_trace_fails_on_minimum_length_short
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
@@ -1730,8 +1764,288 @@ fn lint_helpers_cover_defaults_and_suite_metadata() {
         .check_run(&crate::RunLintContext {
             coverage: None,
             corpus: None,
+            coverage_allowlist: None,
+            coverage_blocklist: None,
+            outcome: &RunOutcome::Success,
         })
         .is_empty());
+}
+
+#[test]
+fn max_tools_lint_allows_within_limit() {
+    let lint = MaxToolsLint::new(
+        LintDefinition::new("max_tools", LintPhase::List, LintLevel::Warning),
+        2,
+    );
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 2,
+        protocol_version: None,
+        tools: &[],
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn mcp_schema_min_version_rejects_invalid_min_version() {
+    let error = McpSchemaMinVersionLint::new(
+        LintDefinition::new(
+            "mcp_schema_min_version",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
+        "not-a-date",
+    )
+    .err()
+    .expect("error");
+    assert!(error.contains("invalid minimum protocol version"));
+}
+
+#[test]
+fn mcp_schema_min_version_reports_empty_protocol() {
+    let lint = McpSchemaMinVersionLint::new(
+        LintDefinition::new(
+            "mcp_schema_min_version",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
+        "2024-01-01",
+    )
+    .expect("lint");
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 1,
+        protocol_version: Some("   "),
+        tools: &[],
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("empty protocolVersion"));
+}
+
+#[test]
+fn coverage_lint_requires_run_phase() {
+    let error = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::List, LintLevel::Error),
+        Vec::new(),
+    )
+    .err()
+    .expect("error");
+    assert!(error.contains("run phase"));
+}
+
+#[test]
+fn coverage_lint_uses_configured_rules() {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        vec![CoverageRule::PercentCalled { min_percent: 0.0 }],
+    )
+    .expect("coverage lint");
+    let report = coverage_report_for(&[("alpha", 1)]);
+    let context = crate::RunLintContext {
+        coverage: Some(&report),
+        corpus: None,
+        coverage_allowlist: None,
+        coverage_blocklist: None,
+        outcome: &RunOutcome::Success,
+    };
+    assert!(lint.check_run(&context).is_empty());
+    assert_eq!(lint.rules().len(), 1);
+}
+
+#[test]
+fn coverage_lint_returns_empty_without_coverage() {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        vec![CoverageRule::percent_called(0.0)],
+    )
+    .expect("coverage lint");
+    let context = crate::RunLintContext {
+        coverage: None,
+        corpus: None,
+        coverage_allowlist: None,
+        coverage_blocklist: None,
+        outcome: &RunOutcome::Success,
+    };
+    assert!(lint.check_run(&context).is_empty());
+}
+
+#[test]
+fn coverage_lint_respects_allowlist_filter() {
+    let report = coverage_report_for(&[("alpha", 0), ("beta", 1)]);
+    let config = StateMachineConfig::default().with_coverage_allowlist(vec!["beta".to_string()]);
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::min_calls_per_tool(1)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn coverage_lint_respects_blocklist_filter() {
+    let report = coverage_report_for(&[("alpha", 0), ("beta", 1)]);
+    let config = StateMachineConfig::default().with_coverage_blocklist(vec!["alpha".to_string()]);
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::min_calls_per_tool(1)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn no_crash_lint_rejects_wrong_phase() {
+    let error = NoCrashLint::new(LintDefinition::new(
+        "no_crash",
+        LintPhase::List,
+        LintLevel::Error,
+    ))
+    .err()
+    .expect("error");
+    assert!(error.contains("run phase"));
+}
+
+#[test]
+fn no_crash_lint_rejects_non_error_level() {
+    let error = NoCrashLint::new(LintDefinition::new(
+        "no_crash",
+        LintPhase::Run,
+        LintLevel::Warning,
+    ))
+    .err()
+    .expect("error");
+    assert!(error.contains("error level"));
+}
+
+#[test]
+fn no_crash_lint_allows_success_outcome() {
+    let lint = NoCrashLint::new(LintDefinition::new(
+        "no_crash",
+        LintPhase::Run,
+        LintLevel::Error,
+    ))
+    .expect("no_crash lint");
+    let context = crate::RunLintContext {
+        coverage: None,
+        corpus: None,
+        coverage_allowlist: None,
+        coverage_blocklist: None,
+        outcome: &RunOutcome::Success,
+    };
+    assert!(lint.check_run(&context).is_empty());
+}
+
+#[test]
+fn max_structured_content_bytes_lint_allows_when_under_limit() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let response = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: Some(json!({ "value": 1 })),
+        is_error: None,
+        meta: None,
+    };
+    let context = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response,
+    };
+    let lint = MaxStructuredContentBytesLint::new(
+        LintDefinition::new(
+            "max_structured_content_bytes",
+            LintPhase::Response,
+            LintLevel::Warning,
+        ),
+        64,
+    );
+    assert!(lint.check_response(&context).is_empty());
+}
+
+#[test]
+fn json_schema_dialect_compat_checks_output_schema() {
+    let lint = JsonSchemaDialectCompatLint::new(
+        LintDefinition::new(
+            "json_schema_dialect_compat",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
+        vec![DEFAULT_JSON_SCHEMA_DIALECT.to_string()],
+    );
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "$schema": "http://example.test/bad", "type": "object" }),
+        Some(json!({ "$schema": "http://example.test/bad", "type": "object" })),
+    );
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 1,
+        protocol_version: None,
+        tools: &[tool],
+    });
+    assert_eq!(findings.len(), 2);
+}
+
+#[test]
+fn json_schema_dialect_compat_allows_output_schema() {
+    let lint = JsonSchemaDialectCompatLint::new(
+        LintDefinition::new(
+            "json_schema_dialect_compat",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
+        vec![DEFAULT_JSON_SCHEMA_DIALECT.to_string()],
+    );
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "$schema": DEFAULT_JSON_SCHEMA_DIALECT, "type": "object" }),
+        Some(json!({ "$schema": DEFAULT_JSON_SCHEMA_DIALECT, "type": "object" })),
+    );
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 1,
+        protocol_version: None,
+        tools: &[tool],
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn coverage_rule_rejects_unknown_name() {
+    let rules: Result<Vec<CoverageRule>, _> =
+        serde_json::from_value(json!([{ "rule": "unknown" }]));
+    assert!(rules.is_err());
+}
+
+#[test]
+fn coverage_rule_rejects_missing_params() {
+    let rules: Result<Vec<CoverageRule>, _> =
+        serde_json::from_value(json!([{ "rule": "min_calls_per_tool" }]));
+    assert!(rules.is_err());
+}
+
+#[test]
+fn coverage_rule_rejects_invalid_param_types() {
+    let rules: Result<Vec<CoverageRule>, _> =
+        serde_json::from_value(json!([{ "rule": "percent_called", "min_percent": "nope" }]));
+    assert!(rules.is_err());
+}
+
+#[test]
+fn coverage_lint_rejects_invalid_percent_bounds() {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        vec![CoverageRule::percent_called(200.0)],
+    );
+    assert!(lint.is_err());
+}
+
+#[test]
+fn coverage_lint_rejects_negative_percent_bounds() {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        vec![CoverageRule::percent_called(-1.0)],
+    );
+    assert!(lint.is_err());
+}
+
+#[test]
+fn coverage_lint_rejects_non_finite_percent_bounds() {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        vec![CoverageRule::percent_called(f64::NAN)],
+    );
+    assert!(lint.is_err());
 }
 
 #[test]
@@ -1855,7 +2169,11 @@ fn max_tools_lint_errors_when_over_limit() {
 #[test]
 fn mcp_schema_min_version_lint_flags_missing_invalid_and_low_versions() {
     let lint = McpSchemaMinVersionLint::new(
-        LintDefinition::new("mcp_schema_min_version", LintPhase::List, LintLevel::Warning),
+        LintDefinition::new(
+            "mcp_schema_min_version",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
         "2025-03-26",
     )
     .expect("lint");
@@ -1891,7 +2209,11 @@ fn mcp_schema_min_version_lint_flags_missing_invalid_and_low_versions() {
 #[test]
 fn json_schema_dialect_compat_lint_enforces_allowlist_and_defaults_missing_schema() {
     let lint = JsonSchemaDialectCompatLint::new(
-        LintDefinition::new("json_schema_dialect_compat", LintPhase::List, LintLevel::Warning),
+        LintDefinition::new(
+            "json_schema_dialect_compat",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
         vec![DEFAULT_JSON_SCHEMA_DIALECT.to_string()],
     );
     let tool = tool_with_schemas(
@@ -1915,7 +2237,11 @@ fn json_schema_dialect_compat_lint_enforces_allowlist_and_defaults_missing_schem
     assert!(findings.is_empty());
 
     let lint_no_2020 = JsonSchemaDialectCompatLint::new(
-        LintDefinition::new("json_schema_dialect_compat", LintPhase::List, LintLevel::Warning),
+        LintDefinition::new(
+            "json_schema_dialect_compat",
+            LintPhase::List,
+            LintLevel::Warning,
+        ),
         vec!["http://json-schema.org/draft-04/schema".to_string()],
     );
     let tool_missing = tool_with_schemas("bad", json!({ "type": "object" }), None);
@@ -2028,11 +2354,8 @@ fn max_structured_content_bytes_lint_respects_severity() {
         0,
     );
     let mut warnings = Vec::new();
-    let failure = super::linting::evaluate_response_phase(
-        &[Arc::new(lint_warn)],
-        &context,
-        &mut warnings,
-    );
+    let failure =
+        super::linting::evaluate_response_phase(&[Arc::new(lint_warn)], &context, &mut warnings);
     assert!(failure.is_none());
     assert_eq!(warnings.len(), 1);
 
@@ -2045,12 +2368,9 @@ fn max_structured_content_bytes_lint_respects_severity() {
         0,
     );
     let mut warnings = Vec::new();
-    let failure = super::linting::evaluate_response_phase(
-        &[Arc::new(lint_error)],
-        &context,
-        &mut warnings,
-    )
-    .expect("expected failure");
+    let failure =
+        super::linting::evaluate_response_phase(&[Arc::new(lint_error)], &context, &mut warnings)
+            .expect("expected failure");
     assert!(failure.reason.contains("lint"));
     assert!(warnings.is_empty());
 }
@@ -2083,11 +2403,8 @@ fn missing_structured_content_lint_respects_severity() {
         LintLevel::Warning,
     ));
     let mut warnings = Vec::new();
-    let failure = super::linting::evaluate_response_phase(
-        &[Arc::new(lint_warn)],
-        &context,
-        &mut warnings,
-    );
+    let failure =
+        super::linting::evaluate_response_phase(&[Arc::new(lint_warn)], &context, &mut warnings);
     assert!(failure.is_none());
     assert_eq!(warnings.len(), 1);
 
@@ -2097,12 +2414,9 @@ fn missing_structured_content_lint_respects_severity() {
         LintLevel::Error,
     ));
     let mut warnings = Vec::new();
-    let failure = super::linting::evaluate_response_phase(
-        &[Arc::new(lint_error)],
-        &context,
-        &mut warnings,
-    )
-    .expect("expected failure");
+    let failure =
+        super::linting::evaluate_response_phase(&[Arc::new(lint_error)], &context, &mut warnings)
+            .expect("expected failure");
     assert!(failure.reason.contains("lint"));
     assert!(warnings.is_empty());
 }
@@ -2154,7 +2468,6 @@ async fn response_lint_failure_reports_full_trace() {
         in_band_error_forbidden: false,
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
-        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
         response_lints: vec![Arc::new(lint)],
         case_index: 0,
         trace_sink: None,
@@ -2934,32 +3247,36 @@ fn coverage_tracker_respects_allowlist_for_warnings() {
 }
 
 #[test]
-fn coverage_tracker_validate_defaults_to_percent_called() {
+fn coverage_lint_defaults_to_percent_called() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default();
     let tools = vec![tool];
     let tools = prepare_tools(tools);
     let tracker = CoverageTracker::new(&tools, &config, 1);
-    let error = tracker.validate(&[]).expect_err("expected failure");
-    assert_eq!(error.details["rule"], "percent_called");
-    assert_eq!(error.details["min_percent"], 100.0);
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, Vec::new());
+    assert_eq!(findings.len(), 1);
+    let details = findings[0].details.as_ref().expect("details");
+    assert_eq!(details["rule"], "percent_called");
+    assert_eq!(details["min_percent"], 100.0);
 }
 
 #[test]
-fn coverage_tracker_min_calls_per_tool_reports_failure() {
+fn coverage_lint_min_calls_per_tool_reports_failure() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let config = StateMachineConfig::default();
     let tools = vec![tool];
     let tools = prepare_tools(tools);
     let tracker = CoverageTracker::new(&tools, &config, 1);
-    let error = tracker
-        .validate(&[CoverageRule::min_calls_per_tool(1)])
-        .expect_err("expected failure");
-    assert_eq!(error.details["rule"], "min_calls_per_tool");
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::min_calls_per_tool(1)]);
+    assert_eq!(findings.len(), 1);
+    let details = findings[0].details.as_ref().expect("details");
+    assert_eq!(details["rule"], "min_calls_per_tool");
 }
 
 #[test]
-fn coverage_tracker_reports_no_uncalled_tools_failure() {
+fn coverage_lint_reports_no_uncalled_tools_failure() {
     let alpha = tool_with_schemas(
         "alpha",
         json!({
@@ -2982,14 +3299,15 @@ fn coverage_tracker_reports_no_uncalled_tools_failure() {
     let tools = vec![alpha, beta];
     let tools = prepare_tools(tools);
     let tracker = CoverageTracker::new(&tools, &config, 1);
-    let error = tracker
-        .validate(&[CoverageRule::no_uncalled_tools()])
-        .expect_err("expected failure");
-    assert_eq!(error.details["rule"], "no_uncalled_tools");
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::no_uncalled_tools()]);
+    assert_eq!(findings.len(), 1);
+    let details = findings[0].details.as_ref().expect("details");
+    assert_eq!(details["rule"], "no_uncalled_tools");
 }
 
 #[test]
-fn coverage_tracker_min_calls_per_tool_succeeds() {
+fn coverage_lint_min_calls_per_tool_succeeds() {
     let tool = tool_with_schemas(
         "echo",
         json!({
@@ -3004,13 +3322,13 @@ fn coverage_tracker_min_calls_per_tool_succeeds() {
     let tools = prepare_tools(tools);
     let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("echo");
-    assert!(tracker
-        .validate(&[CoverageRule::min_calls_per_tool(1)])
-        .is_ok());
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::min_calls_per_tool(1)]);
+    assert!(findings.is_empty());
 }
 
 #[test]
-fn coverage_tracker_no_uncalled_tools_succeeds() {
+fn coverage_lint_no_uncalled_tools_succeeds() {
     let tool = tool_with_schemas(
         "echo",
         json!({
@@ -3025,13 +3343,13 @@ fn coverage_tracker_no_uncalled_tools_succeeds() {
     let tools = prepare_tools(tools);
     let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("echo");
-    assert!(tracker
-        .validate(&[CoverageRule::no_uncalled_tools()])
-        .is_ok());
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::no_uncalled_tools()]);
+    assert!(findings.is_empty());
 }
 
 #[test]
-fn coverage_tracker_reports_percent_called_failure() {
+fn coverage_lint_reports_percent_called_failure() {
     let alpha = tool_with_schemas(
         "alpha",
         json!({
@@ -3055,28 +3373,15 @@ fn coverage_tracker_reports_percent_called_failure() {
     let tools = prepare_tools(tools);
     let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("alpha");
-    let error = tracker
-        .validate(&[CoverageRule::percent_called(100.0)])
-        .expect_err("expected failure");
-    assert_eq!(error.details["rule"], "percent_called");
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::percent_called(100.0)]);
+    assert_eq!(findings.len(), 1);
+    let details = findings[0].details.as_ref().expect("details");
+    assert_eq!(details["rule"], "percent_called");
 }
 
 #[test]
-fn coverage_tracker_rejects_invalid_percent_called() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let config = StateMachineConfig::default();
-    let tools = vec![tool];
-    let tools = prepare_tools(tools);
-    let tracker = CoverageTracker::new(&tools, &config, 1);
-    let error = tracker
-        .validate(&[CoverageRule::percent_called(101.0)])
-        .expect_err("expected failure");
-    assert_eq!(error.details["rule"], "percent_called");
-    assert_eq!(error.details["error"], "min_percent_out_of_range");
-}
-
-#[test]
-fn coverage_tracker_percent_called_succeeds() {
+fn coverage_lint_percent_called_succeeds() {
     let alpha = tool_with_schemas(
         "alpha",
         json!({
@@ -3100,13 +3405,13 @@ fn coverage_tracker_percent_called_succeeds() {
     let tools = prepare_tools(tools);
     let mut tracker = CoverageTracker::new(&tools, &config, 1);
     tracker.record_success("alpha");
-    assert!(tracker
-        .validate(&[CoverageRule::percent_called(50.0)])
-        .is_ok());
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::percent_called(50.0)]);
+    assert!(findings.is_empty());
 }
 
 #[test]
-fn coverage_tracker_skips_percent_called_when_no_callable_tools() {
+fn coverage_lint_skips_percent_called_when_no_callable_tools() {
     let tools = vec![tool_with_schemas(
         "echo",
         json!({
@@ -3119,9 +3424,9 @@ fn coverage_tracker_skips_percent_called_when_no_callable_tools() {
     let config = StateMachineConfig::default();
     let tools = prepare_tools(tools);
     let tracker = CoverageTracker::new(&tools, &config, 1);
-    assert!(tracker
-        .validate(&[CoverageRule::percent_called(50.0)])
-        .is_ok());
+    let report = tracker.report();
+    let findings = run_coverage_lint(&report, &config, vec![CoverageRule::percent_called(50.0)]);
+    assert!(findings.is_empty());
 }
 
 #[test]

@@ -92,6 +92,20 @@ fn external_cases() -> u32 {
 }
 
 #[test]
+fn config_default_emits_default_tooltest_toml() {
+    let output = run_tooltest(&["config", "default"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("# Tooltest lint configuration."));
+    assert!(stdout.contains("version = 1"));
+    assert!(stdout.contains("no_crash"));
+}
+
+#[test]
 fn test_server_binary_runs_with_empty_input() {
     let Some(server) = test_server() else {
         return;
@@ -266,8 +280,8 @@ fn stdio_command_reports_uncallable_traces_in_human_output() {
     ]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
-    assert!(stdout.contains("Outcome: failure"), "stdout: {stdout}");
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: success"), "stdout: {stdout}");
     assert!(stdout.contains("Uncallable traces:"), "stdout: {stdout}");
 
     let mut tools = Vec::new();
@@ -320,7 +334,7 @@ fn stdio_command_omits_uncallable_traces_by_default() {
     ]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
     assert!(!stdout.contains("Uncallable traces:"), "stdout: {stdout}");
     assert!(!stdout.contains("Trace:"), "stdout: {stdout}");
 }
@@ -346,7 +360,7 @@ fn stdio_command_reports_uncallable_traces_in_json() {
         "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha,bravo",
     ]);
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let coverage = result.coverage.expect("coverage");
     let traces = coverage.uncallable_traces;
     assert_eq!(traces.len(), 2, "uncallable traces: {traces:?}");
@@ -379,7 +393,7 @@ fn stdio_command_omits_uncallable_traces_in_json_by_default() {
         "TOOLTEST_TEST_SERVER_EXTRA_TOOL=alpha,bravo",
     ]);
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let coverage = result.coverage.expect("coverage");
     assert!(
         coverage.uncallable_traces.is_empty(),
@@ -428,7 +442,7 @@ fn stdio_command_parses_uncallable_trace_timestamps() {
         "--uncallable-limit",
         "2",
         "--state-machine-config",
-        r#"{"coverage_rules":[{"rule":"min_calls_per_tool","min":1}]}"#,
+        r#"{}"#,
         "stdio",
         "--command",
         server,
@@ -436,7 +450,7 @@ fn stdio_command_parses_uncallable_trace_timestamps() {
         "TOOLTEST_TEST_SERVER_CALL_ERROR=1",
     ]);
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let coverage = result.coverage.expect("coverage");
     let calls = coverage.uncallable_traces.get("echo").expect("echo traces");
     assert_eq!(calls.len(), 2, "calls: {calls:?}");
@@ -1567,12 +1581,11 @@ fn trace_all_rejects_directory_path() {
 }
 
 #[test]
-fn state_machine_coverage_validation_failure_emits_details_without_trace() {
+fn state_machine_config_does_not_trigger_coverage_validation() {
     let Some(server) = test_server() else {
         return;
     };
-    let config =
-        r#"{"seed_strings":["alpha"],"coverage_rules":[{"rule":"min_calls_per_tool","min":2}]}"#;
+    let config = r#"{"seed_strings":["alpha"]}"#;
     let output = run_tooltest(&[
         "--cases",
         "1",
@@ -1589,12 +1602,10 @@ fn state_machine_coverage_validation_failure_emits_details_without_trace() {
         "REQUIRE_VALUE=1",
     ]);
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Outcome: failure"));
-    assert!(stdout.contains("Code: coverage_validation_failed"));
-    assert!(stdout.contains("Details:"));
-    assert!(!stdout.contains("Trace:"), "stdout: {stdout}");
+    assert!(stdout.contains("Outcome: success"));
+    assert!(!stdout.contains("Code: coverage_validation_failed"));
 }
 
 #[test]
@@ -1786,7 +1797,7 @@ fn stdio_command_runs_playwright_mcp() {
         return;
     }
     let cases = external_cases().to_string();
-    let config = r#"{"seed_strings":["https://google.com"],"coverage_rules":[{"rule":"percent_called","min_percent":100.0}]}"#;
+    let config = r#"{"seed_strings":["https://google.com"]}"#;
     let command_line = "npx -y @playwright/mcp@latest";
     let (output, payload) = run_tooltest_json_allow_failure(&[
         "--cases",

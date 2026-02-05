@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::HashSet;
 
 use crate::generator::{
     invocation_from_corpus_seeded, record_reject_context, PreparedTool, StateMachineSequence,
@@ -24,7 +23,6 @@ pub(super) struct StateMachineExecution<'a> {
     pub(super) in_band_error_forbidden: bool,
     pub(super) full_trace: bool,
     pub(super) warnings: std::rc::Rc<std::cell::RefCell<Vec<crate::RunWarning>>>,
-    pub(super) warned_missing_structured: std::rc::Rc<std::cell::RefCell<HashSet<String>>>,
     pub(super) response_lints: Vec<std::sync::Arc<dyn crate::LintRule>>,
     pub(super) case_index: u64,
     pub(super) trace_sink: Option<std::sync::Arc<dyn crate::TraceSink>>,
@@ -125,8 +123,6 @@ pub(super) async fn execute_state_machine_sequence(
             &response,
             execution.validators,
             execution.in_band_error_forbidden,
-            &mut execution.warnings.borrow_mut(),
-            &mut execution.warned_missing_structured.borrow_mut(),
         ) {
             let positive_error = true;
             if execution.full_trace {

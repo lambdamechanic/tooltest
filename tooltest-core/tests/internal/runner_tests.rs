@@ -1,7 +1,8 @@
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, HttpConfig, PreRunHook, ResponseAssertion, RunConfig,
-    RunOutcome, RunnerOptions, SequenceAssertion, StateMachineConfig, StdioConfig, TraceEntry,
+    CoverageWarningReason, ErrorCode, HttpConfig, LintDefinition, LintLevel, LintPhase, LintSuite,
+    PreRunHook, ResponseAssertion, RunConfig, RunOutcome, RunnerOptions, SequenceAssertion,
+    StateMachineConfig, StdioConfig, TraceEntry,
 };
 use axum::Router;
 use rmcp::handler::server::{
@@ -21,9 +22,11 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::test_support::connect_runner_transport;
+use crate::lints::CoverageLint;
 use tooltest_test_support::{tool_with_schemas, RunnerTransport};
 
 #[derive(Clone)]
@@ -85,6 +88,15 @@ fn temp_hook_path(tag: &str) -> PathBuf {
     path
 }
 
+fn coverage_lint_suite(rules: Vec<CoverageRule>) -> LintSuite {
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Error),
+        rules,
+    )
+    .expect("coverage lint");
+    LintSuite::new(vec![Arc::new(lint)])
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_returns_minimized_failure() {
     let tool = tool_with_schemas(
@@ -108,9 +120,9 @@ async fn run_with_session_returns_minimized_failure() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new().with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
     let options = RunnerOptions {
         cases: 1,
         sequence_len: 1..=1,
@@ -142,9 +154,10 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
 
     let path = temp_hook_path("per-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new().with_pre_run_hook(hook).with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let config = RunConfig::new()
+        .with_pre_run_hook(hook)
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
     let options = RunnerOptions {
         cases: 2,
         sequence_len: 1..=1,
@@ -167,9 +180,10 @@ async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
 
     let path = temp_hook_path("zero-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new().with_pre_run_hook(hook).with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let config = RunConfig::new()
+        .with_pre_run_hook(hook)
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
     let options = RunnerOptions {
         cases: 0,
         sequence_len: 1..=1,
@@ -326,9 +340,9 @@ async fn run_with_session_zero_cases_without_pre_run_hook_succeeds() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new().with_state_machine(
-        StateMachineConfig::default().with_coverage_rules(vec![CoverageRule::percent_called(0.0)]),
-    );
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
     let options = RunnerOptions {
         cases: 0,
         sequence_len: 1..=1,
@@ -633,9 +647,10 @@ async fn run_with_session_executes_allowlist_and_blocklist_filters() {
 
     let state_machine = StateMachineConfig::default()
         .with_coverage_allowlist(vec!["alpha".to_string()])
-        .with_coverage_blocklist(vec!["alpha".to_string()])
-        .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+        .with_coverage_blocklist(vec!["alpha".to_string()]);
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
 
     let result = crate::run_with_session(
         &driver,
@@ -658,7 +673,9 @@ async fn run_with_session_defaults_to_percent_called_rule() {
     let transport = RunnerTransport::new_with_tools(vec![alpha, beta], response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let config = RunConfig::new().with_state_machine(StateMachineConfig::default());
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(coverage_lint_suite(Vec::new()));
 
     let result = crate::run_with_session(
         &driver,
@@ -695,10 +712,12 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let state_machine = StateMachineConfig::default()
-        .with_seed_numbers(vec![Number::from(1)])
-        .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+    let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::min_calls_per_tool(
+            2,
+        )]));
 
     let result = crate::run_with_session(
         &driver,
@@ -739,9 +758,12 @@ async fn run_with_session_coverage_failure_includes_corpus_dump() {
 
     let state_machine = StateMachineConfig::default()
         .with_seed_strings(vec!["alpha".to_string()])
-        .with_dump_corpus(true)
-        .with_coverage_rules(vec![CoverageRule::min_calls_per_tool(2)]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+        .with_dump_corpus(true);
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::min_calls_per_tool(
+            2,
+        )]));
 
     let result = crate::run_with_session(
         &driver,
@@ -818,10 +840,12 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
     let transport = RunnerTransport::new_with_tools(vec![callable, uncallable], response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let state_machine = StateMachineConfig::default()
-        .with_seed_numbers(vec![Number::from(1)])
-        .with_coverage_rules(vec![CoverageRule::percent_called(100.0)]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+    let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(1)]);
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(
+            100.0,
+        )]));
 
     let result = crate::run_with_session(
         &driver,
@@ -853,10 +877,10 @@ async fn run_with_session_allows_error_responses_and_excludes_from_coverage_by_d
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let state_machine = StateMachineConfig::default()
-        .with_seed_numbers(vec![Number::from(3)])
-        .with_coverage_rules(vec![CoverageRule::percent_called(0.0)]);
-    let config = RunConfig::new().with_state_machine(state_machine);
+    let state_machine = StateMachineConfig::default().with_seed_numbers(vec![Number::from(3)]);
+    let config = RunConfig::new()
+        .with_state_machine(state_machine)
+        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
 
     let result = crate::run_with_session(
         &driver,

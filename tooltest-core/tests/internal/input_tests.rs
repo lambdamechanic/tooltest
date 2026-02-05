@@ -182,8 +182,7 @@ fn shared_input_applies_state_machine_overrides() {
             "dump_corpus": false,
             "log_corpus_deltas": false,
             "seed_numbers": [1],
-            "seed_strings": ["seed"],
-            "coverage_rules": []
+            "seed_strings": ["seed"]
         },
         "lenient_sourcing": true,
         "mine_text": true
@@ -214,8 +213,7 @@ fn shared_input_applies_no_lenient_override() {
         "state_machine_config": {
             "lenient_sourcing": true,
             "seed_numbers": [],
-            "seed_strings": [],
-            "coverage_rules": []
+            "seed_strings": []
         },
         "no_lenient_sourcing": true
     });

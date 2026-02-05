@@ -1181,12 +1181,7 @@ mod tests {
             "cases": 50,
             "min_sequence_len": 1,
             "max_sequence_len": 1,
-            "no_lenient_sourcing": true,
-            "state_machine_config": {
-                "coverage_rules": [
-                    { "rule": "percent_called", "min_percent": 100.0 }
-                ]
-            }
+            "no_lenient_sourcing": true
         });
         let response =
             send_call_tool_request(Some(args.as_object().cloned().expect("args object"))).await;

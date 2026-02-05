@@ -258,20 +258,37 @@ Non-zero exit codes fail the run and include stdout/stderr in the failure detail
 
 ---
 
-## Tool enumeration and bulk validation (tooltest-core)
+## Lint configuration
 
-The `tooltest-core` crate exposes helper APIs for listing tools with schema validation and
-running bulk tool validation. The default per-tool case count is controlled by
-`TOOLTEST_CASES_PER_TOOL` and can be overridden in code.
+Tooltest loads lint configuration from `tooltest.toml`. It searches upward from the current working
+directory to the git root; if found, that config is used. Otherwise it falls back to
+`~/.config/tooltest.toml`, and if no file exists it uses the built-in defaults.
+
+To emit the default config (including comments) run:
 
 ```bash
-export TOOLTEST_CASES_PER_TOOL=10
+tooltest config default
 ```
 
+Each lint entry has an `id`, `level` (`error`, `warning`, `disabled`), and optional parameters. For
+example, to enable the max-tools lint:
+
+```toml
+[[lints]]
+id = "max_tools"
+level = "error"
+[lints.params]
+max = 200
+```
+
+---
+
+## Tool enumeration (tooltest-core)
+
+The `tooltest-core` crate exposes helper APIs for listing tools with schema validation.
+
 ```rust
-use tooltest_core::{
-    list_tools_http, validate_tools, HttpConfig, SchemaConfig, SessionDriver, ToolValidationConfig,
-};
+use tooltest_core::{list_tools_http, HttpConfig, SchemaConfig};
 
 # async fn run() {
 let tools = list_tools_http(
@@ -285,38 +302,7 @@ let tools = list_tools_http(
 .expect("list tools");
 println!("found {} tools", tools.len());
 
-let session = SessionDriver::connect_http(&HttpConfig {
-    url: "http://localhost:3000/mcp".into(),
-    auth_token: None,
-})
-.await
-.expect("connect");
-let config = ToolValidationConfig::new();
-let summary = validate_tools(&session, &config, None)
-    .await
-    .expect("validate tools");
-println!("validated {} tools", summary.tools.len());
 # }
-```
-
----
-
-## Hosted MCP integration tests
-
-By default the hosted MCP integration test runs and exercises the two public MCP servers used for validation. To skip it:
-
-```bash
-SKIP_HOSTED_MCP_TESTS=1 cargo test -p tooltest-core --test hosted_mcp_tests
-```
-
----
-
-## Verbose rmcp tracing
-
-The tests install a tracing subscriber that emits to stderr. Use `RUST_LOG` plus `--nocapture` to see the full interaction.
-
-```bash
-RUST_LOG=rmcp=trace cargo test -p tooltest-core --test hosted_mcp_tests -- --nocapture
 ```
 
 ---

@@ -2,21 +2,17 @@ use std::collections::BTreeMap;
 
 use chrono::Utc;
 use rmcp::model::CallToolResult;
-use serde_json::{json, Number, Value as JsonValue};
+use serde_json::Number;
 
 use crate::generator::{uncallable_reason, PreparedTool, UncallableReason, ValueCorpus};
 use crate::{
-    CorpusReport, CoverageReport, CoverageRule, CoverageWarning, CoverageWarningReason, RunFailure,
-    StateMachineConfig, ToolInvocation, UncallableToolCall,
+    CorpusReport, CoverageReport, CoverageWarning, CoverageWarningReason, StateMachineConfig,
+    ToolInvocation, UncallableToolCall,
 };
 
 const LIST_TOOLS_COUNT_LABEL: &str = "tools/list";
 
 #[derive(Clone, Debug)]
-pub(super) struct CoverageValidationFailure {
-    pub(super) details: JsonValue,
-}
-
 pub(super) struct CoverageTracker<'a> {
     tools: &'a [PreparedTool],
     corpus: ValueCorpus,
@@ -235,103 +231,6 @@ impl<'a> CoverageTracker<'a> {
         traces
     }
 
-    pub(super) fn validate(&self, rules: &[CoverageRule]) -> Result<(), CoverageValidationFailure> {
-        let effective_rules = if rules.is_empty() {
-            vec![CoverageRule::PercentCalled { min_percent: 100.0 }]
-        } else {
-            rules.to_vec()
-        };
-
-        let eligible_tools = self.eligible_tools();
-        let mut callable_tools = Vec::new();
-        for tool in eligible_tools {
-            if uncallable_reason(tool, &self.corpus, self.lenient_sourcing).is_none() {
-                callable_tools.push(tool.name.to_string());
-            }
-        }
-
-        for rule in &effective_rules {
-            match rule {
-                CoverageRule::MinCallsPerTool { min } => {
-                    let mut violations = Vec::new();
-                    for tool in &callable_tools {
-                        let count = *self.counts.get(tool).unwrap_or(&0);
-                        if count < *min {
-                            violations.push(json!({ "tool": tool, "count": count }));
-                        }
-                    }
-                    let failure = if violations.is_empty() {
-                        None
-                    } else {
-                        Some(CoverageValidationFailure {
-                            details: json!({
-                                "rule": "min_calls_per_tool",
-                                "min": min,
-                                "violations": violations,
-                            }),
-                        })
-                    };
-                    if let Some(failure) = failure {
-                        return Err(failure);
-                    }
-                }
-                CoverageRule::NoUncalledTools => {
-                    let uncalled: Vec<String> = callable_tools
-                        .iter()
-                        .filter(|tool| *self.counts.get(*tool).unwrap_or(&0) == 0)
-                        .cloned()
-                        .collect();
-                    let failure = if uncalled.is_empty() {
-                        None
-                    } else {
-                        Some(CoverageValidationFailure {
-                            details: json!({
-                                "rule": "no_uncalled_tools",
-                                "uncalled": uncalled,
-                            }),
-                        })
-                    };
-                    if let Some(failure) = failure {
-                        return Err(failure);
-                    }
-                }
-                CoverageRule::PercentCalled { min_percent } => {
-                    if !min_percent.is_finite() || *min_percent < 0.0 || *min_percent > 100.0 {
-                        return Err(CoverageValidationFailure {
-                            details: json!({
-                                "rule": "percent_called",
-                                "error": "min_percent_out_of_range",
-                                "min_percent": min_percent,
-                            }),
-                        });
-                    }
-                    let denom = callable_tools.len() as f64;
-                    if denom == 0.0 {
-                        continue;
-                    }
-                    let called = callable_tools
-                        .iter()
-                        .filter(|tool| *self.counts.get(*tool).unwrap_or(&0) > 0)
-                        .count() as f64;
-                    let percent = (called / denom) * 100.0;
-                    if percent < *min_percent {
-                        return Err(CoverageValidationFailure {
-                            details: json!({
-                                "rule": "percent_called",
-                                "min_percent": min_percent,
-                                "percent": percent,
-                                "called": called,
-                                "eligible": denom,
-                            }),
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     pub(super) fn eligible_tools(&self) -> Vec<&PreparedTool> {
         let allowlist = self.allowlist.as_ref();
         let blocklist = self.blocklist.as_ref();
@@ -381,13 +280,5 @@ pub(super) fn map_uncallable_reason(reason: UncallableReason) -> CoverageWarning
         UncallableReason::Integer => CoverageWarningReason::MissingInteger,
         UncallableReason::Number => CoverageWarningReason::MissingNumber,
         UncallableReason::RequiredValue => CoverageWarningReason::MissingRequiredValue,
-    }
-}
-
-pub(super) fn coverage_failure(failure: CoverageValidationFailure) -> RunFailure {
-    RunFailure {
-        reason: "coverage validation failed".to_string(),
-        code: Some("coverage_validation_failed".to_string()),
-        details: Some(failure.details),
     }
 }

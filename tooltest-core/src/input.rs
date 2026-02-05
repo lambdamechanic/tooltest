@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    HttpConfig, PreRunHook, RunConfig, RunnerOptions, StateMachineConfig, StdioConfig,
-    ToolNamePredicate, ToolPredicate,
+    load_lint_suite, HttpConfig, LintSuite, PreRunHook, RunConfig, RunnerOptions,
+    StateMachineConfig, StdioConfig, ToolNamePredicate, ToolPredicate,
 };
 
 fn default_cases() -> u32 {
@@ -99,6 +99,13 @@ impl TooltestInput {
 
     /// Builds the run configuration for the run.
     pub fn to_run_config(&self) -> Result<RunConfig, String> {
+        self.to_run_config_with_lints(load_lint_suite())
+    }
+
+    fn to_run_config_with_lints(
+        &self,
+        lint_suite: Result<LintSuite, String>,
+    ) -> Result<RunConfig, String> {
         self.validate_run_config()?;
         let mut state_machine = self.state_machine_config.clone().unwrap_or_default();
         if self.lenient_sourcing {
@@ -134,7 +141,9 @@ impl TooltestInput {
                 .with_tool_filter(filters.name_predicate);
         }
 
-        Ok(run_config)
+        let lints =
+            lint_suite.map_err(|error| format!("lint config error: {error}"))?;
+        Ok(run_config.with_lints(lints))
     }
 
     /// Builds the runner options for the run.
@@ -400,5 +409,39 @@ mod tests {
         });
         let error = target.to_config().unwrap_err();
         assert!(error.contains("invalid http url"));
+    }
+
+    #[test]
+    fn to_run_config_reports_lint_config_error() {
+        let input = TooltestInput {
+            target: TooltestTarget::Stdio(TooltestTargetStdio {
+                stdio: TooltestStdioTarget {
+                    command: "server".to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }),
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+            pre_run_hook: None,
+            full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
+        };
+        let error = input
+            .to_run_config_with_lints(Err("bad lint config".to_string()))
+            .expect_err("lint config error");
+        assert!(error.contains("lint config error"));
     }
 }

@@ -5,10 +5,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use tooltest_core::{
-    CoverageWarningReason, RunOutcome, RunResult, RunWarning, RunWarningCode, StateMachineConfig,
-    TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
-    TooltestTarget, TooltestTargetConfig, TooltestTargetHttp, TooltestTargetStdio, TraceEntry,
-    TraceSink,
+    default_tooltest_toml, CoverageWarningReason, RunOutcome, RunResult, RunWarning,
+    RunWarningCode, StateMachineConfig, TooltestHttpTarget, TooltestInput, TooltestPreRunHook,
+    TooltestRunConfig, TooltestStdioTarget, TooltestTarget, TooltestTargetConfig,
+    TooltestTargetHttp, TooltestTargetStdio, TraceEntry, TraceSink,
 };
 
 mod mcp;
@@ -111,15 +111,35 @@ pub enum Command {
         #[arg(long)]
         stdio: bool,
     },
+    /// Manage tooltest configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq, Subcommand)]
+pub enum ConfigCommand {
+    /// Emit the default tooltest.toml configuration.
+    Default,
 }
 
 pub async fn run(cli: Cli) -> ExitCode {
-    if let Command::Mcp { .. } = &cli.command {
-        let result = mcp::run_stdio().await;
-        if let Err(message) = result {
-            return error_exit(&message, cli.json);
+    match &cli.command {
+        Command::Mcp { .. } => {
+            let result = mcp::run_stdio().await;
+            if let Err(message) = result {
+                return error_exit(&message, cli.json);
+            }
+            return ExitCode::SUCCESS;
         }
-        return ExitCode::SUCCESS;
+        Command::Config {
+            command: ConfigCommand::Default,
+        } => {
+            print!("{}", default_tooltest_toml());
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
     }
 
     let json = cli.json;
@@ -200,6 +220,9 @@ fn build_tooltest_input(cli: &Cli) -> Result<TooltestInput, String> {
             },
         }),
         Command::Mcp { .. } => return Err("mcp command does not accept tooltest input".to_string()),
+        Command::Config { .. } => {
+            return Err("config command does not accept tooltest input".to_string())
+        }
     };
     Ok(TooltestInput {
         target,
@@ -284,6 +307,7 @@ fn exit_code_for_result(result: &RunResult) -> ExitCode {
     }
 }
 
+#[cfg_attr(coverage, inline(never))]
 fn format_run_result_human(result: &RunResult) -> String {
     let mut output = String::new();
     match &result.outcome {
@@ -337,12 +361,10 @@ fn format_run_result_human(result: &RunResult) -> String {
                     output.push_str("  - timestamp: ");
                     output.push_str(&call.timestamp);
                     output.push('\n');
-                    let arguments = call
-                        .input
-                        .arguments
-                        .clone()
-                        .map(serde_json::Value::Object)
-                        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let arguments = match call.input.arguments.clone() {
+                        Some(arguments) => serde_json::Value::Object(arguments),
+                        None => serde_json::Value::Object(serde_json::Map::new()),
+                    };
                     let args_payload = serde_json::to_string_pretty(&arguments)
                         .expect("serialize uncallable arguments");
                     output.push_str("    arguments:\n");
@@ -430,20 +452,25 @@ struct TraceFileSink {
 }
 
 impl TraceFileSink {
+    #[cfg_attr(coverage, inline(never))]
     fn new(path: &str) -> Result<Self, String> {
         let path = path.to_string();
         let header = serde_json::to_string(&serde_json::json!({ "format": "trace_all_v1" }))
             .expect("serialize trace header");
-        let mut file = fs::OpenOptions::new()
+        let mut file = match fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .open(&path)
-            .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
+        {
+            Ok(file) => file,
+            Err(error) => return Err(format!("failed to write trace file '{path}': {error}")),
+        };
         use std::io::Write;
-        file.write_all(header.as_bytes())
-            .and_then(|()| file.write_all(b"\n"))
-            .map_err(|error| format!("failed to write trace file '{path}': {error}"))?;
+        let header_line = format!("{header}\n");
+        if let Err(error) = file.write_all(header_line.as_bytes()) {
+            return Err(format!("failed to write trace file '{path}': {error}"));
+        }
         Ok(Self {
             path,
             file: std::sync::Arc::new(std::sync::Mutex::new(file)),
@@ -923,6 +950,13 @@ mod tests {
     }
 
     #[test]
+    fn tooltest_input_rejects_config_command() {
+        let cli = Cli::parse_from(["tooltest", "config", "default"]);
+        let error = build_tooltest_input(&cli).err().expect("error");
+        assert!(error.contains("config command does not accept tooltest input"));
+    }
+
+    #[test]
     #[should_panic(expected = "expected stdio target")]
     fn expect_stdio_target_panics_on_http() {
         let cli = Cli::parse_from(["tooltest", "http", "--url", "http://127.0.0.1:0/mcp"]);
@@ -1000,6 +1034,32 @@ mod tests {
                 url: "http://example.test/mcp".to_string(),
                 auth_token: None,
             }
+        );
+    }
+
+    #[test]
+    fn cli_parses_config_default_command() {
+        let cli = Cli::parse_from(["tooltest", "config", "default"]);
+        assert_eq!(
+            cli.command,
+            Command::Config {
+                command: ConfigCommand::Default
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn run_config_default_exits_successfully() {
+        let cli = Cli::parse_from(["tooltest", "config", "default"]);
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn format_run_warning_code_supports_missing_structured_content() {
+        assert_eq!(
+            format_run_warning_code(&RunWarningCode::MissingStructuredContent),
+            "missing_structured_content"
         );
     }
 
@@ -1152,6 +1212,29 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_reports_failure_without_details() {
+        let failure = RunFailure {
+            reason: "nope".to_string(),
+            code: None,
+            details: None,
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Failure(failure),
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("Outcome: failure"));
+        assert!(output.contains("Reason: nope"));
+        assert!(!output.contains("Code:"));
+        assert!(!output.contains("Details:"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_coverage_warnings() {
         let coverage = CoverageReport {
             counts: BTreeMap::new(),
@@ -1220,6 +1303,29 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_skips_empty_coverage_failures() {
+        let mut failures = BTreeMap::new();
+        failures.insert("alpha".to_string(), 0);
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            failures,
+            warnings: Vec::new(),
+            uncallable_traces: BTreeMap::new(),
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: Some(coverage),
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(!output.contains("Coverage failures:"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_uncallable_traces() {
         let invocation = ToolInvocation {
             name: "alpha".into(),
@@ -1281,6 +1387,40 @@ mod tests {
     }
 
     #[test]
+    fn format_run_result_human_reports_empty_uncallable_arguments() {
+        let invocation = ToolInvocation {
+            name: "alpha".into(),
+            arguments: None,
+        };
+        let call = UncallableToolCall {
+            input: invocation,
+            output: None,
+            error: None,
+            timestamp: "2024-01-03T00:00:00Z".to_string(),
+        };
+        let mut uncallable_traces = BTreeMap::new();
+        uncallable_traces.insert("alpha".to_string(), vec![call]);
+        let coverage = CoverageReport {
+            counts: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            warnings: Vec::new(),
+            uncallable_traces,
+        };
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: Vec::new(),
+            coverage: Some(coverage),
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("arguments:"));
+        assert!(output.contains("{}"));
+    }
+
+    #[test]
     fn format_run_result_human_reports_warnings() {
         let result = RunResult {
             outcome: RunOutcome::Success,
@@ -1290,6 +1430,7 @@ mod tests {
                 code: RunWarningCode::SchemaUnsupportedKeyword,
                 message: "schema warning".to_string(),
                 tool: Some("echo".to_string()),
+                details: None,
             }],
             coverage: None,
             corpus: None,
@@ -1310,8 +1451,9 @@ mod tests {
             minimized: None,
             warnings: vec![RunWarning {
                 code: RunWarningCode::Lint,
-                message: "lint warning".to_string(),
+                message: "lint missing_structured_content: lint warning".to_string(),
                 tool: None,
+                details: Some(serde_json::json!({ "lint_id": "missing_structured_content" })),
             }],
             coverage: None,
             corpus: None,
@@ -1320,24 +1462,6 @@ mod tests {
         let output = format_run_result_human(&result);
         assert!(output.contains("lint"));
         assert!(output.contains("lint warning"));
-    }
-
-    #[test]
-    fn format_run_result_human_reports_missing_structured_warning_code() {
-        let result = RunResult {
-            outcome: RunOutcome::Success,
-            trace: Vec::new(),
-            minimized: None,
-            warnings: vec![RunWarning {
-                code: RunWarningCode::MissingStructuredContent,
-                message: "missing".to_string(),
-                tool: Some("echo".to_string()),
-            }],
-            coverage: None,
-            corpus: None,
-        };
-
-        let output = format_run_result_human(&result);
         assert!(output.contains("missing_structured_content"));
     }
 
@@ -1351,6 +1475,7 @@ mod tests {
                 code: RunWarningCode::SchemaUnsupportedKeyword,
                 message: "standalone warning".to_string(),
                 tool: None,
+                details: None,
             }],
             coverage: None,
             corpus: None,
@@ -1468,6 +1593,10 @@ mod tests {
         let path = std::path::Path::new("/dev/full");
         assert!(path.exists());
 
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open");
         assert!(TraceFileSink::new(path.to_str().expect("path")).is_err());
     }
 
@@ -1653,6 +1782,43 @@ mod tests {
         let exit = run(cli).await;
         assert_eq!(exit, ExitCode::from(2));
         let _ = fs::remove_dir_all(trace_dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn run_exits_on_trace_all_write_error() {
+        let trace_path = std::path::Path::new("/dev/full");
+        assert!(trace_path.exists());
+        let cli = Cli {
+            cases: 1,
+            min_sequence_len: 1,
+            max_sequence_len: 1,
+            lenient_sourcing: false,
+            mine_text: false,
+            dump_corpus: false,
+            log_corpus_deltas: false,
+            no_lenient_sourcing: false,
+            state_machine_config: None,
+            tool_allowlist: Vec::new(),
+            tool_blocklist: Vec::new(),
+            in_band_error_forbidden: false,
+
+            pre_run_hook: None,
+            json: false,
+            full_trace: false,
+            show_uncallable: false,
+            uncallable_limit: 1,
+            trace_all: Some(trace_path.to_string_lossy().to_string()),
+            command: Command::Stdio {
+                command: "tooltest-missing-binary".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                cwd: None,
+            },
+        };
+
+        let exit = run(cli).await;
+        assert_eq!(exit, ExitCode::from(2));
     }
 
     #[tokio::test]

@@ -1,4 +1,7 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
+
+#[cfg(not(test))]
+use std::io::BufRead;
 
 use rmcp::model::{
     CallToolResult, ClientJsonRpcMessage, ClientRequest, InitializeResult, JsonRpcMessage,
@@ -11,6 +14,7 @@ use serde_json::json;
 #[path = "../../tests/internal/stdio_test_server_tests.rs"]
 mod tests;
 
+#[cfg(not(test))]
 fn main() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();

@@ -58,10 +58,7 @@ pub async fn list_tools_http(
     config: &HttpConfig,
     schema: &SchemaConfig,
 ) -> Result<Vec<Tool>, ListToolsError> {
-    list_tools_with_connector(config.clone(), schema, |config| async move {
-        SessionDriver::connect_http(&config).await
-    })
-    .await
+    list_tools_with_connector(config, schema, SessionDriver::connect_http).await
 }
 
 /// Lists tools from a stdio MCP endpoint using the provided configuration.
@@ -81,10 +78,7 @@ pub async fn list_tools_stdio(
     config: &StdioConfig,
     schema: &SchemaConfig,
 ) -> Result<Vec<Tool>, ListToolsError> {
-    list_tools_with_connector(config.clone(), schema, |config| async move {
-        SessionDriver::connect_stdio(&config).await
-    })
-    .await
+    list_tools_with_connector(config, schema, SessionDriver::connect_stdio).await
 }
 
 /// Lists tools from an active session using MCP schema validation.
@@ -118,7 +112,7 @@ pub async fn list_tools_with_session(
     Ok(parsed.tools)
 }
 
-pub(crate) async fn list_tools_with_connector<T, F, Fut>(
+async fn list_tools_with_connector<T, F, Fut>(
     config: T,
     schema: &SchemaConfig,
     connector: F,
@@ -129,4 +123,105 @@ where
 {
     let session = connector(config).await?;
     list_tools_with_session(&session, schema).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tooltest_test_support::{FaultyListToolsTransport, ListToolsTransport, stub_tool};
+
+    #[test]
+    fn list_tools_error_display_formats() {
+        let error = ListToolsError::Schema(SchemaError::InvalidListTools("boom".to_string()));
+        assert!(format!("{error}").contains("schema error"));
+
+        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "nope");
+        let error = ListToolsError::Session(SessionError::from(io_error));
+        assert!(format!("{error}").contains("session error"));
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_connector_returns_tools() {
+        let tool = stub_tool("echo");
+        let transport = ListToolsTransport::new(vec![tool.clone()]);
+        let tools = list_tools_with_connector((), &SchemaConfig::default(), move |_| async move {
+            SessionDriver::connect_with_transport(transport).await
+        })
+        .await
+        .expect("list tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_ref(), tool.name.as_ref());
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_connector_propagates_session_error() {
+        let error = list_tools_with_connector((), &SchemaConfig::default(), |_| async {
+            Err(SessionError::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "nope",
+            )))
+        })
+        .await
+        .expect_err("session error");
+        assert!(error.to_string().contains("session error"));
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_session_propagates_list_error() {
+        let transport = FaultyListToolsTransport::default();
+        let session = SessionDriver::connect_with_transport(transport)
+            .await
+            .expect("connect");
+
+        let error = list_tools_with_session(&session, &SchemaConfig::default())
+            .await
+            .expect_err("list tools error");
+        assert!(error.to_string().contains("session error"));
+    }
+
+    #[tokio::test]
+    async fn list_tools_with_session_reports_schema_error() {
+        let mut tool = stub_tool("echo");
+        tool.output_schema = Some(Arc::new(
+            serde_json::json!({ "type": 5 })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ));
+        let transport = ListToolsTransport::new(vec![tool]);
+        let session = SessionDriver::connect_with_transport(transport)
+            .await
+            .expect("connect");
+
+        let error = list_tools_with_session(&session, &SchemaConfig::default())
+            .await
+            .expect_err("schema error");
+        assert!(error.to_string().contains("schema error"));
+    }
+
+    #[cfg(coverage)]
+    #[tokio::test]
+    async fn list_tools_http_reports_session_error() {
+        let config = HttpConfig {
+            url: "http://127.0.0.1:0/mcp".to_string(),
+            auth_token: None,
+        };
+
+        let error = list_tools_http(&config, &SchemaConfig::default())
+            .await
+            .expect_err("list tools error");
+        assert!(error.to_string().contains("session error"));
+    }
+
+    #[cfg(coverage)]
+    #[tokio::test]
+    async fn list_tools_stdio_reports_session_error() {
+        let config = StdioConfig::new("/no/such/tooltest-binary");
+
+        let error = list_tools_stdio(&config, &SchemaConfig::default())
+            .await
+            .expect_err("list tools error");
+        assert!(error.to_string().contains("session error"));
+    }
 }

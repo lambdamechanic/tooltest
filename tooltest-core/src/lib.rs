@@ -14,6 +14,7 @@ use tooltest_test_support as _;
 
 mod generator;
 mod input;
+mod lint;
 mod output_schema;
 mod runner;
 pub mod schema;
@@ -23,6 +24,10 @@ mod validation;
 pub use input::{
     TooltestHttpTarget, TooltestInput, TooltestPreRunHook, TooltestRunConfig, TooltestStdioTarget,
     TooltestTarget, TooltestTargetConfig, TooltestTargetHttp, TooltestTargetStdio,
+};
+pub use lint::{
+    LintDefinition, LintFinding, LintLevel, LintPhase, LintRule, LintSuite, ListLintContext,
+    ResponseLintContext, RunLintContext,
 };
 pub use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,
@@ -316,6 +321,8 @@ pub struct RunConfig {
     pub uncallable_limit: usize,
     /// Optional trace sink for streaming per-case traces.
     pub trace_sink: Option<Arc<dyn TraceSink>>,
+    /// Configured lint rules for the run.
+    pub lints: LintSuite,
 }
 
 impl RunConfig {
@@ -336,6 +343,7 @@ impl RunConfig {
             show_uncallable: false,
             uncallable_limit: 1,
             trace_sink: None,
+            lints: LintSuite::default(),
         }
     }
 
@@ -405,6 +413,12 @@ impl RunConfig {
         self
     }
 
+    /// Sets the configured lints for this run.
+    pub fn with_lints(mut self, lints: LintSuite) -> Self {
+        self.lints = lints;
+        self
+    }
+
     pub(crate) fn apply_stdio_pre_run_context(&mut self, endpoint: &StdioConfig) {
         if let Some(hook) = self.pre_run_hook.as_mut() {
             hook.apply_stdio_context(endpoint);
@@ -431,6 +445,7 @@ impl fmt::Debug for RunConfig {
             .field("show_uncallable", &self.show_uncallable)
             .field("uncallable_limit", &self.uncallable_limit)
             .field("trace_sink", &self.trace_sink.is_some())
+            .field("lints", &self.lints.len())
             .finish()
     }
 }
@@ -572,6 +587,7 @@ pub trait TraceSink: Send + Sync {
 pub enum RunWarningCode {
     SchemaUnsupportedKeyword,
     MissingStructuredContent,
+    Lint,
 }
 
 /// Warning describing a coverage issue in a state-machine run.

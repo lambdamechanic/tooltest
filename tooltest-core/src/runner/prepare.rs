@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 
 use crate::generator::{prepare_tools, PreparedTool};
-use crate::{RunConfig, RunFailure, RunResult, RunWarning, SessionDriver, Tool, TraceEntry};
+use crate::{
+    lint::ListLintContext, RunConfig, RunFailure, RunResult, RunWarning, SessionDriver, Tool,
+    TraceEntry,
+};
 
+use super::linting::evaluate_list_phase;
 use super::pre_run::run_pre_run_hook;
 use super::result::failure_result;
 use super::schema::{build_output_validators, collect_schema_warnings, validate_tools};
@@ -17,6 +21,7 @@ pub(super) struct PreparedRun {
 pub(super) async fn prepare_run(
     session: &SessionDriver,
     config: &RunConfig,
+    list_lints: &[std::sync::Arc<dyn crate::LintRule>],
 ) -> Result<PreparedRun, RunResult> {
     let prelude_trace = vec![TraceEntry::list_tools()];
     let tools = match session.list_tools().await {
@@ -57,7 +62,21 @@ pub(super) async fn prepare_run(
             ))
         }
     };
-    let warnings = collect_schema_warnings(&tools);
+    let mut warnings = collect_schema_warnings(&tools);
+    if let Some(failure) = evaluate_list_phase(
+        list_lints,
+        &ListLintContext { tools: &tools },
+        &mut warnings,
+    ) {
+        return Err(failure_result(
+            failure,
+            prelude_trace.clone(),
+            None,
+            warnings,
+            None,
+            None,
+        ));
+    }
 
     let validators = match build_output_validators(&tools) {
         Ok(validators) => validators,

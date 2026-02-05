@@ -3,6 +3,7 @@
 mod assertions;
 mod coverage;
 mod execution;
+mod linting;
 mod pre_run;
 mod prepare;
 mod result;

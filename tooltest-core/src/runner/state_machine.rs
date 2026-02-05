@@ -11,6 +11,7 @@ use super::assertions::{
     attach_failure_reason, attach_response,
 };
 use super::coverage::CoverageTracker;
+use super::linting::evaluate_response_phase;
 use super::result::FailureContext;
 
 pub(super) struct StateMachineExecution<'a> {
@@ -24,6 +25,7 @@ pub(super) struct StateMachineExecution<'a> {
     pub(super) full_trace: bool,
     pub(super) warnings: std::rc::Rc<std::cell::RefCell<Vec<crate::RunWarning>>>,
     pub(super) warned_missing_structured: std::rc::Rc<std::cell::RefCell<HashSet<String>>>,
+    pub(super) response_lints: Vec<std::sync::Arc<dyn crate::LintRule>>,
     pub(super) case_index: u64,
     pub(super) trace_sink: Option<std::sync::Arc<dyn crate::TraceSink>>,
 }
@@ -149,6 +151,47 @@ pub(super) async fn execute_state_machine_sequence(
                 corpus: None,
                 positive_error,
             });
+        }
+
+        if !execution.response_lints.is_empty() {
+            let tool = execution
+                .tools
+                .iter()
+                .find(|tool| tool.name == invocation.name)
+                .expect("tool for invocation");
+            let context = crate::ResponseLintContext {
+                tool,
+                invocation: &invocation,
+                response: &response,
+            };
+            if let Some(failure) = evaluate_response_phase(
+                &execution.response_lints,
+                &context,
+                &mut execution.warnings.borrow_mut(),
+            ) {
+                if execution.full_trace {
+                    attach_response(&mut full_trace, response.clone());
+                    attach_failure_reason(&mut full_trace, failure.reason.clone());
+                    record_trace(&full_trace);
+                    return Err(FailureContext {
+                        failure,
+                        trace: full_trace.clone(),
+                        coverage: None,
+                        corpus: None,
+                        positive_error: true,
+                    });
+                }
+                attach_response(&mut trace, response.clone());
+                attach_failure_reason(&mut trace, failure.reason.clone());
+                record_trace(&trace);
+                return Err(FailureContext {
+                    failure,
+                    trace: trace.clone(),
+                    coverage: None,
+                    corpus: None,
+                    positive_error: true,
+                });
+            }
         }
 
         if let Some(reason) =

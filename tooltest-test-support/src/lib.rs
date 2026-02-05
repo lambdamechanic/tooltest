@@ -287,3 +287,98 @@ impl Transport<RoleClient> for RunnerTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::{
+        ClientRequest, InitializeRequest, InitializeRequestParam, ListToolsRequest, NumberOrString,
+        PaginatedRequestParam, ServerJsonRpcMessage, ServerResult,
+    };
+
+    fn run_async<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(future)
+    }
+
+    fn init_message(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::request(
+            ClientRequest::InitializeRequest(InitializeRequest::new(
+                InitializeRequestParam::default(),
+            )),
+            NumberOrString::Number(id),
+        )
+    }
+
+    fn list_tools_message(id: i64) -> ClientJsonRpcMessage {
+        ClientJsonRpcMessage::request(
+            ClientRequest::ListToolsRequest(ListToolsRequest {
+                method: Default::default(),
+                params: Some(PaginatedRequestParam { cursor: None }),
+                extensions: Default::default(),
+            }),
+            NumberOrString::Number(id),
+        )
+    }
+
+    fn assert_init_response(response: ServerJsonRpcMessage) {
+        match response {
+            ServerJsonRpcMessage::Response(response) => match response.result {
+                ServerResult::InitializeResult(_) => {}
+                other => panic!("unexpected result: {other:?}"),
+            },
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transport_error_formats_message() {
+        let error = TransportError("boom");
+        assert_eq!(error.to_string(), "boom");
+    }
+
+    #[test]
+    fn faulty_list_tools_transport_handles_initialize_and_list_tools() {
+        run_async(async {
+            let mut transport = FaultyListToolsTransport::default();
+            transport.send(init_message(1)).await.expect("init send");
+            let response = transport.receive().await.expect("init response");
+            assert_init_response(response);
+            let error = transport
+                .send(list_tools_message(2))
+                .await
+                .expect_err("list tools send");
+            assert_eq!(error.to_string(), "list tools");
+            transport.close().await.expect("close");
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected result")]
+    fn assert_init_response_panics_on_unexpected_result() {
+        let message = ServerJsonRpcMessage::Response(rmcp::model::JsonRpcResponse {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id: rmcp::model::RequestId::Number(1),
+            result: ServerResult::ListToolsResult(rmcp::model::ListToolsResult {
+                tools: Vec::new(),
+                next_cursor: None,
+                meta: None,
+            }),
+        });
+        assert_init_response(message);
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected message")]
+    fn assert_init_response_panics_on_unexpected_message() {
+        let message = ServerJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            notification: rmcp::model::ServerNotification::CustomNotification(
+                rmcp::model::CustomNotification::new("test", None),
+            ),
+        });
+        assert_init_response(message);
+    }
+}

@@ -410,6 +410,7 @@ fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
     match code {
         RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
         RunWarningCode::MissingStructuredContent => "missing_structured_content",
+        RunWarningCode::Lint => "lint",
     }
 }
 
@@ -1299,6 +1300,26 @@ mod tests {
         assert!(output.contains("schema_unsupported_keyword"));
         assert!(output.contains("schema warning"));
         assert!(output.contains("echo"));
+    }
+
+    #[test]
+    fn format_run_result_human_reports_lint_warning_code() {
+        let result = RunResult {
+            outcome: RunOutcome::Success,
+            trace: Vec::new(),
+            minimized: None,
+            warnings: vec![RunWarning {
+                code: RunWarningCode::Lint,
+                message: "lint warning".to_string(),
+                tool: None,
+            }],
+            coverage: None,
+            corpus: None,
+        };
+
+        let output = format_run_result_human(&result);
+        assert!(output.contains("lint"));
+        assert!(output.contains("lint warning"));
     }
 
     #[test]

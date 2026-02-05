@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::coverage::{coverage_failure, CoverageTracker};
+use super::linting::{evaluate_run_phase, lint_phases};
 use super::pre_run::run_pre_run_hook;
 use super::prepare::prepare_run;
 use super::result::{failure_result, finalize_state_machine_result, FailureContext};
@@ -46,7 +47,8 @@ pub async fn run_with_session(
     config: &RunConfig,
     options: RunnerOptions,
 ) -> RunResult {
-    let prepared = match prepare_run(session, config).await {
+    let lint_phases = lint_phases(&config.lints);
+    let prepared = match prepare_run(session, config, &lint_phases.list).await {
         Ok(prepared) => prepared,
         Err(result) => return result,
     };
@@ -136,6 +138,7 @@ pub async fn run_with_session(
         let last_failure = last_failure.clone();
         let validators = validators.clone();
         let aggregate_tracker = aggregate_tracker.clone();
+        let response_lints = lint_phases.response.clone();
         let warnings = warnings.clone();
         let warned_missing_structured = warned_missing_structured.clone();
         let trace_sink = config.trace_sink.clone();
@@ -183,6 +186,7 @@ pub async fn run_with_session(
                             full_trace: config.full_trace,
                             warnings: warnings.clone(),
                             warned_missing_structured: warned_missing_structured.clone(),
+                            response_lints: response_lints.clone(),
                             case_index,
                             trace_sink: trace_sink.clone(),
                         };
@@ -242,6 +246,27 @@ pub async fn run_with_session(
         &last_corpus,
         &warnings.borrow(),
     );
+    let mut run_result = run_result;
+    if matches!(run_result.outcome, RunOutcome::Success) {
+        let coverage = last_coverage.borrow();
+        let corpus = last_corpus.borrow();
+        let context = crate::RunLintContext {
+            coverage: coverage.as_ref(),
+            corpus: corpus.as_ref(),
+        };
+        if let Some(failure) =
+            evaluate_run_phase(&lint_phases.run, &context, &mut run_result.warnings)
+        {
+            return failure_result(
+                failure,
+                Vec::new(),
+                None,
+                run_result.warnings.clone(),
+                run_result.coverage.clone(),
+                run_result.corpus.clone(),
+            );
+        }
+    }
     if matches!(run_result.outcome, RunOutcome::Success) {
         if let Err(failure) = aggregate_tracker
             .borrow()

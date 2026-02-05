@@ -17,11 +17,11 @@ use crate::generator::{
 };
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
-    CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, PreRunHook,
-    ResponseAssertion, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
-    RunnerOptions, SchemaConfig, SequenceAssertion, SessionDriver, SessionError,
-    StateMachineConfig, StdioConfig, ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry,
-    TraceSink,
+    CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, LintDefinition,
+    LintFinding, LintLevel, LintPhase, LintRule, LintSuite, PreRunHook, ResponseAssertion,
+    RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode, RunnerOptions,
+    SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
+    ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry, TraceSink,
 };
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
@@ -39,7 +39,53 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::tests::test_support::connect_runner_transport;
-use tooltest_test_support::{tool_with_schemas, RunnerTransport};
+use tooltest_test_support::{stub_tool, tool_with_schemas, RunnerTransport};
+
+#[derive(Clone)]
+struct StaticLint {
+    definition: LintDefinition,
+    findings: Vec<LintFinding>,
+}
+
+impl LintRule for StaticLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_list(&self, _context: &crate::ListLintContext<'_>) -> Vec<LintFinding> {
+        if matches!(self.definition.phase, LintPhase::List) {
+            self.findings.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn check_response(&self, _context: &crate::ResponseLintContext<'_>) -> Vec<LintFinding> {
+        if matches!(self.definition.phase, LintPhase::Response) {
+            self.findings.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn check_run(&self, _context: &crate::RunLintContext<'_>) -> Vec<LintFinding> {
+        if matches!(self.definition.phase, LintPhase::Run) {
+            self.findings.clone()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+struct NoopLint {
+    definition: LintDefinition,
+}
+
+impl LintRule for NoopLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+}
 
 fn outcome_is_success(outcome: &RunOutcome) -> bool {
     matches!(outcome, RunOutcome::Success)
@@ -94,6 +140,7 @@ async fn execute_sequence_for_test(
         full_trace: false,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
     };
@@ -1246,6 +1293,7 @@ async fn execute_state_machine_sequence_full_trace_success_records_trace() {
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 7,
         trace_sink: Some(sink.clone()),
     };
@@ -1283,6 +1331,7 @@ async fn execute_state_machine_sequence_full_trace_reports_generation_error() {
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 3,
         trace_sink: Some(sink.clone()),
     };
@@ -1323,6 +1372,7 @@ async fn execute_state_machine_sequence_full_trace_reports_session_error() {
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 2,
         trace_sink: Some(sink.clone()),
     };
@@ -1364,6 +1414,7 @@ async fn execute_state_machine_sequence_full_trace_reports_default_assertion_fai
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
     };
@@ -1410,6 +1461,7 @@ async fn execute_state_machine_sequence_full_trace_reports_response_assertion_fa
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
     };
@@ -1452,6 +1504,7 @@ async fn execute_state_machine_sequence_full_trace_reports_sequence_assertion_fa
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
     };
@@ -1491,6 +1544,7 @@ async fn execute_state_machine_sequence_full_trace_fails_on_minimum_length_short
         full_trace: true,
         warnings: Rc::new(RefCell::new(Vec::new())),
         warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: Vec::new(),
         case_index: 0,
         trace_sink: None,
     };
@@ -1502,6 +1556,252 @@ async fn execute_state_machine_sequence_full_trace_fails_on_minimum_length_short
         .failure
         .reason
         .contains("state-machine generator failed"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_phase_lint_error_stops_before_tool_calls() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let lint = StaticLint {
+        definition: LintDefinition::new("list_fail", LintPhase::List, LintLevel::Error),
+        findings: vec![LintFinding::new("boom")],
+    };
+    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let result = run_with_session(
+        &session,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+    assert_failure(&result);
+    assert!(result.trace.iter().all(is_list_tools));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn response_phase_lint_error_fails_after_response() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let lint = StaticLint {
+        definition: LintDefinition::new("response_fail", LintPhase::Response, LintLevel::Error),
+        findings: vec![LintFinding::new("boom")],
+    };
+    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let result = run_with_session(
+        &session,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+    assert_failure(&result);
+    let mut saw_tool_call = false;
+    for entry in &result.trace {
+        if let TraceEntry::ToolCall { response, .. } = entry {
+            saw_tool_call = true;
+            assert!(response.is_some());
+        }
+    }
+    assert!(saw_tool_call);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn warning_level_lint_does_not_fail_run() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let lint = StaticLint {
+        definition: LintDefinition::new("response_warn", LintPhase::Response, LintLevel::Warning),
+        findings: vec![LintFinding::new("heads up")],
+    };
+    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let result = run_with_session(
+        &session,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+    assert_success(&result);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.code == RunWarningCode::Lint));
+}
+
+#[test]
+fn lint_helpers_cover_defaults_and_suite_metadata() {
+    let definition = LintDefinition::new("noop", LintPhase::List, LintLevel::Warning)
+        .with_params(json!({ "limit": 1 }));
+    assert!(definition.params.is_some());
+    let finding = LintFinding::new("note").with_details(json!({ "detail": true }));
+    assert!(finding.details.is_some());
+
+    let empty_suite = LintSuite::default();
+    assert!(empty_suite.is_empty());
+    assert_eq!(empty_suite.len(), 0);
+
+    let noop = NoopLint { definition };
+    assert!(noop
+        .check_list(&crate::ListLintContext { tools: &[] })
+        .is_empty());
+    assert!(noop
+        .check_response(&crate::ResponseLintContext {
+            tool: &stub_tool("noop"),
+            invocation: &ToolInvocation {
+                name: "noop".to_string().into(),
+                arguments: None,
+            },
+            response: &CallToolResult::success(vec![]),
+        })
+        .is_empty());
+    assert!(noop
+        .check_run(&crate::RunLintContext {
+            coverage: None,
+            corpus: None,
+        })
+        .is_empty());
+}
+
+#[test]
+fn lint_phases_split_by_phase_and_skip_disabled() {
+    let list_lint = StaticLint {
+        definition: LintDefinition::new("list", LintPhase::List, LintLevel::Warning),
+        findings: vec![],
+    };
+    let response_lint = StaticLint {
+        definition: LintDefinition::new("response", LintPhase::Response, LintLevel::Warning),
+        findings: vec![],
+    };
+    let run_lint = StaticLint {
+        definition: LintDefinition::new("run", LintPhase::Run, LintLevel::Warning),
+        findings: vec![],
+    };
+    let disabled_lint = StaticLint {
+        definition: LintDefinition::new("disabled", LintPhase::List, LintLevel::Disabled),
+        findings: vec![LintFinding::new("ignored")],
+    };
+    let suite = LintSuite::new(vec![
+        Arc::new(list_lint),
+        Arc::new(response_lint),
+        Arc::new(run_lint),
+        Arc::new(disabled_lint),
+    ]);
+    let phases = super::linting::lint_phases(&suite);
+    assert_eq!(phases.list.len(), 1);
+    assert_eq!(phases.response.len(), 1);
+    assert_eq!(phases.run.len(), 1);
+}
+
+#[test]
+fn linting_collects_errors_and_warnings_without_short_circuit() {
+    let error_one = StaticLint {
+        definition: LintDefinition::new("error_one", LintPhase::List, LintLevel::Error),
+        findings: vec![LintFinding::new("boom")],
+    };
+    let error_two = StaticLint {
+        definition: LintDefinition::new("error_two", LintPhase::List, LintLevel::Error),
+        findings: vec![LintFinding::new("kaboom")],
+    };
+    let warning = StaticLint {
+        definition: LintDefinition::new("warn", LintPhase::List, LintLevel::Warning),
+        findings: vec![LintFinding::new("heads up")],
+    };
+    let empty = StaticLint {
+        definition: LintDefinition::new("empty", LintPhase::List, LintLevel::Warning),
+        findings: vec![],
+    };
+    let disabled = StaticLint {
+        definition: LintDefinition::new("disabled", LintPhase::List, LintLevel::Disabled),
+        findings: vec![LintFinding::new("ignored")],
+    };
+    let lints: Vec<Arc<dyn LintRule>> = vec![
+        Arc::new(error_one),
+        Arc::new(error_two),
+        Arc::new(warning),
+        Arc::new(empty),
+        Arc::new(disabled),
+    ];
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_list_phase(
+        &lints,
+        &crate::ListLintContext { tools: &[] },
+        &mut warnings,
+    )
+    .expect("expected failure");
+    assert!(failure.reason.contains("lint errors during list phase"));
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].code, RunWarningCode::Lint);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_phase_lint_error_fails_after_run() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let lint = StaticLint {
+        definition: LintDefinition::new("run_fail", LintPhase::Run, LintLevel::Error),
+        findings: vec![LintFinding::new("boom")],
+    };
+    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let result = run_with_session(
+        &session,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+    assert_failure(&result);
+    assert_failure_reason_contains(&result, "run phase");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn response_lint_failure_reports_full_trace() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool.clone(), response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let tools = prepare_tools(vec![tool]);
+    let sequence = StateMachineSequence { seeds: vec![0] };
+    let mut tracker = CoverageTracker::new(&tools, &StateMachineConfig::default(), 1);
+    let lint = StaticLint {
+        definition: LintDefinition::new("response_fail", LintPhase::Response, LintLevel::Error),
+        findings: vec![LintFinding::new("boom")],
+    };
+    let execution = StateMachineExecution {
+        session: &session,
+        tools: &tools,
+        validators: &BTreeMap::new(),
+        assertions: &AssertionSet::default(),
+        predicate: None,
+        min_len: None,
+        in_band_error_forbidden: false,
+        full_trace: true,
+        warnings: Rc::new(RefCell::new(Vec::new())),
+        warned_missing_structured: Rc::new(RefCell::new(std::collections::HashSet::new())),
+        response_lints: vec![Arc::new(lint)],
+        case_index: 0,
+        trace_sink: None,
+    };
+    let failure = execute_state_machine_sequence(&sequence, &execution, &mut tracker)
+        .await
+        .expect_err("expected failure");
+    let (_, response) = failure.trace[0].as_tool_call().expect("tool call");
+    assert!(response.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]

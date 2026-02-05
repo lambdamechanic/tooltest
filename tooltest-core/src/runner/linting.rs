@@ -5,11 +5,14 @@ use crate::lint::{
     ResponseLintContext, RunLintContext,
 };
 use crate::{RunFailure, RunWarning, RunWarningCode};
+use serde_json::Value as JsonValue;
 
 #[derive(Clone, Debug)]
 struct LintError {
     lint_id: String,
     message: String,
+    code: Option<String>,
+    details: Option<serde_json::Value>,
 }
 
 fn phase_label(phase: LintPhase) -> &'static str {
@@ -22,12 +25,15 @@ fn phase_label(phase: LintPhase) -> &'static str {
 
 fn make_failure(phase: LintPhase, errors: &[LintError]) -> RunFailure {
     if let Some(error) = errors.first().filter(|_| errors.len() == 1) {
-        RunFailure::new(format!(
+        let mut failure = RunFailure::new(format!(
             "lint {} failed during {} phase: {}",
             error.lint_id,
             phase_label(phase),
             error.message
-        ))
+        ));
+        failure.code = error.code.clone();
+        failure.details = error.details.clone();
+        failure
     } else {
         let ids = errors
             .iter()
@@ -43,10 +49,22 @@ fn make_failure(phase: LintPhase, errors: &[LintError]) -> RunFailure {
 }
 
 fn lint_warning(definition: &LintDefinition, finding: &LintFinding) -> RunWarning {
+    let mut details = serde_json::Map::new();
+    details.insert(
+        "lint_id".to_string(),
+        JsonValue::String(definition.id.clone()),
+    );
+    if let Some(code) = &finding.code {
+        details.insert("lint_code".to_string(), JsonValue::String(code.clone()));
+    }
+    if let Some(finding_details) = &finding.details {
+        details.insert("details".to_string(), finding_details.clone());
+    }
     RunWarning {
-        code: RunWarningCode::Lint,
+        code: RunWarningCode::lint(definition.id.clone()),
         message: format!("lint {}: {}", definition.id, finding.message),
         tool: None,
+        details: Some(JsonValue::Object(details)),
     }
 }
 
@@ -54,6 +72,8 @@ fn lint_error(definition: &LintDefinition, finding: &LintFinding) -> LintError {
     LintError {
         lint_id: definition.id.clone(),
         message: finding.message.clone(),
+        code: finding.code.clone(),
+        details: finding.details.clone(),
     }
 }
 

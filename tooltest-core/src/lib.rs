@@ -582,6 +582,9 @@ pub struct RunWarning {
     /// Optional tool name associated with the warning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Optional structured warning details.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<JsonValue>,
 }
 
 /// Receives per-case traces when enabled.
@@ -592,11 +595,33 @@ pub trait TraceSink: Send + Sync {
 
 /// Structured warning codes for tooltest runs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RunWarningCode {
-    SchemaUnsupportedKeyword,
-    MissingStructuredContent,
-    Lint,
+#[serde(transparent)]
+#[schemars(transparent)]
+pub struct RunWarningCode(pub String);
+
+impl RunWarningCode {
+    pub const SCHEMA_UNSUPPORTED_KEYWORD: &'static str = "schema_unsupported_keyword";
+    pub const MISSING_STRUCTURED_CONTENT: &'static str = "missing_structured_content";
+
+    pub fn schema_unsupported_keyword() -> Self {
+        Self(Self::SCHEMA_UNSUPPORTED_KEYWORD.to_string())
+    }
+
+    pub fn missing_structured_content() -> Self {
+        Self(Self::MISSING_STRUCTURED_CONTENT.to_string())
+    }
+
+    pub fn lint(id: impl Into<String>) -> Self {
+        Self(format!("lint.{}", id.into()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn lint_id(&self) -> Option<&str> {
+        self.0.strip_prefix("lint.")
+    }
 }
 
 /// Warning describing a coverage issue in a state-machine run.

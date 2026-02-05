@@ -40,12 +40,13 @@ pub(super) fn collect_schema_keyword_warnings(
         || schema_id.contains("draft-04")
     {
         warnings.push(RunWarning {
-            code: RunWarningCode::SchemaUnsupportedKeyword,
+            code: RunWarningCode::schema_unsupported_keyword(),
             message: format!(
                 "tool '{}' {schema_label} declares {schema_id} but uses '$defs'; draft-07 and earlier use 'definitions'",
                 tool.name
             ),
             tool: Some(tool.name.to_string()),
+            details: None,
         });
     }
 }

@@ -1108,10 +1108,13 @@ async fn run_with_session_state_machine_requires_structured_content_on_error_wit
     let result = run_with_session(&session, &config, options).await;
     assert_success(&result);
     assert!(result.warnings.iter().any(|warning| {
-        warning.code == RunWarningCode::MissingStructuredContent
+        warning.code == RunWarningCode::lint("missing_structured_content")
             && warning
-                .message
-                .contains("returned no structured_content for output schema")
+                .details
+                .as_ref()
+                .and_then(|details| details.get("lint_id"))
+                .and_then(|value| value.as_str())
+                == Some("missing_structured_content")
     }));
 }
 
@@ -1625,6 +1628,52 @@ async fn warning_level_lint_does_not_fail_run() {
     let session = connect_runner_transport(transport).await.expect("connect");
     let lint = StaticLint {
         definition: LintDefinition::new("response_warn", LintPhase::Response, LintLevel::Warning),
+        findings: vec![LintFinding::new("heads up").with_code("lint_code")],
+    };
+    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let result = run_with_session(
+        &session,
+        &config,
+        RunnerOptions {
+            cases: 1,
+            sequence_len: 1..=1,
+        },
+    )
+    .await;
+    assert_success(&result);
+    let warning = result
+        .warnings
+        .iter()
+        .find(|warning| warning.code == RunWarningCode::lint("response_warn"))
+        .expect("lint warning");
+    let details = warning
+        .details
+        .as_ref()
+        .and_then(|value| value.as_object())
+        .expect("lint details");
+    assert_eq!(
+        details.get("lint_id").and_then(|value| value.as_str()),
+        Some("response_warn")
+    );
+    assert_eq!(
+        details.get("lint_code").and_then(|value| value.as_str()),
+        Some("lint_code")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_result_surfaces_schema_and_lint_warnings() {
+    let input_schema = json!({
+        "type": "object",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$defs": { "payload": { "type": "string" } }
+    });
+    let tool = tool_with_schemas("echo", input_schema, None);
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let session = connect_runner_transport(transport).await.expect("connect");
+    let lint = StaticLint {
+        definition: LintDefinition::new("list_warn", LintPhase::List, LintLevel::Warning),
         findings: vec![LintFinding::new("heads up")],
     };
     let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
@@ -1638,10 +1687,13 @@ async fn warning_level_lint_does_not_fail_run() {
     )
     .await;
     assert_success(&result);
+    assert!(result.warnings.iter().any(|warning| {
+        warning.code == RunWarningCode::schema_unsupported_keyword()
+    }));
     assert!(result
         .warnings
         .iter()
-        .any(|warning| warning.code == RunWarningCode::Lint));
+        .any(|warning| warning.code == RunWarningCode::lint("list_warn")));
 }
 
 #[test]
@@ -1754,7 +1806,7 @@ fn linting_collects_errors_and_warnings_without_short_circuit() {
     .expect("expected failure");
     assert!(failure.reason.contains("lint errors during list phase"));
     assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].code, RunWarningCode::Lint);
+    assert_eq!(warnings[0].code, RunWarningCode::lint("warn"));
 }
 
 #[test]
@@ -2487,9 +2539,9 @@ fn collect_schema_keyword_warnings_reports_draft_defs() {
     ];
     let warnings = collect_schema_warnings(&tools);
     assert_eq!(warnings.len(), 3);
-    assert!(warnings
-        .iter()
-        .all(|warning| warning.code == RunWarningCode::SchemaUnsupportedKeyword));
+    assert!(warnings.iter().all(|warning| {
+        warning.code == RunWarningCode::schema_unsupported_keyword()
+    }));
 }
 
 #[test]

@@ -428,12 +428,8 @@ fn format_coverage_warning_reason(reason: &CoverageWarningReason) -> &'static st
     }
 }
 
-fn format_run_warning_code(code: &RunWarningCode) -> &'static str {
-    match code {
-        RunWarningCode::SchemaUnsupportedKeyword => "schema_unsupported_keyword",
-        RunWarningCode::MissingStructuredContent => "missing_structured_content",
-        RunWarningCode::Lint => "lint",
-    }
+fn format_run_warning_code(code: &RunWarningCode) -> &str {
+    code.as_str()
 }
 
 fn format_run_warning_message(warning: &RunWarning) -> String {
@@ -1058,7 +1054,7 @@ mod tests {
     #[test]
     fn format_run_warning_code_supports_missing_structured_content() {
         assert_eq!(
-            format_run_warning_code(&RunWarningCode::MissingStructuredContent),
+            format_run_warning_code(&RunWarningCode::missing_structured_content()),
             "missing_structured_content"
         );
     }
@@ -1427,7 +1423,7 @@ mod tests {
             trace: Vec::new(),
             minimized: None,
             warnings: vec![RunWarning {
-                code: RunWarningCode::SchemaUnsupportedKeyword,
+                code: RunWarningCode::schema_unsupported_keyword(),
                 message: "schema warning".to_string(),
                 tool: Some("echo".to_string()),
                 details: None,
@@ -1450,7 +1446,7 @@ mod tests {
             trace: Vec::new(),
             minimized: None,
             warnings: vec![RunWarning {
-                code: RunWarningCode::Lint,
+                code: RunWarningCode::lint("missing_structured_content"),
                 message: "lint missing_structured_content: lint warning".to_string(),
                 tool: None,
                 details: Some(serde_json::json!({ "lint_id": "missing_structured_content" })),
@@ -1460,7 +1456,7 @@ mod tests {
         };
 
         let output = format_run_result_human(&result);
-        assert!(output.contains("lint"));
+        assert!(output.contains("lint.missing_structured_content"));
         assert!(output.contains("lint warning"));
         assert!(output.contains("missing_structured_content"));
     }
@@ -1472,7 +1468,7 @@ mod tests {
             trace: Vec::new(),
             minimized: None,
             warnings: vec![RunWarning {
-                code: RunWarningCode::SchemaUnsupportedKeyword,
+                code: RunWarningCode::schema_unsupported_keyword(),
                 message: "standalone warning".to_string(),
                 tool: None,
                 details: None,

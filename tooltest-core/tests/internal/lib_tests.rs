@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CallToolRequestParam,
-    CallToolResult, CoverageRule, PreRunHook, ResponseAssertion, RunConfig, SchemaConfig,
-    SchemaVersion, StateMachineConfig, StdioConfig, ToolPredicate, TraceEntry, TraceSink,
+    CallToolResult, CoverageRule, PreRunHook, ResponseAssertion, RunConfig, RunWarningCode,
+    SchemaConfig, SchemaVersion, StateMachineConfig, StdioConfig, ToolPredicate, TraceEntry,
+    TraceSink,
 };
 use serde_json::json;
 
@@ -135,6 +136,13 @@ fn coverage_rule_min_calls_builder() {
 fn coverage_rule_percent_called_builder() {
     let rule = CoverageRule::percent_called(75.0);
     assert!(matches!(rule, CoverageRule::PercentCalled { min_percent } if min_percent == 75.0));
+}
+
+#[test]
+fn run_warning_code_extracts_lint_id() {
+    let lint = RunWarningCode::lint("missing_structured_content");
+    assert_eq!(lint.lint_id(), Some("missing_structured_content"));
+    assert_eq!(RunWarningCode::schema_unsupported_keyword().lint_id(), None);
 }
 
 #[test]

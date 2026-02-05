@@ -1,0 +1,54 @@
+# Tooltest lint configuration.
+# Save this as tooltest.toml to customize lint severity and parameters.
+version = 1
+
+[[lints]]
+# Fail if any run crashes or aborts.
+id = "no_crash"
+level = "error"
+
+[[lints]]
+# Warn when server protocolVersion is older than the minimum supported.
+id = "mcp_schema_min_version"
+level = "warning"
+[lints.params]
+min_version = "2025-11-25"
+
+[[lints]]
+# Warn when tools with output schemas omit structuredContent.
+id = "missing_structured_content"
+level = "warning"
+
+[[lints]]
+# Limit tools/list payload size by count.
+id = "max_tools"
+level = "disabled"
+[lints.params]
+max = 200
+
+[[lints]]
+# Restrict input/output $schema values to a known allowlist.
+id = "json_schema_dialect_compat"
+level = "disabled"
+[lints.params]
+allowlist = [
+  "https://json-schema.org/draft/2020-12/schema",
+  "https://json-schema.org/draft/2019-09/schema",
+  "http://json-schema.org/draft-07/schema",
+  "http://json-schema.org/draft-06/schema",
+  "http://json-schema.org/draft-04/schema",
+]
+
+[[lints]]
+# Limit structuredContent payload size per response (bytes).
+id = "max_structured_content_bytes"
+level = "disabled"
+[lints.params]
+max_bytes = 262144
+
+[[lints]]
+# Enforce coverage rules on state-machine runs.
+id = "coverage"
+level = "disabled"
+[lints.params]
+rules = [{ rule = "percent_called", min_percent = 100.0 }]

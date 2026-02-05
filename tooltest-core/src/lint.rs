@@ -29,6 +29,21 @@ pub enum LintPhase {
     Run,
 }
 
+/// Source of the lint configuration for the run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LintConfigSource {
+    Repo,
+    Home,
+    Default,
+}
+
+impl Default for LintConfigSource {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 /// Definition of a lint instance.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LintDefinition {
@@ -125,11 +140,24 @@ pub trait LintRule: Send + Sync {
 #[derive(Clone, Default)]
 pub struct LintSuite {
     rules: Vec<Arc<dyn LintRule>>,
+    source: LintConfigSource,
 }
 
 impl LintSuite {
     pub fn new(rules: Vec<Arc<dyn LintRule>>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            source: LintConfigSource::Default,
+        }
+    }
+
+    pub fn with_source(mut self, source: LintConfigSource) -> Self {
+        self.source = source;
+        self
+    }
+
+    pub fn source(&self) -> LintConfigSource {
+        self.source
     }
 
     pub fn len(&self) -> usize {
@@ -142,6 +170,13 @@ impl LintSuite {
 
     pub(crate) fn rules(&self) -> &[Arc<dyn LintRule>] {
         &self.rules
+    }
+
+    pub fn has_enabled(&self, id: &str) -> bool {
+        self.rules.iter().any(|rule| {
+            let definition = rule.definition();
+            definition.id == id && definition.level != LintLevel::Disabled
+        })
     }
 }
 

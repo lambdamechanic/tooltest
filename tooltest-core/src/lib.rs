@@ -15,6 +15,7 @@ use tooltest_test_support as _;
 mod generator;
 mod input;
 mod lint;
+mod lint_config;
 mod lints;
 mod output_schema;
 mod runner;
@@ -27,9 +28,10 @@ pub use input::{
     TooltestTarget, TooltestTargetConfig, TooltestTargetHttp, TooltestTargetStdio,
 };
 pub use lint::{
-    LintDefinition, LintFinding, LintLevel, LintPhase, LintRule, LintSuite, ListLintContext,
-    ResponseLintContext, RunLintContext,
+    LintConfigSource, LintDefinition, LintFinding, LintLevel, LintPhase, LintRule, LintSuite,
+    ListLintContext, ResponseLintContext, RunLintContext,
 };
+pub use lint_config::{default_tooltest_toml, load_lint_suite};
 pub use lints::{
     JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, McpSchemaMinVersionLint,
     MissingStructuredContentLint, MaxToolsLint,
@@ -452,6 +454,7 @@ impl fmt::Debug for RunConfig {
             .field("uncallable_limit", &self.uncallable_limit)
             .field("trace_sink", &self.trace_sink.is_some())
             .field("lints", &self.lints.len())
+            .field("lint_config_source", &self.lints.source())
             .finish()
     }
 }

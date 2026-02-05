@@ -1052,10 +1052,10 @@ mod tests {
     }
 
     #[test]
-    fn format_run_warning_code_supports_missing_structured_content() {
+    fn format_run_warning_code_supports_lint_codes() {
         assert_eq!(
-            format_run_warning_code(&RunWarningCode::missing_structured_content()),
-            "missing_structured_content"
+            format_run_warning_code(&RunWarningCode::lint("missing_structured_content")),
+            "lint.missing_structured_content"
         );
     }
 

@@ -146,6 +146,13 @@ fn run_warning_code_extracts_lint_id() {
 }
 
 #[test]
+#[allow(deprecated)]
+fn run_warning_code_missing_structured_content_builder() {
+    let code = RunWarningCode::missing_structured_content();
+    assert_eq!(code.as_str(), "missing_structured_content");
+}
+
+#[test]
 fn trace_entry_list_tools_is_not_tool_call() {
     let entry = TraceEntry::list_tools();
     assert!(entry.as_tool_call().is_none());

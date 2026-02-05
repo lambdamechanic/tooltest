@@ -589,14 +589,20 @@ pub struct RunWarningCode(pub String);
 
 impl RunWarningCode {
     pub const SCHEMA_UNSUPPORTED_KEYWORD: &'static str = "schema_unsupported_keyword";
+    #[deprecated(
+        note = "Use RunWarningCode::lint(\"missing_structured_content\"); this warning code is lint-only."
+    )]
     pub const MISSING_STRUCTURED_CONTENT: &'static str = "missing_structured_content";
 
     pub fn schema_unsupported_keyword() -> Self {
         Self(Self::SCHEMA_UNSUPPORTED_KEYWORD.to_string())
     }
 
+    #[deprecated(
+        note = "Use RunWarningCode::lint(\"missing_structured_content\"); this warning code is lint-only."
+    )]
     pub fn missing_structured_content() -> Self {
-        Self(Self::MISSING_STRUCTURED_CONTENT.to_string())
+        Self("missing_structured_content".to_string())
     }
 
     pub fn lint(id: impl Into<String>) -> Self {

@@ -19,13 +19,13 @@ use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, CoverageRule,
     CoverageWarningReason, ErrorCode, ErrorData, HttpConfig, JsonObject, LintDefinition,
     LintFinding, LintLevel, LintPhase, LintRule, LintSuite, PreRunHook, ResponseAssertion,
-    RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode, RunnerOptions,
-    SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
-    ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry, TraceSink,
+    ResponseLintContext, RunConfig, RunFailure, RunOutcome, RunResult, RunWarning, RunWarningCode,
+    RunnerOptions, SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig,
+    StdioConfig, ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry, TraceSink,
 };
 use crate::lints::{
-    JsonSchemaDialectCompatLint, McpSchemaMinVersionLint, MaxToolsLint,
-    DEFAULT_JSON_SCHEMA_DIALECT,
+    JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, McpSchemaMinVersionLint,
+    MissingStructuredContentLint, MaxToolsLint, DEFAULT_JSON_SCHEMA_DIALECT,
 };
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
@@ -1873,6 +1873,186 @@ fn json_schema_dialect_compat_lint_enforces_allowlist_and_defaults_missing_schem
         tools: &[tool_missing],
     });
     assert_eq!(findings.len(), 1);
+}
+
+#[test]
+fn max_structured_content_bytes_lint_sizes_json_bytes_and_allows_missing() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let structured = json!({ "text": "é" });
+    let encoded = serde_json::to_vec(&structured).expect("encode structured");
+    let lint = MaxStructuredContentBytesLint::new(
+        LintDefinition::new(
+            "max_structured_content_bytes",
+            LintPhase::Response,
+            LintLevel::Warning,
+        ),
+        encoded.len() - 1,
+    );
+    let response = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: Some(structured),
+        is_error: None,
+        meta: None,
+    };
+    let context = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response,
+    };
+    assert_eq!(lint.check_response(&context).len(), 1);
+
+    let response_missing = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: None,
+        is_error: None,
+        meta: None,
+    };
+    let context_missing = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response_missing,
+    };
+    assert!(lint.check_response(&context_missing).is_empty());
+}
+
+#[test]
+fn missing_structured_content_lint_triggers_when_schema_present() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object" }),
+        Some(json!({ "type": "object" })),
+    );
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let response = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: None,
+        is_error: None,
+        meta: None,
+    };
+    let context = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response,
+    };
+    let lint = MissingStructuredContentLint::new(LintDefinition::new(
+        "missing_structured_content",
+        LintPhase::Response,
+        LintLevel::Warning,
+    ));
+    assert_eq!(lint.check_response(&context).len(), 1);
+}
+
+#[test]
+fn max_structured_content_bytes_lint_respects_severity() {
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let response = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: Some(json!({ "value": 1 })),
+        is_error: None,
+        meta: None,
+    };
+    let context = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response,
+    };
+    let lint_warn = MaxStructuredContentBytesLint::new(
+        LintDefinition::new(
+            "max_structured_content_bytes",
+            LintPhase::Response,
+            LintLevel::Warning,
+        ),
+        0,
+    );
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_response_phase(
+        &[Arc::new(lint_warn)],
+        &context,
+        &mut warnings,
+    );
+    assert!(failure.is_none());
+    assert_eq!(warnings.len(), 1);
+
+    let lint_error = MaxStructuredContentBytesLint::new(
+        LintDefinition::new(
+            "max_structured_content_bytes",
+            LintPhase::Response,
+            LintLevel::Error,
+        ),
+        0,
+    );
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_response_phase(
+        &[Arc::new(lint_error)],
+        &context,
+        &mut warnings,
+    )
+    .expect("expected failure");
+    assert!(failure.reason.contains("lint"));
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn missing_structured_content_lint_respects_severity() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object" }),
+        Some(json!({ "type": "object" })),
+    );
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let response = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: None,
+        is_error: None,
+        meta: None,
+    };
+    let context = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response,
+    };
+    let lint_warn = MissingStructuredContentLint::new(LintDefinition::new(
+        "missing_structured_content",
+        LintPhase::Response,
+        LintLevel::Warning,
+    ));
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_response_phase(
+        &[Arc::new(lint_warn)],
+        &context,
+        &mut warnings,
+    );
+    assert!(failure.is_none());
+    assert_eq!(warnings.len(), 1);
+
+    let lint_error = MissingStructuredContentLint::new(LintDefinition::new(
+        "missing_structured_content",
+        LintPhase::Response,
+        LintLevel::Error,
+    ));
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_response_phase(
+        &[Arc::new(lint_error)],
+        &context,
+        &mut warnings,
+    )
+    .expect("expected failure");
+    assert!(failure.reason.contains("lint"));
+    assert!(warnings.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

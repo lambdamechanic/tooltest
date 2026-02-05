@@ -31,7 +31,8 @@ pub use lint::{
     ResponseLintContext, RunLintContext,
 };
 pub use lints::{
-    JsonSchemaDialectCompatLint, McpSchemaMinVersionLint, MaxToolsLint,
+    JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, McpSchemaMinVersionLint,
+    MissingStructuredContentLint, MaxToolsLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 pub use rmcp::model::{

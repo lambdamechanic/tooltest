@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chrono::NaiveDate;
 use serde_json::json;
 
-use crate::{LintDefinition, LintFinding, LintRule, ListLintContext};
+use crate::{LintDefinition, LintFinding, LintRule, ListLintContext, ResponseLintContext};
 
 pub const DEFAULT_JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -182,5 +182,94 @@ impl LintRule for JsonSchemaDialectCompatLint {
             }
         }
         findings
+    }
+}
+
+/// Lint: enforces a maximum structuredContent byte size per response.
+#[derive(Clone, Debug)]
+pub struct MaxStructuredContentBytesLint {
+    definition: LintDefinition,
+    max_bytes: usize,
+}
+
+impl MaxStructuredContentBytesLint {
+    pub fn new(definition: LintDefinition, max_bytes: usize) -> Self {
+        Self {
+            definition,
+            max_bytes,
+        }
+    }
+}
+
+impl LintRule for MaxStructuredContentBytesLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_response(&self, context: &ResponseLintContext<'_>) -> Vec<LintFinding> {
+        let size = match context.response.structured_content.as_ref() {
+            None => 0,
+            Some(value) => match serde_json::to_vec(value) {
+                Ok(bytes) => bytes.len(),
+                Err(error) => {
+                    return vec![
+                        LintFinding::new(format!(
+                            "failed to serialize structuredContent: {error}"
+                        ))
+                        .with_details(json!({
+                            "tool": context.tool.name.as_ref(),
+                        })),
+                    ];
+                }
+            },
+        };
+        if size <= self.max_bytes {
+            return Vec::new();
+        }
+        vec![
+            LintFinding::new(format!(
+                "tool '{}' structuredContent is {size} bytes (max {})",
+                context.tool.name.as_ref(),
+                self.max_bytes
+            ))
+            .with_details(json!({
+                "tool": context.tool.name.as_ref(),
+                "size": size,
+                "max": self.max_bytes,
+            })),
+        ]
+    }
+}
+
+/// Lint: reports missing structuredContent when an output schema exists.
+#[derive(Clone, Debug)]
+pub struct MissingStructuredContentLint {
+    definition: LintDefinition,
+}
+
+impl MissingStructuredContentLint {
+    pub fn new(definition: LintDefinition) -> Self {
+        Self { definition }
+    }
+}
+
+impl LintRule for MissingStructuredContentLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_response(&self, context: &ResponseLintContext<'_>) -> Vec<LintFinding> {
+        if context.tool.output_schema.is_some() && context.response.structured_content.is_none() {
+            return vec![
+                LintFinding::new(format!(
+                    "tool '{}' returned no structuredContent for output schema",
+                    context.tool.name.as_ref()
+                ))
+                .with_details(json!({
+                    "tool": context.tool.name.as_ref(),
+                })),
+            ];
+        }
+        Vec::new()
     }
 }

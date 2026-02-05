@@ -38,6 +38,8 @@ pub(super) async fn prepare_run(
             ));
         }
     };
+    let raw_tool_count = tools.len();
+    let protocol_version = session.server_protocol_version();
     if let Err(failure) = run_pre_run_hook(config).await {
         return Err(failure_result(
             failure,
@@ -65,7 +67,11 @@ pub(super) async fn prepare_run(
     let mut warnings = collect_schema_warnings(&tools);
     if let Some(failure) = evaluate_list_phase(
         list_lints,
-        &ListLintContext { tools: &tools },
+        &ListLintContext {
+            raw_tool_count,
+            protocol_version: protocol_version.as_deref(),
+            tools: &tools,
+        },
         &mut warnings,
     ) {
         return Err(failure_result(

@@ -15,6 +15,7 @@ use tooltest_test_support as _;
 mod generator;
 mod input;
 mod lint;
+mod lints;
 mod output_schema;
 mod runner;
 pub mod schema;
@@ -28,6 +29,10 @@ pub use input::{
 pub use lint::{
     LintDefinition, LintFinding, LintLevel, LintPhase, LintRule, LintSuite, ListLintContext,
     ResponseLintContext, RunLintContext,
+};
+pub use lints::{
+    JsonSchemaDialectCompatLint, McpSchemaMinVersionLint, MaxToolsLint,
+    DEFAULT_JSON_SCHEMA_DIALECT,
 };
 pub use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorCode, ErrorData, JsonObject, Tool,

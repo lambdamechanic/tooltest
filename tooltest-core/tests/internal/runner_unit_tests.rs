@@ -23,6 +23,10 @@ use crate::{
     SchemaConfig, SequenceAssertion, SessionDriver, SessionError, StateMachineConfig, StdioConfig,
     ToolInvocation, ToolNamePredicate, ToolPredicate, TraceEntry, TraceSink,
 };
+use crate::lints::{
+    JsonSchemaDialectCompatLint, McpSchemaMinVersionLint, MaxToolsLint,
+    DEFAULT_JSON_SCHEMA_DIALECT,
+};
 use jsonschema::draft202012;
 use proptest::test_runner::TestError;
 use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ClientRequest, Content, ResourceContents};
@@ -1654,7 +1658,11 @@ fn lint_helpers_cover_defaults_and_suite_metadata() {
 
     let noop = NoopLint { definition };
     assert!(noop
-        .check_list(&crate::ListLintContext { tools: &[] })
+        .check_list(&crate::ListLintContext {
+            raw_tool_count: 0,
+            protocol_version: None,
+            tools: &[],
+        })
         .is_empty());
     assert!(noop
         .check_response(&crate::ResponseLintContext {
@@ -1736,13 +1744,135 @@ fn linting_collects_errors_and_warnings_without_short_circuit() {
     let mut warnings = Vec::new();
     let failure = super::linting::evaluate_list_phase(
         &lints,
-        &crate::ListLintContext { tools: &[] },
+        &crate::ListLintContext {
+            raw_tool_count: 0,
+            protocol_version: None,
+            tools: &[],
+        },
         &mut warnings,
     )
     .expect("expected failure");
     assert!(failure.reason.contains("lint errors during list phase"));
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].code, RunWarningCode::Lint);
+}
+
+#[test]
+fn max_tools_lint_warns_when_over_limit() {
+    let lint = MaxToolsLint::new(
+        LintDefinition::new("max_tools", LintPhase::List, LintLevel::Warning),
+        1,
+    );
+    let lints: Vec<Arc<dyn LintRule>> = vec![Arc::new(lint)];
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_list_phase(
+        &lints,
+        &crate::ListLintContext {
+            raw_tool_count: 2,
+            protocol_version: None,
+            tools: &[],
+        },
+        &mut warnings,
+    );
+    assert!(failure.is_none());
+    assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn max_tools_lint_errors_when_over_limit() {
+    let lint = MaxToolsLint::new(
+        LintDefinition::new("max_tools", LintPhase::List, LintLevel::Error),
+        1,
+    );
+    let lints: Vec<Arc<dyn LintRule>> = vec![Arc::new(lint)];
+    let mut warnings = Vec::new();
+    let failure = super::linting::evaluate_list_phase(
+        &lints,
+        &crate::ListLintContext {
+            raw_tool_count: 2,
+            protocol_version: None,
+            tools: &[],
+        },
+        &mut warnings,
+    )
+    .expect("expected failure");
+    assert!(failure.reason.contains("lint"));
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn mcp_schema_min_version_lint_flags_missing_invalid_and_low_versions() {
+    let lint = McpSchemaMinVersionLint::new(
+        LintDefinition::new("mcp_schema_min_version", LintPhase::List, LintLevel::Warning),
+        "2025-03-26",
+    )
+    .expect("lint");
+    let context_missing = crate::ListLintContext {
+        raw_tool_count: 0,
+        protocol_version: None,
+        tools: &[],
+    };
+    assert_eq!(lint.check_list(&context_missing).len(), 1);
+
+    let context_invalid = crate::ListLintContext {
+        raw_tool_count: 0,
+        protocol_version: Some("not-a-date"),
+        tools: &[],
+    };
+    assert_eq!(lint.check_list(&context_invalid).len(), 1);
+
+    let context_low = crate::ListLintContext {
+        raw_tool_count: 0,
+        protocol_version: Some("2024-11-05"),
+        tools: &[],
+    };
+    assert_eq!(lint.check_list(&context_low).len(), 1);
+
+    let context_ok = crate::ListLintContext {
+        raw_tool_count: 0,
+        protocol_version: Some("2025-03-26"),
+        tools: &[],
+    };
+    assert!(lint.check_list(&context_ok).is_empty());
+}
+
+#[test]
+fn json_schema_dialect_compat_lint_enforces_allowlist_and_defaults_missing_schema() {
+    let lint = JsonSchemaDialectCompatLint::new(
+        LintDefinition::new("json_schema_dialect_compat", LintPhase::List, LintLevel::Warning),
+        vec![DEFAULT_JSON_SCHEMA_DIALECT.to_string()],
+    );
+    let tool = tool_with_schemas(
+        "echo",
+        json!({ "type": "object" }),
+        Some(json!({ "$schema": "http://json-schema.org/draft-04/schema", "type": "object" })),
+    );
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 1,
+        protocol_version: None,
+        tools: &[tool],
+    });
+    assert_eq!(findings.len(), 1);
+
+    let tool_missing = tool_with_schemas("ok", json!({ "type": "object" }), None);
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 1,
+        protocol_version: None,
+        tools: &[tool_missing],
+    });
+    assert!(findings.is_empty());
+
+    let lint_no_2020 = JsonSchemaDialectCompatLint::new(
+        LintDefinition::new("json_schema_dialect_compat", LintPhase::List, LintLevel::Warning),
+        vec!["http://json-schema.org/draft-04/schema".to_string()],
+    );
+    let tool_missing = tool_with_schemas("bad", json!({ "type": "object" }), None);
+    let findings = lint_no_2020.check_list(&crate::ListLintContext {
+        raw_tool_count: 1,
+        protocol_version: None,
+        tools: &[tool_missing],
+    });
+    assert_eq!(findings.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

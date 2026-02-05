@@ -80,6 +80,10 @@ impl LintFinding {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ListLintContext<'a> {
+    /// Raw tool count from the tools/list response.
+    pub raw_tool_count: usize,
+    /// Server-reported MCP protocol version from initialize response.
+    pub protocol_version: Option<&'a str>,
     pub tools: &'a [Tool],
 }
 

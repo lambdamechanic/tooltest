@@ -111,6 +111,14 @@ impl SessionDriver {
         }
         Ok(trace)
     }
+
+    /// Returns the server-reported MCP protocol version, if available.
+    pub fn server_protocol_version(&self) -> Option<String> {
+        self.service
+            .peer()
+            .peer_info()
+            .map(|info| info.protocol_version.to_string())
+    }
 }
 
 const IO_LOG_TARGET: &str = "tooltest.io_logs";

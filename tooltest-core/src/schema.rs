@@ -28,6 +28,8 @@ pub enum SchemaError {
     InvalidCallToolRequest(String),
     /// Failed to parse a tools/call response payload.
     InvalidCallToolResult(String),
+    /// Unsupported MCP schema version.
+    UnsupportedSchemaVersion(String),
 }
 
 impl fmt::Display for SchemaError {
@@ -40,6 +42,9 @@ impl fmt::Display for SchemaError {
             SchemaError::InvalidCallToolResult(message) => {
                 write!(f, "invalid tools/call result: {message}")
             }
+            SchemaError::UnsupportedSchemaVersion(version) => {
+                write!(f, "unsupported MCP schema version: {version}")
+            }
         }
     }
 }
@@ -51,8 +56,7 @@ pub fn parse_list_tools(
     payload: JsonValue,
     config: &SchemaConfig,
 ) -> Result<ListToolsResult, SchemaError> {
-    let _ = config;
-    validate_list_tools(&payload)?;
+    validate_list_tools(&payload, config)?;
     parse_list_tools_payload(payload)
 }
 
@@ -61,8 +65,7 @@ pub fn parse_call_tool_request(
     payload: JsonValue,
     config: &SchemaConfig,
 ) -> Result<CallToolRequestParam, SchemaError> {
-    let _ = config;
-    validate_call_tool_request(&payload)?;
+    validate_call_tool_request(&payload, config)?;
     parse_call_tool_request_payload(payload)
 }
 
@@ -71,14 +74,14 @@ pub fn parse_call_tool_result(
     payload: JsonValue,
     config: &SchemaConfig,
 ) -> Result<CallToolResult, SchemaError> {
-    let _ = config;
+    let _ = schema_json_for(config)?;
     serde_json::from_value(payload)
         .map_err(|err| SchemaError::InvalidCallToolResult(err.to_string()))
 }
 
 #[inline(never)]
-fn validate_list_tools(payload: &JsonValue) -> Result<(), SchemaError> {
-    let validator = list_tools_validator();
+fn validate_list_tools(payload: &JsonValue, config: &SchemaConfig) -> Result<(), SchemaError> {
+    let validator = list_tools_validator(config)?;
     if let Err(error) = validator.validate(payload) {
         return Err(SchemaError::InvalidListTools(error.to_string()));
     }
@@ -86,8 +89,11 @@ fn validate_list_tools(payload: &JsonValue) -> Result<(), SchemaError> {
 }
 
 #[inline(never)]
-fn validate_call_tool_request(payload: &JsonValue) -> Result<(), SchemaError> {
-    let validator = call_tool_request_validator();
+fn validate_call_tool_request(
+    payload: &JsonValue,
+    config: &SchemaConfig,
+) -> Result<(), SchemaError> {
+    let validator = call_tool_request_validator(config)?;
     if let Err(error) = validator.validate(payload) {
         return Err(SchemaError::InvalidCallToolRequest(error.to_string()));
     }
@@ -111,34 +117,38 @@ fn parse_call_tool_request_payload(
 }
 
 #[inline(never)]
-fn list_tools_validator() -> &'static Validator {
+fn list_tools_validator(config: &SchemaConfig) -> Result<&'static Validator, SchemaError> {
+    let schema_json = schema_json_for(config)?;
     if let Some(validator) = LIST_TOOLS_VALIDATOR.get() {
-        return validator;
+        return Ok(validator);
     }
-    let validator =
-        build_validator_for_def("ListToolsResult").expect("list tools validator compiles");
+    let validator = build_validator_for_def(schema_json, "ListToolsResult")
+        .expect("list tools validator compiles");
     let _ = LIST_TOOLS_VALIDATOR.set(validator);
-    LIST_TOOLS_VALIDATOR
+    Ok(LIST_TOOLS_VALIDATOR
         .get()
-        .expect("list tools validator initialized")
+        .expect("list tools validator initialized"))
 }
 
 #[inline(never)]
-fn call_tool_request_validator() -> &'static Validator {
+fn call_tool_request_validator(
+    config: &SchemaConfig,
+) -> Result<&'static Validator, SchemaError> {
+    let schema_json = schema_json_for(config)?;
     if let Some(validator) = CALL_TOOL_REQUEST_VALIDATOR.get() {
-        return validator;
+        return Ok(validator);
     }
-    let validator = build_validator_for_def("CallToolRequestParams")
+    let validator = build_validator_for_def(schema_json, "CallToolRequestParams")
         .expect("call tool request validator compiles");
     let _ = CALL_TOOL_REQUEST_VALIDATOR.set(validator);
-    CALL_TOOL_REQUEST_VALIDATOR
+    Ok(CALL_TOOL_REQUEST_VALIDATOR
         .get()
-        .expect("call tool request validator initialized")
+        .expect("call tool request validator initialized"))
 }
 
 #[inline(never)]
-fn build_validator_for_def(def_name: &str) -> Result<Validator, String> {
-    let schema: JsonValue = serde_json::from_str(MCP_SCHEMA).expect("MCP schema JSON parses");
+fn build_validator_for_def(schema_json: &str, def_name: &str) -> Result<Validator, String> {
+    let schema: JsonValue = serde_json::from_str(schema_json).expect("MCP schema JSON parses");
     let defs = schema
         .get("$defs")
         .cloned()
@@ -158,6 +168,13 @@ fn schema_id_for(schema: &JsonValue) -> JsonValue {
         .get("$schema")
         .cloned()
         .unwrap_or_else(|| JsonValue::String(DEFAULT_SCHEMA_ID.to_string()))
+}
+
+fn schema_json_for(config: &SchemaConfig) -> Result<&'static str, SchemaError> {
+    match &config.version {
+        SchemaVersion::V2025_11_25 => Ok(MCP_SCHEMA),
+        SchemaVersion::Other(value) => Err(SchemaError::UnsupportedSchemaVersion(value.clone())),
+    }
 }
 
 pub fn schema_version_label(version: &SchemaVersion) -> Cow<'_, str> {

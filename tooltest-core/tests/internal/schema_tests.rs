@@ -199,13 +199,16 @@ fn parse_list_tools_rejects_invalid_list_payload() {
 }
 
 #[test]
-fn schema_version_does_not_block_list_tools() {
+fn schema_version_rejects_list_tools() {
     let config = SchemaConfig {
         version: SchemaVersion::Other("2025-12-01".to_string()),
     };
     let payload = json!({ "tools": [] });
     let result = parse_list_tools(payload, &config);
-    assert!(result.is_ok());
+    assert!(matches!(
+        result,
+        Err(SchemaError::UnsupportedSchemaVersion(_))
+    ));
 }
 
 #[test]
@@ -221,7 +224,7 @@ fn parse_call_tool_request_uses_rmcp_type() {
 }
 
 #[test]
-fn parse_call_tool_request_ignores_schema_version() {
+fn parse_call_tool_request_rejects_unsupported_schema_version() {
     let config = SchemaConfig {
         version: SchemaVersion::Other("2025-12-01".to_string()),
     };
@@ -232,7 +235,10 @@ fn parse_call_tool_request_ignores_schema_version() {
         }
     });
     let result = parse_call_tool_request(payload, &config);
-    assert!(result.is_ok());
+    assert!(matches!(
+        result,
+        Err(SchemaError::UnsupportedSchemaVersion(_))
+    ));
 }
 
 #[test]
@@ -262,7 +268,7 @@ fn parse_call_tool_result_uses_rmcp_type() {
 }
 
 #[test]
-fn parse_call_tool_result_ignores_schema_version() {
+fn parse_call_tool_result_rejects_unsupported_schema_version() {
     let config = SchemaConfig {
         version: SchemaVersion::Other("2025-12-01".to_string()),
     };
@@ -273,7 +279,10 @@ fn parse_call_tool_result_ignores_schema_version() {
         "isError": false
     });
     let result = parse_call_tool_result(payload, &config);
-    assert!(result.is_ok());
+    assert!(matches!(
+        result,
+        Err(SchemaError::UnsupportedSchemaVersion(_))
+    ));
 }
 
 #[test]
@@ -311,6 +320,7 @@ fn schema_error_formats_messages() {
         SchemaError::InvalidListTools("bad".to_string()),
         SchemaError::InvalidCallToolRequest("bad".to_string()),
         SchemaError::InvalidCallToolResult("bad".to_string()),
+        SchemaError::UnsupportedSchemaVersion("bad".to_string()),
     ];
     for error in errors {
         let message = error.to_string();

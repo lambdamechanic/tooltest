@@ -27,18 +27,19 @@ fn parse_call_tool_request_payload_rejects_invalid_value() {
 
 #[test]
 fn validators_build_and_cache() {
-    let first = list_tools_validator();
-    let second = list_tools_validator();
+    let config = SchemaConfig::default();
+    let first = list_tools_validator(&config).expect("list tools validator");
+    let second = list_tools_validator(&config).expect("list tools validator");
     assert!(std::ptr::eq(first, second));
 
-    let first = call_tool_request_validator();
-    let second = call_tool_request_validator();
+    let first = call_tool_request_validator(&config).expect("call tool validator");
+    let second = call_tool_request_validator(&config).expect("call tool validator");
     assert!(std::ptr::eq(first, second));
 }
 
 #[test]
 fn build_validator_for_def_rejects_unknown_def() {
-    let error = build_validator_for_def("DefinitelyMissing").expect_err("error");
+    let error = build_validator_for_def(MCP_SCHEMA, "DefinitelyMissing").expect_err("error");
     assert!(error.contains("failed to compile MCP schema"));
 }
 

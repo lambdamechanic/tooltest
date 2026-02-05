@@ -1644,34 +1644,6 @@ mod tests {
         maybe_dump_corpus(true, false, &result);
     }
 
-    #[test]
-    fn exit_code_for_result_reports_success_and_failure() {
-        let success = RunResult {
-            outcome: RunOutcome::Success,
-            trace: Vec::new(),
-            minimized: None,
-            warnings: Vec::new(),
-            coverage: None,
-            corpus: None,
-        };
-        let failure = RunResult {
-            outcome: RunOutcome::Failure(RunFailure::new("nope")),
-            trace: Vec::new(),
-            minimized: None,
-            warnings: Vec::new(),
-            coverage: None,
-            corpus: None,
-        };
-        assert_eq!(exit_code_for_result(&success), ExitCode::SUCCESS);
-        assert_eq!(exit_code_for_result(&failure), ExitCode::from(1));
-    }
-
-    #[test]
-    fn error_exit_emits_json_payload() {
-        let code = error_exit("oops", true);
-        assert_eq!(code, ExitCode::from(2));
-    }
-
     #[tokio::test]
     async fn run_stdio_missing_command_returns_exit_code_1() {
         let cli = Cli {

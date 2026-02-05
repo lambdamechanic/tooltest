@@ -102,7 +102,18 @@ fn config_default_emits_default_tooltest_toml() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("# Tooltest lint configuration."));
     assert!(stdout.contains("version = 1"));
-    assert!(stdout.contains("no_crash"));
+    assert!(stdout.contains("id = \"no_crash\""));
+    assert!(stdout.contains("id = \"mcp_schema_min_version\""));
+    assert!(stdout.contains("id = \"missing_structured_content\""));
+    assert!(stdout.contains("level = \"error\""));
+    assert!(stdout.contains("level = \"warning\""));
+    assert!(stdout.contains("level = \"disabled\""));
+    assert!(stdout.contains("# Enable by setting level = \"warning\" or \"error\"."));
+    assert!(stdout.contains("https://json-schema.org/draft/2020-12/schema"));
+    assert!(stdout.contains("https://json-schema.org/draft/2019-09/schema"));
+    assert!(stdout.contains("http://json-schema.org/draft-07/schema"));
+    assert!(stdout.contains("http://json-schema.org/draft-06/schema"));
+    assert!(stdout.contains("http://json-schema.org/draft-04/schema"));
 }
 
 #[test]

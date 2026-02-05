@@ -286,6 +286,14 @@ mod tests {
         fs::write(path, contents).expect("write config");
     }
 
+    fn assert_lint_present(levels: &std::collections::HashMap<&str, LintLevel>, lint: &str) {
+        assert!(levels.contains_key(lint), "missing lint {lint}");
+    }
+
+    fn assert_allowlist_entry(allowlist: &std::collections::HashSet<String>, entry: &str) {
+        assert!(allowlist.contains(entry), "missing allowlist entry {entry}");
+    }
+
     #[test]
     fn repo_config_overrides_home_config() {
         let repo_root = temp_dir("repo-root");
@@ -654,6 +662,75 @@ level = "error"
         assert!(suite.has_enabled("missing_structured_content"));
         assert!(suite.has_enabled("coverage"));
         assert!(suite.has_enabled("no_crash"));
+    }
+
+    #[test]
+    fn default_config_includes_required_lints_and_defaults() {
+        let suite = parse_lint_suite(DEFAULT_TOOLTEST_TOML).expect("suite");
+        let mut levels = std::collections::HashMap::new();
+        let mut params_by_id = std::collections::HashMap::new();
+        for rule in suite.rules() {
+            let definition = rule.definition();
+            levels.insert(definition.id.as_str(), definition.level.clone());
+            if let Some(params) = definition.params.clone() {
+                params_by_id.insert(definition.id.as_str(), params);
+            }
+        }
+
+        let expected_lints = [
+            "no_crash",
+            "mcp_schema_min_version",
+            "missing_structured_content",
+            "max_tools",
+            "json_schema_dialect_compat",
+            "max_structured_content_bytes",
+            "coverage",
+        ];
+        for lint in expected_lints {
+            assert_lint_present(&levels, lint);
+        }
+
+        assert_eq!(levels["no_crash"], LintLevel::Error);
+        assert_eq!(levels["mcp_schema_min_version"], LintLevel::Warning);
+        assert_eq!(levels["missing_structured_content"], LintLevel::Warning);
+        assert_eq!(levels["max_tools"], LintLevel::Disabled);
+        assert_eq!(levels["json_schema_dialect_compat"], LintLevel::Disabled);
+        assert_eq!(levels["max_structured_content_bytes"], LintLevel::Disabled);
+        assert_eq!(levels["coverage"], LintLevel::Disabled);
+
+        let allowlist = params_by_id
+            .get("json_schema_dialect_compat")
+            .and_then(|params| params.get("allowlist"))
+            .and_then(|value| value.as_array())
+            .expect("allowlist");
+        let allowlist: std::collections::HashSet<_> = allowlist
+            .iter()
+            .filter_map(|value| value.as_str().map(|entry| entry.to_string()))
+            .collect();
+        let required = [
+            "https://json-schema.org/draft/2020-12/schema",
+            "https://json-schema.org/draft/2019-09/schema",
+            "http://json-schema.org/draft-07/schema",
+            "http://json-schema.org/draft-06/schema",
+            "http://json-schema.org/draft-04/schema",
+        ];
+        for entry in required {
+            assert_allowlist_entry(&allowlist, entry);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "missing lint missing-lint")]
+    fn assert_lint_present_panics_when_missing() {
+        let levels = std::collections::HashMap::new();
+        assert_lint_present(&levels, "missing-lint");
+    }
+
+    #[test]
+    #[should_panic(expected = "missing allowlist entry missing-schema")]
+    fn assert_allowlist_entry_panics_when_missing() {
+        let allowlist = std::collections::HashSet::new();
+        assert_allowlist_entry(&allowlist, "missing-schema");
     }
 
     #[test]

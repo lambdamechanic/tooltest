@@ -760,9 +760,6 @@ async fn run_with_transport_success_path() {
     )
     .await;
 
-    #[cfg(coverage)]
-    std::hint::black_box(&result);
-    #[cfg(not(coverage))]
     assert!(matches!(result.outcome, RunOutcome::Success));
 }
 
@@ -2752,10 +2749,10 @@ fn finalize_state_machine_result_includes_reject_context_on_abort() {
         &Rc::new(RefCell::new(None)),
         &[],
     );
-    #[cfg(coverage)]
-    std::hint::black_box(&result);
-    assert_failure(&result);
-    assert_failure_reason_contains(&result, "last rejection");
+    assert!(matches!(
+        &result.outcome,
+        RunOutcome::Failure(failure) if failure.reason.contains("last rejection")
+    ));
 }
 
 #[test]
@@ -2779,10 +2776,10 @@ fn finalize_state_machine_result_appends_reject_context() {
         &Rc::new(RefCell::new(None)),
         &[],
     );
-    #[cfg(coverage)]
-    std::hint::black_box(&result);
-    assert_failure(&result);
-    assert_failure_reason_contains(&result, "last rejection: context");
+    assert!(matches!(
+        &result.outcome,
+        RunOutcome::Failure(failure) if failure.reason.contains("last rejection: context")
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

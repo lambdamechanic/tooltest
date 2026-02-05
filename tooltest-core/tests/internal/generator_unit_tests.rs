@@ -209,9 +209,6 @@ fn state_machine_sequence_strategy_rejects_predicate_filtered_tools() {
         ..Default::default()
     };
     let result = state_machine_sequence_strategy(&[tool], Some(&predicate), &config, 1..=1);
-    #[cfg(coverage)]
-    std::hint::black_box(&result);
-    #[cfg(not(coverage))]
     assert!(matches!(result, Err(InvocationError::NoEligibleTools)));
 }
 
@@ -497,9 +494,6 @@ fn schema_value_strategy_rejects_invalid_ref() {
         .cloned()
         .expect("schema");
     let error = schema_value_strategy(&schema, &tool).expect_err("invalid ref");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -511,9 +505,6 @@ fn schema_value_strategy_rejects_invalid_allof_entry() {
         .cloned()
         .expect("schema");
     let error = schema_value_strategy(&schema, &tool).expect_err("invalid allOf");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -1080,9 +1071,6 @@ fn invocation_strategy_from_corpus_rejects_union_when_predicate_filters_all() {
     corpus.seed_strings(["alpha".to_string()]);
     let error = invocation_strategy_from_corpus(&[tool], Some(&predicate), &corpus, false)
         .expect_err("error");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::NoEligibleTools));
 }
 
@@ -1313,9 +1301,6 @@ fn input_object_strategy_rejects_invalid_ref() {
     let schema = tool.input_schema.as_ref();
     let error =
         input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect_err("error");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -1331,9 +1316,6 @@ fn input_object_strategy_rejects_empty_oneof() {
     let schema = tool.input_schema.as_ref();
     let error =
         input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect_err("error");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -1568,9 +1550,6 @@ fn resolve_object_schema_rejects_invalid_ref() {
         .cloned()
         .expect("schema");
     let error = resolve_object_schema(&schema, &tool).expect_err("error");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -1582,9 +1561,6 @@ fn resolve_object_schema_rejects_nested_invalid_ref() {
         .cloned()
         .expect("schema");
     let error = resolve_object_schema(&schema, &tool).expect_err("error");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -1975,23 +1951,12 @@ fn input_object_strategy_supports_oneof_branches() {
         }),
     );
     let schema = tool.input_schema.as_ref();
-    #[cfg(coverage)]
-    {
-        let strategy = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new());
-        std::hint::black_box(&strategy);
-    }
-    #[cfg(not(coverage))]
-    {
-        let strategy = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-            .expect("strategy");
-        let object = sample(strategy);
-        let has_vendor = object.contains_key("vendor");
-        let has_product = object.contains_key("product");
-        #[cfg(coverage)]
-        std::hint::black_box((has_vendor, has_product));
-        #[cfg(not(coverage))]
-        assert!(has_vendor || has_product);
-    }
+    let strategy =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect("strategy");
+    let object = sample(strategy);
+    let has_vendor = object.contains_key("vendor");
+    let has_product = object.contains_key("product");
+    assert!(has_vendor || has_product);
 }
 
 #[test]
@@ -2084,24 +2049,14 @@ fn input_object_strategy_supports_anyof_branches() {
     schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
     let schema = tool.input_schema.as_ref();
-    #[cfg(coverage)]
-    {
-        let strategy = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new());
-        std::hint::black_box(&strategy);
-        return;
-    }
-    #[cfg(not(coverage))]
-    {
-        let strategy = input_object_strategy_for_schema(schema, &tool, false, &HashSet::new())
-            .expect("strategy");
-        let object = sample(strategy);
-        let has_vendor = object.contains_key("vendor");
-        let has_product = object.contains_key("product");
-        assert!(has_vendor || has_product);
-    }
+    let strategy =
+        input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect("strategy");
+    let object = sample(strategy);
+    let has_vendor = object.contains_key("vendor");
+    let has_product = object.contains_key("product");
+    assert!(has_vendor || has_product);
 }
 
-#[cfg(coverage)]
 #[test]
 fn input_object_strategy_anyof_exercises_union_path() {
     let mut schema = JsonObject::new();
@@ -2119,9 +2074,15 @@ fn input_object_strategy_anyof_exercises_union_path() {
     any_of.push(JsonValue::Object(required_vendor));
     schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
-    let result =
-        input_object_strategy_for_schema(tool.input_schema.as_ref(), &tool, false, &HashSet::new());
-    std::hint::black_box(&result);
+    let strategy = input_object_strategy_for_schema(
+        tool.input_schema.as_ref(),
+        &tool,
+        false,
+        &HashSet::new(),
+    )
+    .expect("strategy");
+    let object = sample(strategy);
+    assert!(object.contains_key("vendor"));
 }
 
 #[test]
@@ -2154,9 +2115,6 @@ fn input_object_strategy_rejects_invalid_union_branch() {
     let schema = tool.input_schema.as_ref();
     let error =
         input_object_strategy_for_schema(schema, &tool, false, &HashSet::new()).expect_err("error");
-    #[cfg(coverage)]
-    std::hint::black_box(&error);
-    #[cfg(not(coverage))]
     assert!(matches!(error, InvocationError::UnsupportedSchema { .. }));
 }
 
@@ -2280,17 +2238,10 @@ fn schema_object_union_branches_supports_anyof() {
     insert_any_of(&mut schema, any_of.clone());
     insert_any_of(&mut schema, any_of);
     let result = schema_object_union_branches(&schema, &tool);
-    #[cfg(coverage)]
-    {
-        std::hint::black_box(&result);
-    }
-    #[cfg(not(coverage))]
-    {
-        let (kind, branches, base) = result.expect("result").expect("anyOf");
-        assert!(matches!(kind, ObjectUnionKind::AnyOf));
-        assert_eq!(branches.len(), 2);
-        assert!(base.get("anyOf").is_none());
-    }
+    let (kind, branches, base) = result.expect("result").expect("anyOf");
+    assert!(matches!(kind, ObjectUnionKind::AnyOf));
+    assert_eq!(branches.len(), 2);
+    assert!(base.get("anyOf").is_none());
 }
 
 #[test]

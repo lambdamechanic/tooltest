@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Preflight: block on open release-plz PRs
+      - name: Preflight: auto-clean open release-plz PRs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -40,15 +40,59 @@ jobs:
 
           echo "${prs_json}" | python3 - "${prefix}" <<'PY'
           import json
+          import os
           import sys
+          import urllib.request
+
           prefix = sys.argv[1]
           prs = json.load(sys.stdin)
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+
           matches = [pr for pr in prs if pr["head"]["ref"].startswith(prefix)]
-          if matches:
-              print(f"::error::Open release-plz PRs found (prefix '{prefix}'). Close/delete them to avoid update conflicts.")
-              for pr in matches:
-                  print(f"- #{pr['number']} {pr['head']['ref']} {pr['html_url']}")
-              sys.exit(1)
+          if not matches:
+              sys.exit(0)
+
+          print(f"::group::Auto-clean {len(matches)} open release-plz PR(s)")
+          for pr in matches:
+              number = pr["number"]
+              head_ref = pr["head"]["ref"]
+              head_repo = pr["head"]["repo"]["full_name"]
+
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/pulls/{number}",
+                  method="PATCH",
+                  data=json.dumps({"state": "closed"}).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              with urllib.request.urlopen(req) as resp:
+                  if resp.status not in (200, 201):
+                      raise SystemExit(f"Failed to close PR #{number}: {resp.status}")
+              print(f"Closed PR #{number} ({head_ref})")
+
+              if head_repo != repo:
+                  print(f"Skipping branch delete for forked repo {head_repo}")
+                  continue
+
+              delete_req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/git/refs/heads/{head_ref}",
+                  method="DELETE",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(delete_req) as resp:
+                      if resp.status not in (200, 204):
+                          raise SystemExit(f"Failed to delete branch {head_ref}: {resp.status}")
+              except urllib.error.HTTPError as err:
+                  raise SystemExit(f"Failed to delete branch {head_ref}: {err.code}") from err
+              print(f"Deleted branch {head_ref}")
+          print("::endgroup::")
           PY
       - uses: release-plz/action@v0.5
         env:

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::NaiveDate;
 use serde_json::json;
 
+use crate::output_schema::compile_output_schema;
 use crate::{
     CoverageRule, LintDefinition, LintFinding, LintLevel, LintPhase, LintRule, ListLintContext,
     ResponseLintContext, RunLintContext,
@@ -180,6 +181,46 @@ impl LintRule for JsonSchemaDialectCompatLint {
                 {
                     findings.push(finding);
                 }
+            }
+        }
+        findings
+    }
+}
+
+/// Lint: reports output schemas that fail to compile.
+#[derive(Clone, Debug)]
+pub struct OutputSchemaCompileLint {
+    definition: LintDefinition,
+}
+
+impl OutputSchemaCompileLint {
+    pub fn new(definition: LintDefinition) -> Self {
+        Self { definition }
+    }
+}
+
+impl LintRule for OutputSchemaCompileLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_list(&self, context: &ListLintContext<'_>) -> Vec<LintFinding> {
+        let mut findings = Vec::new();
+        for tool in context.tools {
+            let Some(schema) = tool.output_schema.as_ref() else {
+                continue;
+            };
+            if let Err(error) = compile_output_schema(schema.as_ref()) {
+                findings.push(
+                    LintFinding::new(format!(
+                        "tool '{}' output schema failed to compile",
+                        tool.name.as_ref()
+                    ))
+                    .with_details(json!({
+                        "tool": tool.name.as_ref(),
+                        "error": error,
+                    })),
+                );
             }
         }
         findings

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::lint::{LintConfigSource, LintDefinition, LintLevel, LintPhase, LintSuite};
 use crate::lints::{
     CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
-    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
 };
 use crate::CoverageRule;
 
@@ -81,7 +81,8 @@ pub(crate) fn load_lint_suite_from(
         return load_lint_suite_from_path(path)
             .map(|suite| suite.with_source(LintConfigSource::Home));
     }
-    parse_lint_suite(DEFAULT_TOOLTEST_TOML).map(|suite| suite.with_source(LintConfigSource::Default))
+    parse_lint_suite(DEFAULT_TOOLTEST_TOML)
+        .map(|suite| suite.with_source(LintConfigSource::Default))
 }
 
 fn load_lint_suite_with_env(
@@ -144,6 +145,13 @@ fn build_lint_rule(entry: &LintConfigEntry) -> Result<std::sync::Arc<dyn crate::
             Ok(std::sync::Arc::new(JsonSchemaDialectCompatLint::new(
                 definition,
                 params.allowlist,
+            )))
+        }
+        "output_schema_compile" => {
+            reject_params(entry, "output_schema_compile")?;
+            let definition = definition_with_params(entry, LintPhase::List, None);
+            Ok(std::sync::Arc::new(OutputSchemaCompileLint::new(
+                definition,
             )))
         }
         "max_structured_content_bytes" => {
@@ -295,6 +303,12 @@ mod tests {
     }
 
     #[test]
+    fn default_tooltest_toml_exposes_defaults() {
+        let contents = default_tooltest_toml();
+        assert!(contents.contains("no_crash"));
+    }
+
+    #[test]
     fn repo_config_overrides_home_config() {
         let repo_root = temp_dir("repo-root");
         let nested = repo_root.join("nested");
@@ -352,6 +366,21 @@ max = 1
         let suite = load_lint_suite_from(&root, Some(&home_config)).expect("suite");
         assert!(suite.has_enabled("max_tools"));
         assert_eq!(suite.source(), LintConfigSource::Home);
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(home_root);
+    }
+
+    #[test]
+    fn home_config_ignored_when_missing() {
+        let root = temp_dir("home-missing");
+        fs::create_dir_all(&root).expect("create dir");
+        let home_root = temp_dir("missing-home-config");
+        let home_config = home_root.join(".config").join("tooltest.toml");
+
+        let suite = load_lint_suite_from(&root, Some(&home_config)).expect("suite");
+        assert!(suite.has_enabled("no_crash"));
+        assert_eq!(suite.source(), LintConfigSource::Default);
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(home_root);
@@ -644,6 +673,10 @@ id = "missing_structured_content"
 level = "warning"
 
 [[lints]]
+id = "output_schema_compile"
+level = "warning"
+
+[[lints]]
 id = "coverage"
 level = "error"
 [lints.params]
@@ -660,6 +693,7 @@ level = "error"
         assert!(suite.has_enabled("json_schema_dialect_compat"));
         assert!(suite.has_enabled("max_structured_content_bytes"));
         assert!(suite.has_enabled("missing_structured_content"));
+        assert!(suite.has_enabled("output_schema_compile"));
         assert!(suite.has_enabled("coverage"));
         assert!(suite.has_enabled("no_crash"));
     }
@@ -681,6 +715,7 @@ level = "error"
             "no_crash",
             "mcp_schema_min_version",
             "missing_structured_content",
+            "output_schema_compile",
             "max_tools",
             "json_schema_dialect_compat",
             "max_structured_content_bytes",
@@ -693,6 +728,7 @@ level = "error"
         assert_eq!(levels["no_crash"], LintLevel::Error);
         assert_eq!(levels["mcp_schema_min_version"], LintLevel::Warning);
         assert_eq!(levels["missing_structured_content"], LintLevel::Warning);
+        assert_eq!(levels["output_schema_compile"], LintLevel::Warning);
         assert_eq!(levels["max_tools"], LintLevel::Disabled);
         assert_eq!(levels["json_schema_dialect_compat"], LintLevel::Disabled);
         assert_eq!(levels["max_structured_content_bytes"], LintLevel::Disabled);
@@ -830,6 +866,22 @@ id = "missing_structured_content"
 level = "warning"
 [lints.params]
 max = 1
+"#,
+        )
+        .err()
+        .expect("error");
+        assert!(error.contains("does not accept params"));
+    }
+
+    #[test]
+    fn parse_lint_suite_rejects_params_for_output_schema_compile() {
+        let error = parse_lint_suite(
+            r#"
+[[lints]]
+id = "output_schema_compile"
+level = "warning"
+[lints.params]
+extra = 1
 "#,
         )
         .err()

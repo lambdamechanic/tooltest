@@ -1032,7 +1032,7 @@ async fn run_with_session_reports_invalid_output_schema() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_uncompilable_output_schema() {
+async fn run_with_session_skips_uncompilable_output_schema() {
     let tool = tool_with_schemas(
         "echo",
         json!({ "type": "object" }),
@@ -1055,11 +1055,7 @@ async fn run_with_session_reports_uncompilable_output_schema() {
     )
     .await;
 
-    assert!(matches!(result.outcome, RunOutcome::Failure(_)));
-    assert!(matches!(
-        result.trace.as_slice(),
-        [TraceEntry::ListTools { .. }]
-    ));
+    assert!(matches!(result.outcome, RunOutcome::Success));
 }
 
 #[tokio::test(flavor = "multi_thread")]

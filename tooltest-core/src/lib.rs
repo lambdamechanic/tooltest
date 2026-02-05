@@ -34,7 +34,7 @@ pub use lint::{
 pub use lint_config::{default_tooltest_toml, load_lint_suite};
 pub use lints::{
     CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
-    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 pub use rmcp::model::{

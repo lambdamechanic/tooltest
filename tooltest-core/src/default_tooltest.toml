@@ -21,6 +21,11 @@ id = "missing_structured_content"
 level = "warning"
 
 [[lints]]
+# Warn when output schemas fail to compile (validation is skipped).
+id = "output_schema_compile"
+level = "warning"
+
+[[lints]]
 # Limit tools/list payload size by count.
 # Enable by setting level = "warning" or "error".
 id = "max_tools"

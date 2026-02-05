@@ -51,23 +51,17 @@ pub(super) fn collect_schema_keyword_warnings(
     }
 }
 
-pub(super) fn build_output_validators(
-    tools: &[Tool],
-) -> Result<BTreeMap<String, jsonschema::Validator>, String> {
+pub(super) fn build_output_validators(tools: &[Tool]) -> BTreeMap<String, jsonschema::Validator> {
     let mut validators = BTreeMap::new();
     for tool in tools {
         let Some(schema) = &tool.output_schema else {
             continue;
         };
-        let validator = compile_output_schema(schema.as_ref()).map_err(|error| {
-            format!(
-                "failed to compile output schema for tool '{}': {error}",
-                tool.name.as_ref()
-            )
-        })?;
-        validators.insert(tool.name.to_string(), validator);
+        if let Ok(validator) = compile_output_schema(schema.as_ref()) {
+            validators.insert(tool.name.to_string(), validator);
+        }
     }
-    Ok(validators)
+    validators
 }
 
 pub(super) fn validate_tools(tools: Vec<Tool>, config: &SchemaConfig) -> Result<Vec<Tool>, String> {

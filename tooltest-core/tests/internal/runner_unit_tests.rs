@@ -17,7 +17,7 @@ use crate::generator::{
 };
 use crate::lints::{
     CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
-    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 use crate::{
@@ -944,7 +944,7 @@ async fn run_with_session_applies_pre_run_hook_env() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_invalid_output_schema() {
+async fn run_with_session_warns_on_invalid_output_schema() {
     let tool = tool_with_schemas(
         "echo",
         json!({ "type": "object" }),
@@ -957,8 +957,19 @@ async fn run_with_session_reports_invalid_output_schema() {
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
 
-    let result = run_with_session(&session, &RunConfig::new(), RunnerOptions::default()).await;
-    assert_failure_reason_contains(&result, "failed to compile output schema");
+    let lint = OutputSchemaCompileLint::new(LintDefinition::new(
+        "output_schema_compile",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+
+    let result = run_with_session(&session, &config, RunnerOptions::default()).await;
+    assert_success(&result);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.code == RunWarningCode::lint("output_schema_compile")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1721,9 +1732,10 @@ async fn run_result_surfaces_schema_and_lint_warnings() {
     )
     .await;
     assert_success(&result);
-    assert!(result.warnings.iter().any(|warning| {
-        warning.code == RunWarningCode::schema_unsupported_keyword()
-    }));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| { warning.code == RunWarningCode::schema_unsupported_keyword() }));
     assert!(result
         .warnings
         .iter()
@@ -1998,6 +2010,41 @@ fn json_schema_dialect_compat_allows_output_schema() {
         tools: &[tool],
     });
     assert!(findings.is_empty());
+}
+
+#[test]
+fn output_schema_compile_lint_flags_invalid_schema() {
+    let lint = OutputSchemaCompileLint::new(LintDefinition::new(
+        "output_schema_compile",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let bad = tool_with_schemas(
+        "bad",
+        json!({ "type": "object" }),
+        Some(json!({ "type": "object", "properties": { "bad": 5 } })),
+    );
+    let missing = tool_with_schemas("missing", json!({ "type": "object" }), None);
+    let good = tool_with_schemas(
+        "good",
+        json!({ "type": "object" }),
+        Some(json!({ "type": "object" })),
+    );
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 3,
+        protocol_version: None,
+        tools: &[bad, missing, good],
+    });
+    assert_eq!(findings.len(), 1);
+    let details = findings[0].details.as_ref().expect("details");
+    assert_eq!(
+        details.get("tool").and_then(|value| value.as_str()),
+        Some("bad")
+    );
+    assert!(details
+        .get("error")
+        .and_then(|value| value.as_str())
+        .is_some());
 }
 
 #[test]
@@ -2790,7 +2837,7 @@ async fn runner_transport_ignores_unhandled_request() {
 #[test]
 fn build_output_validators_skips_missing_schema() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let validators = build_output_validators(&[tool]).expect("validators");
+    let validators = build_output_validators(&[tool]);
     assert!(validators.is_empty());
 }
 
@@ -2804,19 +2851,28 @@ fn build_output_validators_accepts_valid_schema() {
             "properties": { "status": { "type": "string" } }
         })),
     );
-    let validators = build_output_validators(&[tool]).expect("validators");
+    let validators = build_output_validators(&[tool]);
     assert!(validators.contains_key("echo"));
 }
 
 #[test]
-fn build_output_validators_reports_invalid_schema() {
-    let tool = tool_with_schemas(
-        "echo",
+fn build_output_validators_skips_invalid_schema() {
+    let invalid = tool_with_schemas(
+        "bad",
         json!({ "type": "object" }),
         Some(json!({ "type": "object", "properties": { "bad": 5 } })),
     );
-    let error = build_output_validators(&[tool]).expect_err("error");
-    assert!(error.contains("failed to compile output schema"));
+    let valid = tool_with_schemas(
+        "good",
+        json!({ "type": "object" }),
+        Some(json!({
+            "type": "object",
+            "properties": { "status": { "type": "string" } }
+        })),
+    );
+    let validators = build_output_validators(&[invalid, valid]);
+    assert!(!validators.contains_key("bad"));
+    assert!(validators.contains_key("good"));
 }
 
 #[test]
@@ -2852,9 +2908,9 @@ fn collect_schema_keyword_warnings_reports_draft_defs() {
     ];
     let warnings = collect_schema_warnings(&tools);
     assert_eq!(warnings.len(), 3);
-    assert!(warnings.iter().all(|warning| {
-        warning.code == RunWarningCode::schema_unsupported_keyword()
-    }));
+    assert!(warnings
+        .iter()
+        .all(|warning| { warning.code == RunWarningCode::schema_unsupported_keyword() }));
 }
 
 #[test]

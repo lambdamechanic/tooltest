@@ -84,19 +84,7 @@ pub(super) async fn prepare_run(
         ));
     }
 
-    let validators = match build_output_validators(&tools) {
-        Ok(validators) => validators,
-        Err(reason) => {
-            return Err(failure_result(
-                RunFailure::new(reason),
-                prelude_trace.clone(),
-                None,
-                warnings.clone(),
-                None,
-                None,
-            ))
-        }
-    };
+    let validators = build_output_validators(&tools);
 
     let original_count = tools.len();
     let tools = filter_tools(tools, config.tool_filter.as_ref());

@@ -141,8 +141,7 @@ impl TooltestInput {
                 .with_tool_filter(filters.name_predicate);
         }
 
-        let lints =
-            lint_suite.map_err(|error| format!("lint config error: {error}"))?;
+        let lints = lint_suite.map_err(|error| format!("lint config error: {error}"))?;
         Ok(run_config.with_lints(lints))
     }
 

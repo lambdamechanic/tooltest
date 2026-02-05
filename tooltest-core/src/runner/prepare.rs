@@ -9,7 +9,7 @@ use crate::{
 use super::linting::evaluate_list_phase;
 use super::pre_run::run_pre_run_hook;
 use super::result::failure_result;
-use super::schema::{build_output_validators, collect_schema_warnings, validate_tools};
+use super::schema::{build_output_validators, validate_tools};
 
 pub(super) struct PreparedRun {
     pub(super) tools: Vec<PreparedTool>,
@@ -64,7 +64,7 @@ pub(super) async fn prepare_run(
             ))
         }
     };
-    let mut warnings = collect_schema_warnings(&tools);
+    let mut warnings = Vec::new();
     if let Some(failure) = evaluate_list_phase(
         list_lints,
         &ListLintContext {

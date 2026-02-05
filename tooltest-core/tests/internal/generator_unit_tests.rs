@@ -2074,13 +2074,9 @@ fn input_object_strategy_anyof_exercises_union_path() {
     any_of.push(JsonValue::Object(required_vendor));
     schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
-    let strategy = input_object_strategy_for_schema(
-        tool.input_schema.as_ref(),
-        &tool,
-        false,
-        &HashSet::new(),
-    )
-    .expect("strategy");
+    let strategy =
+        input_object_strategy_for_schema(tool.input_schema.as_ref(), &tool, false, &HashSet::new())
+            .expect("strategy");
     let object = sample(strategy);
     assert!(object.contains_key("vendor"));
 }

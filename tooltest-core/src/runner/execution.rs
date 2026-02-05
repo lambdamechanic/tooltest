@@ -371,8 +371,8 @@ mod tests {
         CallToolResult, CoverageReport, RunOutcome, RunWarning, ToolInvocation, UncallableToolCall,
     };
     use proptest::test_runner::TestError;
-    use std::collections::BTreeMap;
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
     use std::rc::Rc;
 
     fn outcome_is_failure(outcome: &RunOutcome) -> bool {

@@ -4,10 +4,7 @@ use super::assertions::{
 };
 use super::coverage::{map_uncallable_reason, CoverageTracker};
 use super::result::{finalize_state_machine_result, FailureContext};
-use super::schema::{
-    build_output_validators, collect_schema_keyword_warnings, collect_schema_warnings,
-    validate_tools,
-};
+use super::schema::{build_output_validators, validate_tools};
 use super::state_machine::{execute_state_machine_sequence, StateMachineExecution};
 use super::transport::{run_with_transport, ConnectFuture};
 use super::{run_http, run_stdio, run_with_session};
@@ -16,8 +13,9 @@ use crate::generator::{
     StateMachineSequence, UncallableReason,
 };
 use crate::lints::{
-    CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
-    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
+    CoverageLint, JsonSchemaDialectCompatLint, JsonSchemaKeywordCompatLint,
+    MaxStructuredContentBytesLint, MaxToolsLint, McpSchemaMinVersionLint,
+    MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 use crate::{
@@ -1718,7 +1716,13 @@ async fn run_result_surfaces_schema_and_lint_warnings() {
         definition: LintDefinition::new("list_warn", LintPhase::List, LintLevel::Warning),
         findings: vec![LintFinding::new("heads up")],
     };
-    let config = RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let keyword_lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let config =
+        RunConfig::new().with_lints(LintSuite::new(vec![Arc::new(lint), Arc::new(keyword_lint)]));
     let result = run_with_session(
         &session,
         &config,
@@ -1732,7 +1736,7 @@ async fn run_result_surfaces_schema_and_lint_warnings() {
     assert!(result
         .warnings
         .iter()
-        .any(|warning| { warning.code == RunWarningCode::schema_unsupported_keyword() }));
+        .any(|warning| { warning.code == RunWarningCode::lint("json_schema_keyword_compat") }));
     assert!(result
         .warnings
         .iter()
@@ -2873,7 +2877,7 @@ fn build_output_validators_skips_invalid_schema() {
 }
 
 #[test]
-fn collect_schema_keyword_warnings_reports_draft_defs() {
+fn json_schema_keyword_compat_reports_draft_defs() {
     let tools = vec![
         tool_with_schemas(
             "draft07",
@@ -2903,37 +2907,128 @@ fn collect_schema_keyword_warnings_reports_draft_defs() {
             None,
         ),
     ];
-    let warnings = collect_schema_warnings(&tools);
-    assert_eq!(warnings.len(), 3);
-    assert!(warnings
+    let lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 3);
+    assert!(findings
         .iter()
-        .all(|warning| { warning.code == RunWarningCode::schema_unsupported_keyword() }));
+        .all(|finding| finding.message.contains("draft-0")));
 }
 
 #[test]
-fn collect_schema_keyword_warnings_reports_direct_draft_defs() {
-    let tool = tool_with_schemas(
-        "draft07",
+fn json_schema_keyword_compat_reports_output_schema_defs() {
+    let tools = vec![tool_with_schemas(
+        "draft07-output",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+        }),
+        Some(json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft-07/schema",
+            "$defs": { "payload": { "type": "string" } }
+        })),
+    )];
+    let lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("output"));
+}
+
+#[test]
+fn json_schema_keyword_compat_ignores_modern_output_schema() {
+    let tools = vec![tool_with_schemas(
+        "draft2020-output",
         json!({
             "type": "object",
             "$schema": "http://json-schema.org/draft-07/schema#",
             "$defs": { "payload": { "type": "string" } }
         }),
-        None,
-    );
-    let mut warnings = Vec::new();
-    collect_schema_keyword_warnings(
-        &tool,
-        "input schema",
-        tool.input_schema.as_ref(),
-        &mut warnings,
-    );
-    assert_eq!(warnings.len(), 1);
+        Some(json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": { "payload": { "type": "string" } }
+        })),
+    )];
+    let lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("input"));
 }
 
 #[test]
-fn collect_schema_keyword_warnings_ignores_modern_defs() {
-    let tool = tool_with_schemas(
+fn json_schema_keyword_compat_ignores_missing_defs() {
+    let tools = vec![tool_with_schemas(
+        "draft07-no-defs",
+        json!({
+            "type": "object",
+            "$schema": "http://json-schema.org/draft-07/schema#"
+        }),
+        None,
+    )];
+    let lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn json_schema_keyword_compat_defaults_schema_id_when_missing() {
+    let tools = vec![tool_with_schemas(
+        "missing-schema-id",
+        json!({
+            "type": "object",
+            "$defs": { "payload": { "type": "string" } }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn json_schema_keyword_compat_ignores_modern_defs() {
+    let tools = vec![tool_with_schemas(
         "draft2020",
         json!({
             "type": "object",
@@ -2941,15 +3036,18 @@ fn collect_schema_keyword_warnings_ignores_modern_defs() {
             "$defs": { "payload": { "type": "string" } }
         }),
         None,
-    );
-    let mut warnings = Vec::new();
-    collect_schema_keyword_warnings(
-        &tool,
-        "input schema",
-        tool.input_schema.as_ref(),
-        &mut warnings,
-    );
-    assert!(warnings.is_empty());
+    )];
+    let lint = JsonSchemaKeywordCompatLint::new(LintDefinition::new(
+        "json_schema_keyword_compat",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
 }
 
 #[test]

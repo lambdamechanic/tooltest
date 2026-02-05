@@ -142,7 +142,8 @@ fn coverage_rule_percent_called_builder() {
 fn run_warning_code_extracts_lint_id() {
     let lint = RunWarningCode::lint("missing_structured_content");
     assert_eq!(lint.lint_id(), Some("missing_structured_content"));
-    assert_eq!(RunWarningCode::schema_unsupported_keyword().lint_id(), None);
+    let other = RunWarningCode("custom_warning".to_string());
+    assert_eq!(other.lint_id(), None);
 }
 
 #[test]

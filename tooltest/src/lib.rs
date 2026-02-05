@@ -1423,7 +1423,7 @@ mod tests {
             trace: Vec::new(),
             minimized: None,
             warnings: vec![RunWarning {
-                code: RunWarningCode::schema_unsupported_keyword(),
+                code: RunWarningCode("custom_warning".to_string()),
                 message: "schema warning".to_string(),
                 tool: Some("echo".to_string()),
                 details: None,
@@ -1434,7 +1434,7 @@ mod tests {
 
         let output = format_run_result_human(&result);
         assert!(output.contains("Warnings:"));
-        assert!(output.contains("schema_unsupported_keyword"));
+        assert!(output.contains("custom_warning"));
         assert!(output.contains("schema warning"));
         assert!(output.contains("echo"));
     }
@@ -1468,7 +1468,7 @@ mod tests {
             trace: Vec::new(),
             minimized: None,
             warnings: vec![RunWarning {
-                code: RunWarningCode::schema_unsupported_keyword(),
+                code: RunWarningCode("custom_warning".to_string()),
                 message: "standalone warning".to_string(),
                 tool: None,
                 details: None,
@@ -1589,10 +1589,7 @@ mod tests {
         let path = std::path::Path::new("/dev/full");
         assert!(path.exists());
 
-        let _ = fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("open");
+        let _ = fs::OpenOptions::new().write(true).open(path).expect("open");
         assert!(TraceFileSink::new(path.to_str().expect("path")).is_err());
     }
 

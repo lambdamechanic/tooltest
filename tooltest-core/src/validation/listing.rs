@@ -129,7 +129,7 @@ where
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tooltest_test_support::{FaultyListToolsTransport, ListToolsTransport, stub_tool};
+    use tooltest_test_support::{stub_tool, FaultyListToolsTransport, ListToolsTransport};
 
     #[test]
     fn list_tools_error_display_formats() {

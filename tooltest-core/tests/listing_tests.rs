@@ -56,7 +56,11 @@ async fn list_tools_http_succeeds_with_streamable_server() {
         ..Default::default()
     };
     let service: StreamableHttpService<HttpTestServer, LocalSessionManager> =
-        StreamableHttpService::new(|| Ok(HttpTestServer::new()), Default::default(), http_config);
+        StreamableHttpService::new(
+            || Ok(HttpTestServer::new()),
+            Default::default(),
+            http_config,
+        );
     let app = Router::new().nest_service("/mcp", service);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

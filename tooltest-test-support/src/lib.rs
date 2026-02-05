@@ -415,10 +415,7 @@ mod tests {
     fn list_tools_transport_ignores_unhandled_requests() {
         run_async(async {
             let mut transport = ListToolsTransport::new(vec![stub_tool("echo")]);
-            transport
-                .send(list_prompts_message(3))
-                .await
-                .expect("send");
+            transport.send(list_prompts_message(3)).await.expect("send");
             {
                 let mut receiver = transport.responses.lock().await;
                 assert!(receiver.try_recv().is_err());

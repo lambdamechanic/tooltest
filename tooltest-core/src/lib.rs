@@ -20,6 +20,7 @@ mod lints;
 mod output_schema;
 mod runner;
 pub mod schema;
+mod schema_dialect;
 pub mod session;
 mod validation;
 
@@ -33,8 +34,9 @@ pub use lint::{
 };
 pub use lint_config::{default_tooltest_toml, load_lint_suite};
 pub use lints::{
-    CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
-    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
+    CoverageLint, JsonSchemaDialectCompatLint, JsonSchemaKeywordCompatLint,
+    MaxStructuredContentBytesLint, MaxToolsLint, McpSchemaMinVersionLint,
+    MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 pub use rmcp::model::{
@@ -588,15 +590,10 @@ pub trait TraceSink: Send + Sync {
 pub struct RunWarningCode(pub String);
 
 impl RunWarningCode {
-    pub const SCHEMA_UNSUPPORTED_KEYWORD: &'static str = "schema_unsupported_keyword";
     #[deprecated(
         note = "Use RunWarningCode::lint(\"missing_structured_content\"); this warning code is lint-only."
     )]
     pub const MISSING_STRUCTURED_CONTENT: &'static str = "missing_structured_content";
-
-    pub fn schema_unsupported_keyword() -> Self {
-        Self(Self::SCHEMA_UNSUPPORTED_KEYWORD.to_string())
-    }
 
     #[deprecated(
         note = "Use RunWarningCode::lint(\"missing_structured_content\"); this warning code is lint-only."

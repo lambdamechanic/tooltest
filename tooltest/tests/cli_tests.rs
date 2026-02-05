@@ -1530,7 +1530,7 @@ fn state_machine_schema_warning_emits_human_warning_code() {
     assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
     assert!(stdout.contains("Warnings:"), "stdout: {stdout}");
     assert!(
-        stdout.contains("schema_unsupported_keyword"),
+        stdout.contains("lint.json_schema_keyword_compat"),
         "stdout: {stdout}"
     );
 }

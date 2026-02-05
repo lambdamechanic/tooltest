@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::lint::{LintConfigSource, LintDefinition, LintLevel, LintPhase, LintSuite};
 use crate::lints::{
-    CoverageLint, JsonSchemaDialectCompatLint, MaxStructuredContentBytesLint, MaxToolsLint,
-    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
+    CoverageLint, JsonSchemaDialectCompatLint, JsonSchemaKeywordCompatLint,
+    MaxStructuredContentBytesLint, MaxToolsLint, McpSchemaMinVersionLint,
+    MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
 };
 use crate::CoverageRule;
 
@@ -145,6 +146,13 @@ fn build_lint_rule(entry: &LintConfigEntry) -> Result<std::sync::Arc<dyn crate::
             Ok(std::sync::Arc::new(JsonSchemaDialectCompatLint::new(
                 definition,
                 params.allowlist,
+            )))
+        }
+        "json_schema_keyword_compat" => {
+            reject_params(entry, "json_schema_keyword_compat")?;
+            let definition = definition_with_params(entry, LintPhase::List, None);
+            Ok(std::sync::Arc::new(JsonSchemaKeywordCompatLint::new(
+                definition,
             )))
         }
         "output_schema_compile" => {
@@ -663,6 +671,10 @@ level = "warning"
 allowlist = ["http://json-schema.org/draft-04/schema"]
 
 [[lints]]
+id = "json_schema_keyword_compat"
+level = "warning"
+
+[[lints]]
 id = "max_structured_content_bytes"
 level = "warning"
 [lints.params]
@@ -691,6 +703,7 @@ level = "error"
         assert!(suite.has_enabled("max_tools"));
         assert!(suite.has_enabled("mcp_schema_min_version"));
         assert!(suite.has_enabled("json_schema_dialect_compat"));
+        assert!(suite.has_enabled("json_schema_keyword_compat"));
         assert!(suite.has_enabled("max_structured_content_bytes"));
         assert!(suite.has_enabled("missing_structured_content"));
         assert!(suite.has_enabled("output_schema_compile"));
@@ -718,6 +731,7 @@ level = "error"
             "output_schema_compile",
             "max_tools",
             "json_schema_dialect_compat",
+            "json_schema_keyword_compat",
             "max_structured_content_bytes",
             "coverage",
         ];
@@ -731,6 +745,7 @@ level = "error"
         assert_eq!(levels["output_schema_compile"], LintLevel::Warning);
         assert_eq!(levels["max_tools"], LintLevel::Disabled);
         assert_eq!(levels["json_schema_dialect_compat"], LintLevel::Disabled);
+        assert_eq!(levels["json_schema_keyword_compat"], LintLevel::Warning);
         assert_eq!(levels["max_structured_content_bytes"], LintLevel::Disabled);
         assert_eq!(levels["coverage"], LintLevel::Disabled);
 
@@ -866,6 +881,22 @@ id = "missing_structured_content"
 level = "warning"
 [lints.params]
 max = 1
+"#,
+        )
+        .err()
+        .expect("error");
+        assert!(error.contains("does not accept params"));
+    }
+
+    #[test]
+    fn parse_lint_suite_rejects_params_for_schema_keyword_compat() {
+        let error = parse_lint_suite(
+            r#"
+[[lints]]
+id = "json_schema_keyword_compat"
+level = "warning"
+[lints.params]
+extra = 1
 "#,
         )
         .err()

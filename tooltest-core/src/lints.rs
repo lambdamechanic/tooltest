@@ -4,16 +4,15 @@ use chrono::NaiveDate;
 use serde_json::json;
 
 use crate::output_schema::compile_output_schema;
+pub use crate::schema_dialect::DEFAULT_JSON_SCHEMA_DIALECT;
+use crate::schema_dialect::{
+    normalize_schema_id, DRAFT4_HTTP, DRAFT4_HTTPS, DRAFT6_HTTP, DRAFT6_HTTPS, DRAFT7_HTTP,
+    DRAFT7_HTTPS,
+};
 use crate::{
     CoverageRule, LintDefinition, LintFinding, LintLevel, LintPhase, LintRule, ListLintContext,
     ResponseLintContext, RunLintContext,
 };
-
-pub const DEFAULT_JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
-
-fn normalize_schema_id(value: &str) -> String {
-    value.trim().trim_end_matches('#').to_string()
-}
 
 fn schema_id_from_object(schema: &crate::JsonObject) -> Option<&str> {
     schema.get("$schema").and_then(|value| value.as_str())
@@ -128,7 +127,7 @@ impl JsonSchemaDialectCompatLint {
     pub fn new(definition: LintDefinition, allowlist: impl IntoIterator<Item = String>) -> Self {
         let allowlist = allowlist
             .into_iter()
-            .map(|entry| normalize_schema_id(&entry))
+            .map(|entry| normalize_schema_id(&entry).to_string())
             .collect();
         Self {
             definition,
@@ -145,7 +144,7 @@ impl JsonSchemaDialectCompatLint {
         let declared = schema_id_from_object(schema)
             .map(normalize_schema_id)
             .unwrap_or_else(|| normalize_schema_id(DEFAULT_JSON_SCHEMA_DIALECT));
-        if self.allowlist.contains(&declared) {
+        if self.allowlist.contains(declared) {
             return None;
         }
         Some(
@@ -163,6 +162,79 @@ impl JsonSchemaDialectCompatLint {
 }
 
 impl LintRule for JsonSchemaDialectCompatLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_list(&self, context: &ListLintContext<'_>) -> Vec<LintFinding> {
+        let mut findings = Vec::new();
+        for tool in context.tools {
+            if let Some(finding) =
+                self.check_schema(tool.name.as_ref(), tool.input_schema.as_ref(), "input")
+            {
+                findings.push(finding);
+            }
+            if let Some(schema) = tool.output_schema.as_ref() {
+                if let Some(finding) =
+                    self.check_schema(tool.name.as_ref(), schema.as_ref(), "output")
+                {
+                    findings.push(finding);
+                }
+            }
+        }
+        findings
+    }
+}
+
+/// Lint: reports `$defs` usage with legacy JSON Schema drafts.
+#[derive(Clone, Debug)]
+pub struct JsonSchemaKeywordCompatLint {
+    definition: LintDefinition,
+}
+
+impl JsonSchemaKeywordCompatLint {
+    pub fn new(definition: LintDefinition) -> Self {
+        Self { definition }
+    }
+
+    fn is_legacy_schema_id(schema_id: &str) -> bool {
+        matches!(
+            schema_id,
+            DRAFT7_HTTP | DRAFT7_HTTPS | DRAFT6_HTTP | DRAFT6_HTTPS | DRAFT4_HTTP | DRAFT4_HTTPS
+        )
+    }
+
+    fn check_schema(
+        &self,
+        tool_name: &str,
+        schema: &crate::JsonObject,
+        label: &str,
+    ) -> Option<LintFinding> {
+        if !schema.contains_key("$defs") {
+            return None;
+        }
+        let declared = schema_id_from_object(schema)
+            .map(normalize_schema_id)
+            .unwrap_or(DEFAULT_JSON_SCHEMA_DIALECT);
+        if !Self::is_legacy_schema_id(declared) {
+            return None;
+        }
+        Some(
+            LintFinding::new(format!(
+                "tool '{}' {label} schema declares {declared} but uses '$defs'; draft-07 and earlier use 'definitions'",
+                tool_name
+            ))
+            .with_details(json!({
+                "tool": tool_name,
+                "schema": declared,
+                "schema_label": label,
+                "keyword": "$defs",
+            })),
+        )
+    }
+}
+
+impl LintRule for JsonSchemaKeywordCompatLint {
     fn definition(&self) -> &LintDefinition {
         &self.definition
     }

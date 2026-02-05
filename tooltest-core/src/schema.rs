@@ -9,7 +9,7 @@ use serde_json::Value as JsonValue;
 use crate::{SchemaConfig, SchemaVersion};
 
 const SUPPORTED_SCHEMA_VERSION: &str = "2025-11-25";
-const DEFAULT_SCHEMA_ID: &str = "https://json-schema.org/draft/2020-12/schema";
+const DEFAULT_SCHEMA_ID: &str = crate::schema_dialect::DEFAULT_SCHEMA_ID;
 // Source: https://github.com/modelcontextprotocol/specification/tree/main/schema/2025-11-25
 // Update: run `scripts/update-mcp-schema.sh 2025-11-25`.
 // Provenance: see tooltest-core/resources/mcp-schema-2025-11-25.source.txt.
@@ -131,9 +131,7 @@ fn list_tools_validator(config: &SchemaConfig) -> Result<&'static Validator, Sch
 }
 
 #[inline(never)]
-fn call_tool_request_validator(
-    config: &SchemaConfig,
-) -> Result<&'static Validator, SchemaError> {
+fn call_tool_request_validator(config: &SchemaConfig) -> Result<&'static Validator, SchemaError> {
     let schema_json = schema_json_for(config)?;
     if let Some(validator) = CALL_TOOL_REQUEST_VALIDATOR.get() {
         return Ok(validator);

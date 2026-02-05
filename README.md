@@ -192,10 +192,11 @@ Filter eligible tools by name (exact, case-sensitive) using `--tool-allowlist` a
 `coverage_allowlist`/`coverage_blocklist` in the state-machine config, which only affect
 coverage warnings and validation.
 
-Run a shell command before tool schema validation and before every generated sequence (including
-shrink/minimization) using `--pre-run-hook "<shell command>"`. If the hook exits non-zero, the run
-fails with `code: pre_run_hook_failed` and structured details (exit code, stdout, stderr, signal).
-For stdio runs, the hook uses the same `--env` and `--cwd` settings as the MCP server process.
+Run a shell command after the initial `tools/list` and before tool schema validation, and before
+every generated sequence (including shrink/minimization) using `--pre-run-hook "<shell command>"`.
+The hook does not run before the first `tools/list`. If the hook exits non-zero, the run fails with
+`code: pre_run_hook_failed` and structured details (exit code, stdout, stderr, signal). For stdio
+runs, the hook uses the same `--env` and `--cwd` settings as the MCP server process.
 
 ### In-band tool errors
 
@@ -249,8 +250,9 @@ Log newly mined corpus values after each tool response (stderr):
 
 ### Pre-run command hook
 
-Run a command before each proptest case to reset external state. The hook expects a JSON argv array.
-Non-zero exit codes fail the run and include stdout/stderr in the failure details.
+Run a command after the initial `tools/list` (before tool schema validation) and before each
+proptest case to reset external state. The hook expects a JSON argv array. Non-zero exit codes
+fail the run and include stdout/stderr in the failure details.
 
 ```bash
 --pre-run-hook '["/bin/sh","-c","./scripts/reset-state.sh"]'

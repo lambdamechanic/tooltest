@@ -1,4 +1,8 @@
+use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ctor::ctor;
 
@@ -7,6 +11,41 @@ fn init_test_logger() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default())
         .is_test(true)
         .try_init();
+}
+
+pub fn temp_path(name: &str) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("tooltest-{name}-{pid}-{nanos}-{counter}"))
+}
+
+#[derive(Debug)]
+pub struct EnvVarGuard {
+    key: OsString,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    pub fn set<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) -> Self {
+        let key = key.as_ref().to_os_string();
+        let previous = std::env::var_os(&key);
+        std::env::set_var(&key, value.as_ref());
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(&self.key, value),
+            None => std::env::remove_var(&self.key),
+        }
+    }
 }
 
 use rmcp::model::{

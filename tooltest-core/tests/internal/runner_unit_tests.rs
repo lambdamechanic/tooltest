@@ -35,15 +35,12 @@ use serde_json::{json, Number, Value as JsonValue};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::tests::test_support::connect_runner_transport;
-use tooltest_test_support::{stub_tool, tool_with_schemas, RunnerTransport};
+use tooltest_test_support::{stub_tool, temp_path, tool_with_schemas, RunnerTransport};
 
 #[derive(Clone)]
 struct StaticLint {
@@ -212,17 +209,6 @@ fn coverage_report_for(counts: &[(&str, u64)]) -> CoverageReport {
 
 fn is_list_tools(entry: &TraceEntry) -> bool {
     matches!(entry, TraceEntry::ListTools { .. })
-}
-
-fn temp_path(name: &str) -> PathBuf {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    std::env::temp_dir().join(format!("tooltest-core-{name}-{pid}-{nanos}-{counter}"))
 }
 
 #[cfg(not(coverage))]

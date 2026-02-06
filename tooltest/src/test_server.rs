@@ -334,6 +334,7 @@ fn init_response(id: RequestId) -> ServerJsonRpcMessage {
 mod tests {
     use super::{select_lines, tool_stub_with_name};
     use std::env;
+    use tooltest_test_support::EnvVarGuard;
 
     #[test]
     fn select_lines_accepts_stdin_when_allowed() {
@@ -366,35 +367,9 @@ mod tests {
         assert_eq!(line, "ok");
     }
 
-    struct EnvGuard {
-        key: &'static str,
-        value: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = env::var(key).ok();
-            env::set_var(key, value);
-            Self {
-                key,
-                value: previous,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.value {
-                env::set_var(self.key, value);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
     #[test]
     fn tool_stub_includes_defs_when_warning_env_set() {
-        let _guard = EnvGuard::set("TOOLTEST_SCHEMA_DEFS_WARNING", "1");
+        let _guard = EnvVarGuard::set("TOOLTEST_SCHEMA_DEFS_WARNING", "1");
         let tool = tool_stub_with_name("echo");
         assert!(tool.input_schema.contains_key("$schema"));
         assert!(tool.input_schema.contains_key("$defs"));
@@ -405,7 +380,7 @@ mod tests {
         let key = "TOOLTEST_SCHEMA_DEFS_WARNING_TEST";
         env::set_var(key, "original");
         {
-            let _guard = EnvGuard::set(key, "after");
+            let _guard = EnvVarGuard::set(key, "after");
             assert_eq!(env::var(key).ok().as_deref(), Some("after"));
         }
         assert_eq!(env::var(key).ok().as_deref(), Some("original"));

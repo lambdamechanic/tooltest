@@ -20,14 +20,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Number};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::test_support::connect_runner_transport;
 use crate::lints::CoverageLint;
-use tooltest_test_support::{tool_with_schemas, RunnerTransport};
+use tooltest_test_support::{temp_path, tool_with_schemas, RunnerTransport};
 
 #[derive(Clone)]
 struct HttpTestServer {
@@ -73,19 +70,6 @@ fn stdio_server_config() -> Option<StdioConfig> {
             .insert("LLVM_PROFILE_FILE".to_string(), "/dev/null".to_string());
         config
     })
-}
-
-fn temp_hook_path(tag: &str) -> PathBuf {
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let mut path = std::env::temp_dir();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    path.push(format!("tooltest-pre-run-{tag}-{pid}-{nanos}-{counter}"));
-    path
 }
 
 fn coverage_lint_suite(rules: Vec<CoverageRule>) -> LintSuite {
@@ -152,7 +136,7 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let path = temp_hook_path("per-case");
+    let path = temp_path("pre-run-per-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
     let config = RunConfig::new()
         .with_pre_run_hook(hook)
@@ -178,7 +162,7 @@ async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let path = temp_hook_path("zero-case");
+    let path = temp_path("pre-run-zero-case");
     let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
     let config = RunConfig::new()
         .with_pre_run_hook(hook)
@@ -243,7 +227,7 @@ async fn run_with_session_reports_pre_run_hook_start_error() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let missing_cwd = temp_hook_path("missing-hook-cwd");
+    let missing_cwd = temp_path("pre-run-missing-hook-cwd");
     let mut hook = PreRunHook::new("echo ok");
     hook.cwd = Some(missing_cwd.to_string_lossy().into_owned());
     let config = RunConfig::new().with_pre_run_hook(hook);
@@ -276,7 +260,7 @@ async fn run_with_session_reports_pre_run_hook_failure_for_zero_case_runs() {
     let transport = RunnerTransport::new(tool, response);
     let driver = connect_runner_transport(transport).await.expect("connect");
 
-    let marker = temp_hook_path("zero-case-fail");
+    let marker = temp_path("pre-run-zero-case-fail");
     let hook = PreRunHook::new(format!(
         "if [ -f \"{marker}\" ]; then exit 3; else printf 'hook' > \"{marker}\"; fi",
         marker = marker.display()

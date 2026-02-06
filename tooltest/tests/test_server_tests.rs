@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::sync::Mutex;
 use tooltest_test_support as _;
+use tooltest_test_support::EnvVarGuard;
 
 #[path = "../src/test_server.rs"]
 mod test_server;
@@ -36,29 +37,6 @@ const EXPECTATION_ENV_KEYS: &[&str] = &[
 fn reset_env() {
     for key in EXPECTATION_ENV_KEYS {
         std::env::remove_var(key);
-    }
-}
-
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: String) -> Self {
-        let previous = std::env::var(key).ok();
-        std::env::set_var(key, value);
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(value) = &self.previous {
-            std::env::set_var(self.key, value);
-        } else {
-            std::env::remove_var(self.key);
-        }
     }
 }
 
@@ -160,7 +138,7 @@ fn tools_from_list_response(response: ServerJsonRpcMessage) -> Vec<String> {
 fn main_reports_expectation_failure() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("EXPECT_ARG", "definitely-missing-arg".to_string());
+    let _guard = EnvVarGuard::set("EXPECT_ARG", "definitely-missing-arg");
     let mut lines = Vec::<io::Result<String>>::new().into_iter();
     let mut output = Vec::new();
     let result = run(&mut lines, &mut output);
@@ -172,7 +150,7 @@ fn env_guard_restores_previous_value() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
     std::env::set_var("EXPECT_ARG", "alpha");
-    let _guard = EnvGuard::set("EXPECT_ARG", "beta".to_string());
+    let _guard = EnvVarGuard::set("EXPECT_ARG", "beta");
     assert_eq!(std::env::var("EXPECT_ARG").ok().as_deref(), Some("beta"));
     drop(_guard);
     assert_eq!(std::env::var("EXPECT_ARG").ok().as_deref(), Some("alpha"));
@@ -183,7 +161,7 @@ fn env_guard_removes_when_unset() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
     std::env::remove_var("EXPECT_ARG");
-    let _guard = EnvGuard::set("EXPECT_ARG", "beta".to_string());
+    let _guard = EnvVarGuard::set("EXPECT_ARG", "beta");
     assert!(std::env::var("EXPECT_ARG").is_ok());
     drop(_guard);
     assert!(std::env::var("EXPECT_ARG").is_err());
@@ -193,7 +171,7 @@ fn env_guard_removes_when_unset() {
 fn validate_expectations_errors_on_missing_arg() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("EXPECT_ARG", "nope".to_string());
+    let _guard = EnvVarGuard::set("EXPECT_ARG", "nope");
     let result = validate_expectations();
     assert!(result.is_err());
 }
@@ -203,7 +181,7 @@ fn validate_expectations_accepts_existing_arg() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
     let arg = std::env::args().next().unwrap_or_default();
-    let _guard = EnvGuard::set("EXPECT_ARG", arg);
+    let _guard = EnvVarGuard::set("EXPECT_ARG", arg.as_str());
     let result = validate_expectations();
     assert!(result.is_ok());
 }
@@ -212,7 +190,7 @@ fn validate_expectations_accepts_existing_arg() {
 fn validate_expectations_errors_on_cwd_mismatch() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("EXPECT_CWD", "/definitely/wrong".to_string());
+    let _guard = EnvVarGuard::set("EXPECT_CWD", "/definitely/wrong");
     let result = validate_expectations();
     assert!(result.is_err());
 }
@@ -221,8 +199,8 @@ fn validate_expectations_errors_on_cwd_mismatch() {
 fn validate_expectations_errors_on_unreadable_cwd() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("EXPECT_CWD", "/missing".to_string());
-    let _force = EnvGuard::set("FORCE_CWD_ERROR", "1".to_string());
+    let _guard = EnvVarGuard::set("EXPECT_CWD", "/missing");
+    let _force = EnvVarGuard::set("FORCE_CWD_ERROR", "1");
     let result = validate_expectations();
     assert!(result.is_err());
 }
@@ -232,7 +210,8 @@ fn validate_expectations_accepts_matching_cwd() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
     let cwd = std::env::current_dir().expect("cwd");
-    let _guard = EnvGuard::set("EXPECT_CWD", cwd.to_string_lossy().to_string());
+    let cwd = cwd.to_string_lossy();
+    let _guard = EnvVarGuard::set("EXPECT_CWD", cwd.as_ref());
     let result = validate_expectations();
     assert!(result.is_ok());
 }
@@ -241,7 +220,7 @@ fn validate_expectations_accepts_matching_cwd() {
 fn validate_expectations_rejects_invalid_value_type() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "nope".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_VALUE_TYPE", "nope");
     let result = validate_expectations();
     assert!(result.is_err());
 }
@@ -250,7 +229,7 @@ fn validate_expectations_rejects_invalid_value_type() {
 fn handle_message_includes_extra_tool_from_env() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_EXTRA_TOOL", "extra".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_TEST_SERVER_EXTRA_TOOL", "extra");
     let response = handle_message(list_tools_message()).expect("response");
     let tools = tools_from_list_response(response);
     assert!(tools.contains(&"extra".to_string()));
@@ -261,10 +240,7 @@ fn handle_message_includes_extra_tool_from_env() {
 fn handle_message_includes_multiple_extra_tools_from_env() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set(
-        "TOOLTEST_TEST_SERVER_EXTRA_TOOL",
-        "alpha, ,bravo".to_string(),
-    );
+    let _guard = EnvVarGuard::set("TOOLTEST_TEST_SERVER_EXTRA_TOOL", "alpha, ,bravo");
     let response = handle_message(list_tools_message()).expect("response");
     let tools = tools_from_list_response(response);
     assert!(tools.contains(&"alpha".to_string()));
@@ -276,7 +252,7 @@ fn handle_message_includes_multiple_extra_tools_from_env() {
 fn handle_message_includes_invalid_tool_when_enabled() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_INVALID_TOOL", "1".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_TEST_SERVER_INVALID_TOOL", "1");
     let response = handle_message(list_tools_message()).expect("response");
     let tools = tools_from_list_response(response);
     assert!(tools.contains(&"invalid".to_string()));
@@ -293,7 +269,7 @@ fn invalid_tool_stub_builds_string_input_schema() {
 fn validate_expectations_accepts_valid_value_type() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_VALUE_TYPE", "number".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_VALUE_TYPE", "number");
     let result = validate_expectations();
     assert!(result.is_ok());
 }
@@ -302,7 +278,7 @@ fn validate_expectations_accepts_valid_value_type() {
 fn current_dir_errors_when_forced() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _force = EnvGuard::set("FORCE_CWD_ERROR", "1".to_string());
+    let _force = EnvVarGuard::set("FORCE_CWD_ERROR", "1");
     assert!(current_dir().is_err());
 }
 
@@ -322,7 +298,7 @@ fn run_succeeds_with_empty_input() {
 fn run_main_succeeds_with_empty_input() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1");
     run_main();
 }
 
@@ -330,7 +306,7 @@ fn run_main_succeeds_with_empty_input() {
 fn run_main_accepts_in_memory_stdin() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_STDIN", "".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_TEST_SERVER_STDIN", "");
     run_main();
 }
 
@@ -346,9 +322,9 @@ fn run_main_succeeds_with_default_stdin_in_coverage() {
 fn run_main_reports_failure_without_exiting() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _no_exit = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_EXIT", "1".to_string());
-    let _no_stdin = EnvGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1".to_string());
-    let _missing_arg = EnvGuard::set("EXPECT_ARG", "missing-arg".to_string());
+    let _no_exit = EnvVarGuard::set("TOOLTEST_TEST_SERVER_NO_EXIT", "1");
+    let _no_stdin = EnvVarGuard::set("TOOLTEST_TEST_SERVER_NO_STDIN", "1");
+    let _missing_arg = EnvVarGuard::set("EXPECT_ARG", "missing-arg");
     let result = std::panic::catch_unwind(run_main);
     assert!(result.is_err());
 }
@@ -410,7 +386,7 @@ fn run_server_handles_call_tool_request() {
 fn run_server_handles_call_tool_request_with_error() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_TEST_SERVER_CALL_ERROR", "1".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_TEST_SERVER_CALL_ERROR", "1");
     let mut lines = vec![Ok(call_tool_line())].into_iter();
     let mut output = Vec::new();
     run_server(&mut lines, &mut output);
@@ -461,7 +437,7 @@ fn run_server_handles_initialize_request() {
 fn tool_stub_requires_value_when_env_set() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_REQUIRE_VALUE", "1".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_REQUIRE_VALUE", "1");
     let tool = tool_stub();
     let required = tool
         .input_schema
@@ -474,7 +450,7 @@ fn tool_stub_requires_value_when_env_set() {
 fn tool_stub_uses_invalid_output_schema_when_env_set() {
     let _lock = ENV_LOCK.lock().expect("lock env");
     reset_env();
-    let _guard = EnvGuard::set("TOOLTEST_INVALID_OUTPUT_SCHEMA", "1".to_string());
+    let _guard = EnvVarGuard::set("TOOLTEST_INVALID_OUTPUT_SCHEMA", "1");
     let tool = tool_stub();
     let output_schema = tool.output_schema.as_ref().expect("output schema");
     let output_type = output_schema.get("type").and_then(|value| value.as_str());

@@ -656,14 +656,13 @@ mod tests {
     use serde::Serialize;
     use serde_json::{json, Value as JsonValue};
     use std::collections::BTreeMap;
-    use std::ffi::OsString;
     use std::sync::OnceLock;
     use tokio::sync::mpsc;
     use tooltest_core::{
         RunFailure, RunOutcome, RunResult, TooltestInput, TooltestStdioTarget, TooltestTarget,
         TooltestTargetStdio,
     };
-    use tooltest_test_support::tool_with_schemas;
+    use tooltest_test_support::{tool_with_schemas, EnvVarGuard};
 
     struct TestTransport {
         incoming: mpsc::UnboundedReceiver<RxJsonRpcMessage<RoleServer>>,
@@ -1008,31 +1007,6 @@ mod tests {
     fn tooltest_server_command() -> String {
         let _guard = tooltest_server_env_lock().lock().expect("server env lock");
         tooltest_server_command_locked()
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        value: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self {
-                key,
-                value: previous,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.value {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
     }
 
     fn stdio_env() -> BTreeMap<String, String> {

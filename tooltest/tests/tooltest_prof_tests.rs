@@ -5,15 +5,7 @@ mod tooltest_prof_tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        env::temp_dir().join(format!("tooltest-prof-{name}-{nanos}"))
-    }
+    use tooltest_test_support::temp_path;
 
     fn write_executable(path: &Path, contents: &str) {
         fs::write(path, contents).expect("write script");
@@ -28,7 +20,7 @@ mod tooltest_prof_tests {
 
     #[test]
     fn tooltest_prof_passes_args_and_output() {
-        let root = temp_dir("passes");
+        let root = temp_path("prof-passes");
         fs::create_dir_all(&root).expect("create temp dir");
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -82,7 +74,7 @@ mod tooltest_prof_tests {
 
     #[test]
     fn tooltest_prof_uses_default_output_when_unset() {
-        let root = temp_dir("default-output");
+        let root = temp_path("prof-default-output");
         fs::create_dir_all(&root).expect("create temp dir");
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -132,7 +124,7 @@ mod tooltest_prof_tests {
 
     #[test]
     fn tooltest_prof_uses_override_tooltest_path() {
-        let root = temp_dir("override-tooltest");
+        let root = temp_path("prof-override-tooltest");
         fs::create_dir_all(&root).expect("create temp dir");
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -184,7 +176,7 @@ mod tooltest_prof_tests {
 
     #[test]
     fn tooltest_prof_rejects_directory_path() {
-        let root = temp_dir("rejects-dir");
+        let root = temp_path("prof-rejects-dir");
         fs::create_dir_all(&root).expect("create temp dir");
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("create bin dir");

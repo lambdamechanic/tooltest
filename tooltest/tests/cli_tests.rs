@@ -2,9 +2,9 @@ use chrono::DateTime;
 use std::env;
 use std::fs;
 use std::process::{Command, Output, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tooltest_core::{RunOutcome, RunResult, TraceEntry};
 use tooltest_test_support as _;
+use tooltest_test_support::temp_path;
 
 fn tooltest_command(args: &[&str]) -> Command {
     let tooltest = env!("CARGO_BIN_EXE_tooltest");
@@ -79,14 +79,6 @@ fn flaky_server() -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    std::env::temp_dir().join(format!("tooltest-{name}-{nanos}"))
 }
 
 fn external_tests_enabled() -> bool {
@@ -867,7 +859,7 @@ fn cli_reports_pre_run_hook_failure_during_execution() {
     let Some(server) = test_server() else {
         return;
     };
-    let dir = temp_dir("pre-run-fail-late");
+    let dir = temp_path("pre-run-fail-late");
     fs::create_dir_all(&dir).expect("create dir");
     let marker = dir.join("hook-marker");
     let hook = format!(
@@ -901,7 +893,7 @@ fn cli_pre_run_hook_inherits_stdio_env_and_cwd() {
     let Some(server) = test_server() else {
         return;
     };
-    let cwd = temp_dir("pre-run-hook");
+    let cwd = temp_path("pre-run-hook");
     fs::create_dir_all(&cwd).expect("create cwd");
     let cwd_string = cwd.to_string_lossy().into_owned();
     let hook = r#"test "$HOOK_ENV" = "expected" && test "$(pwd)" = "$HOOK_CWD""#;
@@ -933,7 +925,7 @@ fn cli_runs_pre_run_hook_before_validation() {
     let Some(server) = test_server() else {
         return;
     };
-    let dir = temp_dir("pre-run-before-validation");
+    let dir = temp_path("pre-run-before-validation");
     fs::create_dir_all(&dir).expect("create dir");
     let marker = dir.join("hook-ran");
     let hook = format!("printf 'hook' > \"{}\"", marker.display());
@@ -958,7 +950,7 @@ fn run_stdio_reports_success_with_env_and_cwd() {
     let Some(server) = test_server() else {
         return;
     };
-    let cwd = temp_dir("run-stdio");
+    let cwd = temp_path("run-stdio");
     fs::create_dir_all(&cwd).expect("create cwd");
     let expected_arg = "--expected";
     let output = Command::new(env!("CARGO_BIN_EXE_tooltest"))
@@ -990,7 +982,7 @@ fn tooltest_dogfoods_tooltest_stdio() {
     let Some(server) = flaky_server() else {
         return;
     };
-    let config_dir = temp_dir("dogfood");
+    let config_dir = temp_path("dogfood");
     fs::create_dir_all(&config_dir).expect("create temp dir");
     fs::create_dir_all(config_dir.join(".git")).expect("create git dir");
     fs::write(
@@ -1254,7 +1246,7 @@ fn tooltest_dogfoods_tooltest_stdio_via_shell_wrapper() {
         return;
     };
     use std::os::unix::fs::PermissionsExt;
-    let config_dir = temp_dir("dogfood-shell");
+    let config_dir = temp_path("dogfood-shell");
     fs::create_dir_all(&config_dir).expect("create temp dir");
     fs::create_dir_all(config_dir.join(".git")).expect("create git dir");
     fs::write(
@@ -1726,7 +1718,7 @@ fn trace_all_emits_trace_lines() {
     let Some(server) = test_server() else {
         return;
     };
-    let dir = temp_dir("trace-all");
+    let dir = temp_path("trace-all");
     fs::create_dir_all(&dir).expect("create trace dir");
     let trace_path = dir.join("trace.jsonl");
     let trace_path_str = trace_path.to_str().expect("trace path");
@@ -1763,7 +1755,7 @@ fn trace_all_rejects_directory_path() {
     let Some(server) = test_server() else {
         return;
     };
-    let dir = temp_dir("trace-all-dir");
+    let dir = temp_path("trace-all-dir");
     fs::create_dir_all(&dir).expect("create trace dir");
     let dir_path = dir.to_str().expect("trace dir path");
     let output = run_tooltest(&["--trace-all", dir_path, "stdio", "--command", server]);
@@ -1856,7 +1848,7 @@ fn stdio_command_sets_cwd() {
     let Some(server) = test_server() else {
         return;
     };
-    let dir = temp_dir("cwd");
+    let dir = temp_path("cwd");
     fs::create_dir_all(&dir).expect("create temp dir");
     let dir_string = dir.to_string_lossy().into_owned();
     let env_value = format!("EXPECT_CWD={dir_string}");

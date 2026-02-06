@@ -282,16 +282,7 @@ fn home_config_path_from(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        let pid = std::process::id();
-        std::env::temp_dir().join(format!("tooltest-lint-{name}-{pid}-{nanos}"))
-    }
+    use tooltest_test_support::temp_path;
 
     fn write_config(path: &Path, contents: &str) {
         let parent = path
@@ -318,7 +309,7 @@ mod tests {
 
     #[test]
     fn repo_config_overrides_home_config() {
-        let repo_root = temp_dir("repo-root");
+        let repo_root = temp_path("lint-repo-root");
         let nested = repo_root.join("nested");
         fs::create_dir_all(repo_root.join(".git")).expect("git dir");
         fs::create_dir_all(&nested).expect("nested");
@@ -334,7 +325,7 @@ max = 1
 "#,
         );
 
-        let home_root = temp_dir("home");
+        let home_root = temp_path("lint-home");
         let home_config = home_root.join(".config").join("tooltest.toml");
         write_config(
             &home_config,
@@ -356,9 +347,9 @@ level = "warning"
 
     #[test]
     fn home_config_used_when_repo_missing() {
-        let root = temp_dir("home-only");
+        let root = temp_path("lint-home-only");
         fs::create_dir_all(&root).expect("create dir");
-        let home_root = temp_dir("home-config");
+        let home_root = temp_path("lint-home-config");
         let home_config = home_root.join(".config").join("tooltest.toml");
         write_config(
             &home_config,
@@ -381,9 +372,9 @@ max = 1
 
     #[test]
     fn home_config_ignored_when_missing() {
-        let root = temp_dir("home-missing");
+        let root = temp_path("lint-home-missing");
         fs::create_dir_all(&root).expect("create dir");
-        let home_root = temp_dir("missing-home-config");
+        let home_root = temp_path("lint-missing-home-config");
         let home_config = home_root.join(".config").join("tooltest.toml");
 
         let suite = load_lint_suite_from(&root, Some(&home_config)).expect("suite");
@@ -396,7 +387,7 @@ max = 1
 
     #[test]
     fn repo_search_stops_at_git_root() {
-        let root = temp_dir("git-root");
+        let root = temp_path("lint-git-root");
         let repo_root = root.join("repo");
         let nested = repo_root.join("nested");
         fs::create_dir_all(repo_root.join(".git")).expect("git dir");
@@ -417,7 +408,7 @@ max = 1
 
     #[test]
     fn missing_config_uses_default() {
-        let root = temp_dir("default");
+        let root = temp_path("lint-default");
         fs::create_dir_all(&root).expect("create dir");
         let suite = load_lint_suite_from(&root, None).expect("suite");
         assert!(suite.has_enabled("no_crash"));
@@ -429,7 +420,7 @@ max = 1
 
     #[test]
     fn repo_config_ignored_without_git_root() {
-        let root = temp_dir("no-git-root");
+        let root = temp_path("lint-no-git-root");
         let nested = root.join("nested");
         fs::create_dir_all(&nested).expect("nested");
         write_config(
@@ -443,7 +434,7 @@ max = 1
 "#,
         );
 
-        let home_root = temp_dir("no-git-home");
+        let home_root = temp_path("lint-no-git-home");
         let home_config = home_root.join(".config").join("tooltest.toml");
         write_config(
             &home_config,
@@ -557,7 +548,7 @@ level = "error"
 
     #[test]
     fn home_config_path_reads_home() {
-        let temp = temp_dir("home-env");
+        let temp = temp_path("lint-home-env");
         fs::create_dir_all(&temp).expect("create dir");
         let path = home_config_path_from(Some(temp.clone().into())).expect("home path");
         assert!(path.ends_with(".config/tooltest.toml"));
@@ -571,7 +562,7 @@ level = "error"
 
     #[test]
     fn write_config_creates_parent_directory() {
-        let root = temp_dir("write-config");
+        let root = temp_path("lint-write-config");
         let config_path = root.join("nested").join("tooltest.toml");
         write_config(
             &config_path,
@@ -588,7 +579,7 @@ level = "error"
     #[test]
     fn write_config_handles_simple_path() {
         let config_path = PathBuf::from("tooltest.toml");
-        let root = temp_dir("write-relative");
+        let root = temp_path("lint-write-relative");
         fs::create_dir_all(&root).expect("create dir");
         let full_path = root.join(&config_path);
         write_config(
@@ -620,7 +611,7 @@ level = "error"
 
     #[test]
     fn load_lint_suite_from_path_reports_missing_file() {
-        let root = temp_dir("missing-file");
+        let root = temp_path("lint-missing-file");
         fs::create_dir_all(&root).expect("create dir");
         let missing = root.join("tooltest.toml");
         let error = load_lint_suite_from_path(&missing).err().expect("error");
@@ -630,7 +621,7 @@ level = "error"
 
     #[test]
     fn load_lint_suite_from_path_reports_invalid_config() {
-        let root = temp_dir("invalid-config");
+        let root = temp_path("lint-invalid-config");
         fs::create_dir_all(&root).expect("create dir");
         let config_path = root.join("tooltest.toml");
         write_config(

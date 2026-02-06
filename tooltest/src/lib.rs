@@ -506,11 +506,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::env;
-    use std::path::PathBuf;
     use std::process::{Command as ProcessCommand, Stdio};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::OnceLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::{CommandFactory, Parser};
     use rmcp::model::{
@@ -526,7 +523,8 @@ mod tests {
         SchemaConfig, SessionDriver, StdioConfig, ToolInvocation, TraceEntry, UncallableToolCall,
     };
     use tooltest_test_support::{
-        stub_tool, FaultyListToolsTransport, ListToolsTransport, TransportError,
+        stub_tool, temp_path, EnvVarGuard, FaultyListToolsTransport, ListToolsTransport,
+        TransportError,
     };
 
     fn expect_stdio_target(target: TooltestTarget) -> TooltestStdioTarget {
@@ -543,47 +541,10 @@ mod tests {
         }
     }
 
-    fn temp_path(name: &str) -> PathBuf {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        std::env::temp_dir().join(format!("tooltest-{name}-{pid}-{nanos}-{counter}"))
-    }
-
     static MCP_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
     fn mcp_env_lock() -> &'static tokio::sync::Mutex<()> {
         MCP_ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-    }
-
-    struct EnvVarGuard {
-        key: String,
-        previous: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &str, value: &str) -> Self {
-            let previous = env::var(key).ok();
-            env::set_var(key, value);
-            Self {
-                key: key.to_string(),
-                previous,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
-                env::set_var(&self.key, previous);
-            } else {
-                env::remove_var(&self.key);
-            }
-        }
     }
 
     #[test]
@@ -740,13 +701,12 @@ mod tests {
 
     #[test]
     fn parse_state_machine_config_reads_file() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("tooltest-state-machine.json");
+        let path = temp_path("state-machine.json");
         fs::write(&path, r#"{"seed_numbers":[2],"seed_strings":["beta"]}"#).expect("write config");
         let config = parse_state_machine_config(&format!("@{}", path.display())).expect("config");
         assert_eq!(config.seed_numbers.len(), 1);
         assert_eq!(config.seed_strings.len(), 1);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -757,8 +717,7 @@ mod tests {
 
     #[test]
     fn parse_state_machine_config_rejects_missing_file() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("tooltest-missing.json");
+        let path = temp_path("missing.json");
         let error = parse_state_machine_config(&format!("@{}", path.display())).expect_err("error");
         assert!(error.contains("failed to read state-machine-config"));
     }
@@ -802,7 +761,7 @@ mod tests {
             .await
             .is_err());
 
-        let missing = std::env::temp_dir().join("tooltest-missing-stdio");
+        let missing = temp_path("missing-stdio");
         let stdio = StdioConfig::new(missing.display().to_string());
         assert!(list_tools_stdio(&stdio, &SchemaConfig::default())
             .await

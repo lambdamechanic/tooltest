@@ -274,20 +274,70 @@ pub(crate) fn invocation_from_corpus_seeded(
     lenient_sourcing: bool,
     seed: u64,
 ) -> Result<Option<ToolInvocation>, InvocationError> {
+    Ok(invocation_plan_from_corpus_seeded(tools, predicate, corpus, lenient_sourcing, seed)?
+        .map(|(_tool_index, invocation)| invocation))
+}
+
+pub(crate) fn invocation_plan_from_corpus_seeded(
+    tools: &[PreparedTool],
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+    seed: u64,
+) -> Result<Option<(usize, ToolInvocation)>, InvocationError> {
     validate_state_machine_tools(tools)?;
     let Some(strategy) =
-        invocation_strategy_from_corpus(tools, predicate, corpus, lenient_sourcing)?
+        invocation_plan_strategy_from_corpus(tools, predicate, corpus, lenient_sourcing)?
     else {
         return Ok(None);
     };
     let mut runner = seeded_test_runner(seed);
-    Ok(invocation_from_strategy(&strategy, &mut runner))
+    Ok(invocation_plan_from_strategy(&strategy, &mut runner))
+}
+
+fn invocation_plan_strategy_from_corpus(
+    tools: &[PreparedTool],
+    predicate: Option<&ToolPredicate>,
+    corpus: &ValueCorpus,
+    lenient_sourcing: bool,
+) -> Result<Option<BoxedStrategy<(usize, ToolInvocation)>>, InvocationError> {
+    let mut strategies: Vec<BoxedStrategy<(usize, ToolInvocation)>> = Vec::new();
+    for (tool_index, tool) in tools.iter().enumerate() {
+        if let Some(strategy) = invocation_from_corpus(tool, predicate, corpus, lenient_sourcing) {
+            strategies.push(
+                strategy
+                    .prop_map(move |invocation| (tool_index, invocation))
+                    .boxed(),
+            );
+        }
+    }
+
+    if strategies.is_empty() {
+        return Ok(None);
+    }
+
+    let union = proptest::strategy::Union::new(strategies).boxed();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    if union.new_tree(&mut runner).is_err() {
+        return Err(InvocationError::NoEligibleTools);
+    }
+    Ok(Some(union))
 }
 
 fn invocation_from_strategy(
     strategy: &BoxedStrategy<ToolInvocation>,
     runner: &mut TestRunner,
 ) -> Option<ToolInvocation> {
+    match strategy.new_tree(runner) {
+        Ok(tree) => Some(tree.current()),
+        Err(_) => None,
+    }
+}
+
+fn invocation_plan_from_strategy(
+    strategy: &BoxedStrategy<(usize, ToolInvocation)>,
+    runner: &mut TestRunner,
+) -> Option<(usize, ToolInvocation)> {
     match strategy.new_tree(runner) {
         Ok(tree) => Some(tree.current()),
         Err(_) => None,

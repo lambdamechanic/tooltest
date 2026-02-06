@@ -3,7 +3,7 @@
 //! We preserve rmcp error types inside `SessionError` to keep transport and
 //! session layers aligned and to retain full error context for debugging.
 
-use crate::{HttpConfig, StdioConfig, ToolInvocation, TraceEntry};
+use crate::{HttpConfig, StdioConfig, ToolInvocation};
 use log::debug;
 use rmcp::model::Tool;
 use rmcp::service::{ClientInitializeError, RoleClient, RunningService, ServiceError, ServiceExt};
@@ -81,15 +81,15 @@ impl SessionDriver {
         Ok(Self { service })
     }
 
-    /// Sends a tool invocation via rmcp and records the response.
-    pub async fn send_tool_call(
+    /// Sends a tool invocation via rmcp and returns the response.
+    pub async fn call_tool(
         &self,
         invocation: ToolInvocation,
-    ) -> Result<TraceEntry, SessionError> {
+    ) -> Result<rmcp::model::CallToolResult, SessionError> {
         log_io("call_tool request", &invocation);
-        let response = self.service.peer().call_tool(invocation.clone()).await?;
+        let response = self.service.peer().call_tool(invocation).await?;
         log_io("call_tool response", &response);
-        Ok(TraceEntry::tool_call_with_response(invocation, response))
+        Ok(response)
     }
 
     /// Lists all tools available from the MCP session.
@@ -98,18 +98,6 @@ impl SessionDriver {
         let tools = self.service.peer().list_all_tools().await?;
         log_io("list_tools response", &tools);
         Ok(tools)
-    }
-
-    /// Sends a sequence of tool invocations via rmcp.
-    pub async fn run_invocations<I>(&self, invocations: I) -> Result<Vec<TraceEntry>, SessionError>
-    where
-        I: IntoIterator<Item = ToolInvocation>,
-    {
-        let mut trace = Vec::new();
-        for invocation in invocations {
-            trace.push(self.send_tool_call(invocation).await?);
-        }
-        Ok(trace)
     }
 
     /// Returns the server-reported MCP protocol version, if available.

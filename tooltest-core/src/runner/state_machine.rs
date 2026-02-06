@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::generator::{
-    invocation_from_corpus_seeded, record_reject_context, PreparedTool, StateMachineSequence,
+    invocation_plan_from_corpus_seeded, record_reject_context, PreparedTool, StateMachineSequence,
 };
 use crate::{AssertionSet, RunFailure, SessionDriver, ToolPredicate, TraceEntry};
 
@@ -42,14 +42,14 @@ pub(super) async fn execute_state_machine_sequence(
         }
     };
     for seed in &sequence.seeds {
-        let invocation = match invocation_from_corpus_seeded(
+        let (tool_index, invocation) = match invocation_plan_from_corpus_seeded(
             execution.tools,
             execution.predicate,
             tracker.corpus(),
             tracker.lenient_sourcing(),
             *seed,
         ) {
-            Ok(Some(invocation)) => invocation,
+            Ok(Some(plan)) => plan,
             Ok(None) | Err(crate::generator::InvocationError::NoEligibleTools) => {
                 record_reject_context("no callable tools".to_string());
                 break;
@@ -76,8 +76,8 @@ pub(super) async fn execute_state_machine_sequence(
         if execution.full_trace {
             full_trace.push(TraceEntry::tool_call(invocation.clone()));
         }
-        let entry = match execution.session.send_tool_call(invocation.clone()).await {
-            Ok(entry) => entry,
+        let response = match execution.session.call_tool(invocation.clone()).await {
+            Ok(response) => response,
             Err(error) => {
                 let reason = format!("session error: {error:?}");
                 if execution.full_trace {
@@ -103,9 +103,7 @@ pub(super) async fn execute_state_machine_sequence(
             }
         };
 
-        let (invocation, response) = entry.as_tool_call().expect("tool call trace entry");
-        let invocation = invocation.clone();
-        let response = response.expect("tool call response").clone();
+        let entry = TraceEntry::tool_call_with_response(invocation.clone(), response.clone());
         if execution.full_trace {
             let _ = full_trace.pop();
         }
@@ -150,11 +148,7 @@ pub(super) async fn execute_state_machine_sequence(
         }
 
         if !execution.response_lints.is_empty() {
-            let tool = execution
-                .tools
-                .iter()
-                .find(|tool| tool.name == invocation.name)
-                .expect("tool for invocation");
+            let tool = &execution.tools[tool_index];
             let context = crate::ResponseLintContext {
                 tool,
                 invocation: &invocation,

@@ -25,6 +25,9 @@ pub(super) fn validate_tools(tools: Vec<Tool>, config: &SchemaConfig) -> Result<
         next_cursor: None,
         meta: None,
     };
+    // ListToolsResult is expected to be JSON-serializable; treat serialization failures as
+    // unrecoverable to avoid introducing uncovered error branches under 100% coverage gates.
+    #[allow(clippy::expect_used)]
     let payload = serde_json::to_value(&list_tools).expect("list tools serialize");
     let parsed = parse_list_tools(payload, config).map_err(|error| error.to_string())?;
     Ok(parsed.tools)

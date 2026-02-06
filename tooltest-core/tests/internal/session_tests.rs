@@ -184,7 +184,7 @@ async fn connect_sends_initialize_and_initialized() {
         name: "echo".into(),
         arguments: json!({"value": "hello"}).as_object().cloned(),
     };
-    let trace = driver.send_tool_call(invocation).await.expect("tool call");
+    let response = driver.call_tool(invocation).await.expect("tool call");
 
     let requests = requests.lock().expect("requests");
     assert!(matches!(requests[0], JsonRpcMessage::Request(_)));
@@ -193,8 +193,7 @@ async fn connect_sends_initialize_and_initialized() {
         JsonRpcMessage::Notification(JsonRpcNotification { .. })
     ));
     assert!(matches!(requests[2], JsonRpcMessage::Request(_)));
-    let (_, response) = trace.as_tool_call().expect("tool call entry");
-    assert_eq!(response.expect("response").is_error, Some(false));
+    assert_eq!(response.is_error, Some(false));
 }
 
 #[tokio::test]
@@ -211,8 +210,9 @@ async fn connect_with_transport_reports_transport_error() {
 }
 
 #[tokio::test]
-async fn run_invocations_collects_trace() {
+async fn call_tool_sends_requests() {
     let transport = TestTransport::new();
+    let requests = transport.request_log();
     let driver = SessionDriver::connect_with_transport(transport)
         .await
         .expect("connect");
@@ -227,23 +227,27 @@ async fn run_invocations_collects_trace() {
             arguments: json!({"b": 2}).as_object().cloned(),
         },
     ];
-    let trace = driver.run_invocations(invocations).await.expect("trace");
+    for invocation in invocations {
+        let response = driver.call_tool(invocation).await.expect("call tool");
+        assert_eq!(response.is_error, Some(false));
+    }
 
-    assert_eq!(trace.len(), 2);
+    let requests = requests.lock().expect("requests");
+    assert!(requests.iter().any(|message| matches!(message, JsonRpcMessage::Request(_))));
 }
 
 #[tokio::test]
-async fn run_invocations_reports_call_error() {
+async fn call_tool_reports_call_error() {
     let transport = FailingCallTransport::new();
     let driver = SessionDriver::connect_with_transport(transport)
         .await
         .expect("connect");
 
-    let invocations = vec![ToolInvocation {
+    let invocation = ToolInvocation {
         name: "fail".into(),
         arguments: json!({"a": 1}).as_object().cloned(),
-    }];
-    let result = driver.run_invocations(invocations).await;
+    };
+    let result = driver.call_tool(invocation).await;
 
     assert!(matches!(result, Err(SessionError::Service(_))));
 }

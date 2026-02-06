@@ -332,8 +332,8 @@ async fn calls_hosted_tool() {
         arguments: None,
     };
 
-    let trace = driver.send_tool_call(invocation).await.expect("call tool");
-    assert_eq!(trace.response.is_error, Some(false));
+    let response = driver.call_tool(invocation).await.expect("call tool");
+    assert_eq!(response.is_error, Some(false));
 }
 ```
 

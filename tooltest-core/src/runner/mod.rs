@@ -1,4 +1,5 @@
 //! MCP sequence runner with default and declarative assertions.
+#![deny(clippy::expect_used, clippy::unwrap_used)]
 
 mod assertions;
 mod coverage;
@@ -12,6 +13,7 @@ mod state_machine;
 mod transport;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "../../tests/internal/runner_unit_tests.rs"]
 mod tests;
 

@@ -40,6 +40,41 @@ fn invocation_from_strategy_returns_none_for_rejected_values() {
     assert!(invocation_from_strategy(&strategy, &mut runner).is_none());
 }
 
+#[test]
+fn invocation_from_strategy_returns_some_for_accepted_values() {
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let strategy = Just(invocation.clone()).boxed();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    assert_eq!(
+        invocation_from_strategy(&strategy, &mut runner).expect("invocation"),
+        invocation
+    );
+}
+
+#[test]
+fn invocation_plan_from_strategy_returns_none_for_rejected_values() {
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let strategy = Just((0usize, invocation))
+        .prop_filter("always reject", |_| false)
+        .boxed();
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    assert!(invocation_plan_from_strategy(&strategy, &mut runner).is_none());
+}
+
+#[test]
+fn invocation_plan_from_corpus_seeded_returns_none_without_tools() {
+    let corpus = ValueCorpus::default();
+    let invocation =
+        invocation_plan_from_corpus_seeded(&[], None, &corpus, false, 0).expect("invocation");
+    assert!(invocation.is_none());
+}
+
 fn outcome_is_missing_required(outcome: &PropertyOutcome) -> bool {
     matches!(outcome, PropertyOutcome::MissingRequired)
 }

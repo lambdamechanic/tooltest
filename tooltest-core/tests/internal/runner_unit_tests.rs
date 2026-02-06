@@ -1,6 +1,7 @@
 use super::assertions::{
     apply_default_assertions, apply_response_assertions, apply_sequence_assertions,
-    attach_failure_reason, attach_response, evaluate_checks, AssertionPayloads,
+    attach_failure_reason, attach_response, evaluate_response_checks, evaluate_sequence_checks,
+    ResponseAssertionPayloads,
 };
 use super::coverage::{map_uncallable_reason, CoverageTracker};
 use super::result::{finalize_state_machine_result, FailureContext};
@@ -616,14 +617,13 @@ fn apply_sequence_assertions_accepts_passing_checks() {
 }
 
 #[test]
-fn evaluate_checks_rejects_sequence_target_in_response_scope() {
-    let payloads = AssertionPayloads {
+fn evaluate_response_checks_rejects_sequence_target() {
+    let payloads = ResponseAssertionPayloads {
         input: json!({ "flag": true }),
         output: JsonValue::Null,
         structured: JsonValue::Null,
-        sequence: Some(json!([])),
     };
-    let result = evaluate_checks(
+    let result = evaluate_response_checks(
         &[AssertionCheck {
             target: AssertionTarget::Sequence,
             pointer: "/0".to_string(),
@@ -631,41 +631,31 @@ fn evaluate_checks_rejects_sequence_target_in_response_scope() {
         }],
         &payloads,
         None,
-        false,
     );
     assert!(result.is_some());
 }
 
 #[test]
-fn evaluate_checks_rejects_non_sequence_target_in_sequence_scope() {
-    let payloads = AssertionPayloads {
-        input: json!({ "flag": true }),
-        output: JsonValue::Null,
-        structured: JsonValue::Null,
-        sequence: Some(json!([])),
-    };
-    let result = evaluate_checks(
+fn evaluate_sequence_checks_rejects_non_sequence_target() {
+    let result = evaluate_sequence_checks(
         &[AssertionCheck {
             target: AssertionTarget::Input,
             pointer: "/flag".to_string(),
             expected: json!(true),
         }],
-        &payloads,
-        None,
-        true,
+        &json!([]),
     );
     assert!(result.is_some());
 }
 
 #[test]
-fn evaluate_checks_reads_output_payload() {
-    let payloads = AssertionPayloads {
+fn evaluate_response_checks_reads_output_payload() {
+    let payloads = ResponseAssertionPayloads {
         input: JsonValue::Null,
         output: json!({ "ok": true }),
         structured: JsonValue::Null,
-        sequence: Some(json!([])),
     };
-    let result = evaluate_checks(
+    let result = evaluate_response_checks(
         &[AssertionCheck {
             target: AssertionTarget::Output,
             pointer: "/ok".to_string(),
@@ -673,41 +663,31 @@ fn evaluate_checks_reads_output_payload() {
         }],
         &payloads,
         None,
-        false,
     );
     assert!(result.is_none());
 }
 
 #[test]
-fn evaluate_checks_accepts_sequence_target_in_sequence_scope() {
-    let payloads = AssertionPayloads {
-        input: JsonValue::Null,
-        output: JsonValue::Null,
-        structured: JsonValue::Null,
-        sequence: Some(json!([{ "invocation": { "name": "echo" } }])),
-    };
-    let result = evaluate_checks(
+fn evaluate_sequence_checks_accepts_sequence_target() {
+    let result = evaluate_sequence_checks(
         &[AssertionCheck {
             target: AssertionTarget::Sequence,
             pointer: "/0/invocation/name".to_string(),
             expected: json!("echo"),
         }],
-        &payloads,
-        None,
-        true,
+        &json!([{ "invocation": { "name": "echo" } }]),
     );
     assert!(result.is_none());
 }
 
 #[test]
-fn evaluate_checks_accepts_structured_output_target() {
-    let payloads = AssertionPayloads {
+fn evaluate_response_checks_accepts_structured_output_target() {
+    let payloads = ResponseAssertionPayloads {
         input: JsonValue::Null,
         output: JsonValue::Null,
         structured: json!({ "status": "ok" }),
-        sequence: None,
     };
-    let result = evaluate_checks(
+    let result = evaluate_response_checks(
         &[AssertionCheck {
             target: AssertionTarget::StructuredOutput,
             pointer: "/status".to_string(),
@@ -715,7 +695,6 @@ fn evaluate_checks_accepts_structured_output_target() {
         }],
         &payloads,
         None,
-        false,
     );
     assert!(result.is_none());
 }

@@ -7,6 +7,27 @@ use crate::{
     AssertionCheck, AssertionRule, AssertionSet, AssertionTarget, ToolInvocation, TraceEntry,
 };
 
+fn evaluate_check(
+    check: &AssertionCheck,
+    payload: &JsonValue,
+    tool_name: Option<&str>,
+) -> Option<String> {
+    let actual = match payload.pointer(&check.pointer) {
+        Some(value) => value,
+        None => return Some(format!("assertion pointer '{}' not found", check.pointer)),
+    };
+    if actual != &check.expected {
+        let tool_prefix = tool_name
+            .map(|name| format!("tool '{name}' "))
+            .unwrap_or_default();
+        return Some(format!(
+            "{}assertion failed at '{}': expected {}, got {}",
+            tool_prefix, check.pointer, check.expected, actual
+        ));
+    }
+    None
+}
+
 pub(super) fn apply_default_assertions(
     invocation: &ToolInvocation,
     response: &CallToolResult,
@@ -50,11 +71,10 @@ pub(super) fn apply_response_assertions(
         .structured_content
         .clone()
         .unwrap_or(JsonValue::Null);
-    let payloads = AssertionPayloads {
+    let payloads = ResponseAssertionPayloads {
         input: input_payload,
         output: output_payload,
         structured: structured_payload,
-        sequence: None,
     };
 
     for rule in &assertions.rules {
@@ -66,11 +86,10 @@ pub(super) fn apply_response_assertions(
                 continue;
             }
         }
-        if let Some(reason) = evaluate_checks(
+        if let Some(reason) = evaluate_response_checks(
             &response_assertion.checks,
             &payloads,
             Some(invocation.name.as_ref()),
-            false,
         ) {
             return Some(reason);
         }
@@ -88,18 +107,13 @@ pub(super) fn apply_sequence_assertions(
     }
 
     let sequence_payload = serde_json::to_value(trace).unwrap_or(JsonValue::Null);
-    let payloads = AssertionPayloads {
-        input: JsonValue::Null,
-        output: JsonValue::Null,
-        structured: JsonValue::Null,
-        sequence: Some(sequence_payload),
-    };
 
     for rule in &assertions.rules {
         let AssertionRule::Sequence(sequence_assertion) = rule else {
             continue;
         };
-        if let Some(reason) = evaluate_checks(&sequence_assertion.checks, &payloads, None, true) {
+        if let Some(reason) = evaluate_sequence_checks(&sequence_assertion.checks, &sequence_payload)
+        {
             return Some(reason);
         }
     }
@@ -118,46 +132,43 @@ pub(super) fn attach_failure_reason(trace: &mut [TraceEntry], reason: String) {
     }
 }
 
-pub(super) struct AssertionPayloads {
+pub(super) struct ResponseAssertionPayloads {
     pub(super) input: JsonValue,
     pub(super) output: JsonValue,
     pub(super) structured: JsonValue,
-    pub(super) sequence: Option<JsonValue>,
 }
 
-pub(super) fn evaluate_checks(
+pub(super) fn evaluate_response_checks(
     checks: &[AssertionCheck],
-    payloads: &AssertionPayloads,
+    payloads: &ResponseAssertionPayloads,
     tool_name: Option<&str>,
-    sequence_scope: bool,
 ) -> Option<String> {
     for check in checks {
-        let payload = match (sequence_scope, &check.target) {
-            (true, AssertionTarget::Sequence) => payloads.sequence.as_ref().unwrap(),
-            (false, AssertionTarget::Input) => &payloads.input,
-            (false, AssertionTarget::Output) => &payloads.output,
-            (false, AssertionTarget::StructuredOutput) => &payloads.structured,
-            (false, AssertionTarget::Sequence) => {
+        let payload = match &check.target {
+            AssertionTarget::Input => &payloads.input,
+            AssertionTarget::Output => &payloads.output,
+            AssertionTarget::StructuredOutput => &payloads.structured,
+            AssertionTarget::Sequence => {
                 return Some("sequence target is only valid for sequence assertions".to_string());
             }
-            (true, _) => {
-                return Some("sequence assertions must target the sequence payload".to_string());
-            }
         };
-        let actual = match payload.pointer(&check.pointer) {
-            Some(value) => value,
-            None => {
-                return Some(format!("assertion pointer '{}' not found", check.pointer));
-            }
-        };
-        if actual != &check.expected {
-            let tool_prefix = tool_name
-                .map(|name| format!("tool '{name}' "))
-                .unwrap_or_default();
-            return Some(format!(
-                "{}assertion failed at '{}': expected {}, got {}",
-                tool_prefix, check.pointer, check.expected, actual
-            ));
+        if let Some(reason) = evaluate_check(check, payload, tool_name) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+pub(super) fn evaluate_sequence_checks(
+    checks: &[AssertionCheck],
+    sequence_payload: &JsonValue,
+) -> Option<String> {
+    for check in checks {
+        if !matches!(check.target, AssertionTarget::Sequence) {
+            return Some("sequence assertions must target the sequence payload".to_string());
+        }
+        if let Some(reason) = evaluate_check(check, sequence_payload, None) {
+            return Some(reason);
         }
     }
     None

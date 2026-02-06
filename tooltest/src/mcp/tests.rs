@@ -1,4 +1,3 @@
-
 use super::schema::tooltest_input_schema;
 use super::server::{
     McpServer, TOOLTEST_FIX_LOOP_PROMPT, TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION,

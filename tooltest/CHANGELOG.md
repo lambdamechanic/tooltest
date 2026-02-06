@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.3.0...tooltest-v0.4.0) - 2026-02-06
+
+### Other
+
+- Close tooltest-2z3l
+
 - Missing `structured_content` now emits a warning instead of failing (deliberate behavior change).
 
 ## [0.3.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.2.0...tooltest-v0.3.0) - 2026-01-14

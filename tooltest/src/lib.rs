@@ -1105,6 +1105,8 @@ mod tests {
             .expect("run child stdio test");
 
         assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("1 passed"));
     }
 
     #[ignore]

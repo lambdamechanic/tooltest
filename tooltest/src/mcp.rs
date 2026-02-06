@@ -85,32 +85,42 @@ struct TooltestWorker {
     done: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
+type TooltestExecuteFuture = Pin<
+    Box<dyn std::future::Future<Output = Result<tooltest_core::RunResult, ErrorData>> + 'static>,
+>;
+type TooltestExecuteFn = fn(TooltestInput) -> TooltestExecuteFuture;
+
 fn build_worker_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
-    #[cfg(test)]
-    if std::env::var_os("TOOLTEST_MCP_FORCE_WORKER_RUNTIME_ERROR").is_some() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "forced runtime error",
-        ));
-    }
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()
 }
 
+fn execute_tooltest_boxed(input: TooltestInput) -> TooltestExecuteFuture {
+    Box::pin(execute_tooltest(input))
+}
+
 impl TooltestWorker {
     fn new() -> Result<Self, String> {
+        Self::new_with_parts(build_worker_runtime, false, execute_tooltest_boxed)
+    }
+
+    fn new_with_parts(
+        build_runtime: fn() -> Result<tokio::runtime::Runtime, std::io::Error>,
+        skip_ready: bool,
+        execute: TooltestExecuteFn,
+    ) -> Result<Self, String> {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<TooltestWork>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         #[cfg(test)]
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            #[cfg(test)]
-            if std::env::var_os("TOOLTEST_MCP_SKIP_WORKER_READY").is_some() {
+            if skip_ready {
                 return;
             }
-            let runtime_result = build_worker_runtime().map_err(|error| error.to_string());
+
+            let runtime_result = build_runtime().map_err(|error| error.to_string());
             let runtime = match runtime_result {
                 Ok(runtime) => {
                     let _ = ready_tx.send(Ok(()));
@@ -123,7 +133,7 @@ impl TooltestWorker {
             };
             runtime.block_on(async move {
                 while let Some(work) = receiver.recv().await {
-                    let result = std::panic::AssertUnwindSafe(execute_tooltest(work.input))
+                    let result = std::panic::AssertUnwindSafe(execute(work.input))
                         .catch_unwind()
                         .await;
                     let result = match result {
@@ -145,6 +155,41 @@ impl TooltestWorker {
             Ok(Err(error)) => Err(error),
             Err(_) => Err("tooltest runtime thread failed to start".to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum WorkerReadyMode {
+    Send,
+    Skip,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct TooltestWorkerConfig {
+    ready_mode: WorkerReadyMode,
+    build_runtime: fn() -> Result<tokio::runtime::Runtime, std::io::Error>,
+}
+
+#[cfg(test)]
+impl Default for TooltestWorkerConfig {
+    fn default() -> Self {
+        Self {
+            ready_mode: WorkerReadyMode::Send,
+            build_runtime: build_worker_runtime,
+        }
+    }
+}
+
+#[cfg(test)]
+impl TooltestWorker {
+    fn new_with_config(
+        config: TooltestWorkerConfig,
+        execute: TooltestExecuteFn,
+    ) -> Result<Self, String> {
+        let skip_ready = matches!(config.ready_mode, WorkerReadyMode::Skip);
+        Self::new_with_parts(config.build_runtime, skip_ready, execute)
     }
 }
 
@@ -467,9 +512,6 @@ fn parse_tooltest_input(arguments: Option<JsonObject>) -> Result<TooltestInput, 
 }
 
 async fn execute_tooltest(input: TooltestInput) -> Result<tooltest_core::RunResult, ErrorData> {
-    if std::env::var_os("TOOLTEST_MCP_PANIC_TOOL").is_some() {
-        panic!("tooltest tool panic");
-    }
     let mut input = input;
     if let Ok(command) = std::env::var("TOOLTEST_MCP_DOGFOOD_COMMAND") {
         input.target = TooltestTarget::Stdio(TooltestTargetStdio {
@@ -529,15 +571,18 @@ fn run_result_from_input_error(message: String) -> RunResult {
 }
 
 fn run_result_to_call_tool(result: &tooltest_core::RunResult) -> Result<CallToolResult, ErrorData> {
-    let value = serialize_value(result)?;
+    run_result_to_call_tool_inner(result, serialize_value)
+}
+
+fn run_result_to_call_tool_inner<T: Serialize>(
+    value: &T,
+    serialize: fn(&T) -> Result<JsonValue, ErrorData>,
+) -> Result<CallToolResult, ErrorData> {
+    let value = serialize(value)?;
     Ok(CallToolResult::structured(value))
 }
 
 fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
-    #[cfg(test)]
-    if std::env::var_os("TOOLTEST_MCP_FORCE_SERIALIZE_ERROR").is_some() {
-        return Err(ErrorData::internal_error("forced serialize error", None));
-    }
     serde_json::to_value(value).map_err(|error| {
         ErrorData::internal_error(format!("failed to serialize run result: {error}"), None)
     })
@@ -546,11 +591,11 @@ fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_tooltest, run_result_to_call_tool, run_tooltest_call, serialize_value,
-        tooltest_input_schema, tooltest_worker_inner, McpServer, NoopSink, TooltestWorker,
-        TOOLTEST_FIX_LOOP_PROMPT, TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION,
-        TOOLTEST_FIX_LOOP_PROMPT_NAME, TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION,
-        TOOLTEST_TOOL_NAME,
+        execute_tooltest, execute_tooltest_boxed, run_result_to_call_tool_inner, run_tooltest_call,
+        serialize_value, tooltest_input_schema, tooltest_worker_inner, McpServer, NoopSink,
+        TooltestWorker, TooltestWorkerConfig, WorkerReadyMode, TOOLTEST_FIX_LOOP_PROMPT,
+        TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION, TOOLTEST_FIX_LOOP_PROMPT_NAME,
+        TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION, TOOLTEST_TOOL_NAME,
     };
     use axum::Router;
     use futures::SinkExt;
@@ -1033,17 +1078,6 @@ mod tests {
         send_call_tool_request_with_name(TOOLTEST_TOOL_NAME, arguments).await
     }
 
-    async fn send_call_tool_request_with_env(
-        name: &str,
-        arguments: Option<JsonObject>,
-        key: &'static str,
-        value: &'static str,
-    ) -> ServerJsonRpcMessage {
-        let _guard = env_lock().lock().await;
-        let _env_guard = EnvVarGuard::set(key, value);
-        send_call_tool_request_with_name_unlocked(name, arguments).await
-    }
-
     async fn send_http_test_server_call(name: &str) -> ServerJsonRpcMessage {
         let (transport, incoming_tx, mut outgoing_rx) = test_transport();
         let running = rmcp::service::serve_directly(HttpTestServer::new(), transport, None);
@@ -1354,22 +1388,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn call_tool_panics_become_internal_error() {
-        let args = json!({
-            "target": { "http": { "url": "http://127.0.0.1:0/mcp" } },
-            "cases": 1,
-            "min_sequence_len": 1,
-            "max_sequence_len": 1
-        });
-        let response = send_call_tool_request_with_env(
-            TOOLTEST_TOOL_NAME,
-            Some(args.as_object().cloned().expect("args object")),
-            "TOOLTEST_MCP_PANIC_TOOL",
-            "1",
-        )
-        .await;
-        let (error, _) = response.into_error().expect("error response");
+    async fn run_tooltest_call_tool_panic_is_internal_error() {
+        let _lock = env_lock().lock().await;
+        fn panic_execute(_input: TooltestInput) -> super::TooltestExecuteFuture {
+            Box::pin(async move {
+                panic!("boom");
+            })
+        }
+
+        let worker =
+            TooltestWorker::new_with_config(TooltestWorkerConfig::default(), panic_execute)
+                .expect("worker");
+        let error = run_tooltest_call(Ok(&worker), minimal_tooltest_input())
+            .await
+            .expect_err("expected error");
         assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("tooltest tool panicked"));
     }
 
     #[tokio::test]
@@ -1413,16 +1447,32 @@ mod tests {
     #[tokio::test]
     async fn tooltest_worker_reports_forced_runtime_error() {
         let _lock = env_lock().lock().await;
-        let _guard = EnvVarGuard::set("TOOLTEST_MCP_FORCE_WORKER_RUNTIME_ERROR", "1");
-        let error = TooltestWorker::new().err().expect("expected error");
+        fn forced_runtime_error() -> Result<tokio::runtime::Runtime, std::io::Error> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "forced runtime error",
+            ))
+        }
+        let config = TooltestWorkerConfig {
+            ready_mode: WorkerReadyMode::Send,
+            build_runtime: forced_runtime_error,
+        };
+        let error = TooltestWorker::new_with_config(config, execute_tooltest_boxed)
+            .err()
+            .expect("expected error");
         assert!(error.contains("forced runtime error"));
     }
 
     #[tokio::test]
     async fn tooltest_worker_reports_ready_channel_failure() {
         let _lock = env_lock().lock().await;
-        let _guard = EnvVarGuard::set("TOOLTEST_MCP_SKIP_WORKER_READY", "1");
-        let error = TooltestWorker::new().err().expect("expected error");
+        let config = TooltestWorkerConfig {
+            ready_mode: WorkerReadyMode::Skip,
+            ..TooltestWorkerConfig::default()
+        };
+        let error = TooltestWorker::new_with_config(config, execute_tooltest_boxed)
+            .err()
+            .expect("expected error");
         assert!(error.contains("failed to start"));
     }
 
@@ -1546,9 +1596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_result_to_call_tool_forced_serialize_error() {
-        let _lock = env_lock().lock().await;
-        let _guard = EnvVarGuard::set("TOOLTEST_MCP_FORCE_SERIALIZE_ERROR", "1");
+    async fn run_result_to_call_tool_propagates_serialize_error() {
         let run_result = RunResult {
             outcome: RunOutcome::Success,
             trace: Vec::new(),
@@ -1557,8 +1605,12 @@ mod tests {
             coverage: None,
             corpus: None,
         };
-        let error = run_result_to_call_tool(&run_result).expect_err("serialize error");
+        let error = run_result_to_call_tool_inner(&run_result, |_| {
+            Err(ErrorData::internal_error("forced serialize error", None))
+        })
+        .expect_err("serialize error");
         assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("forced serialize error"));
     }
 
     #[tokio::test]

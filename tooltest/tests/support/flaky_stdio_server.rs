@@ -109,6 +109,10 @@ fn handle_message(message: ClientJsonRpcMessage) -> Option<ResponseAction> {
 
 fn tool_stub() -> Tool {
     let input_schema = json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$defs": {
+            "unused": { "type": "string" }
+        },
         "type": "object",
         "properties": {
             "value": {
@@ -120,6 +124,7 @@ fn tool_stub() -> Tool {
         "required": ["value"]
     });
     let output_schema = json!({
+        "$schema": "https://example.com/unknown-schema",
         "type": "object",
         "properties": {
             "status": { "type": "string", "const": "ok" },

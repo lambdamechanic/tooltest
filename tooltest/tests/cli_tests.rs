@@ -51,6 +51,18 @@ fn run_tooltest_run_result_allow_failure(args: &[&str]) -> (Output, RunResult) {
     (output, payload)
 }
 
+fn run_tooltest_run_result_allow_failure_in_dir(
+    args: &[&str],
+    dir: &std::path::Path,
+) -> (Output, RunResult) {
+    let mut command = tooltest_command(args);
+    command.current_dir(dir);
+    let output = command.output().expect("run tooltest");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload = serde_json::from_str(stdout.trim()).expect("run result");
+    (output, payload)
+}
+
 fn test_server() -> Option<&'static str> {
     let server = option_env!("CARGO_BIN_EXE_tooltest_test_server")?;
     if std::path::Path::new(server).exists() {
@@ -980,6 +992,60 @@ fn tooltest_dogfoods_tooltest_stdio() {
     };
     let config_dir = temp_dir("dogfood");
     fs::create_dir_all(&config_dir).expect("create temp dir");
+    fs::create_dir_all(config_dir.join(".git")).expect("create git dir");
+    fs::write(
+        config_dir.join("tooltest.toml"),
+        r#"
+version = 1
+
+[[lints]]
+id = "no_crash"
+level = "error"
+
+[[lints]]
+id = "max_tools"
+level = "warning"
+[lints.params]
+max = 0
+
+[[lints]]
+id = "mcp_schema_min_version"
+level = "warning"
+[lints.params]
+min_version = "9999-12-31"
+
+[[lints]]
+id = "json_schema_dialect_compat"
+level = "warning"
+[lints.params]
+allowlist = []
+
+[[lints]]
+id = "json_schema_keyword_compat"
+level = "warning"
+
+[[lints]]
+id = "output_schema_compile"
+level = "warning"
+
+[[lints]]
+id = "missing_structured_content"
+level = "warning"
+
+[[lints]]
+id = "max_structured_content_bytes"
+level = "warning"
+[lints.params]
+max_bytes = 1
+
+[[lints]]
+id = "coverage"
+level = "warning"
+[lints.params]
+rules = [{ rule = "min_calls_per_tool", min = 999 }]
+"#,
+    )
+    .expect("write lint config");
     let config_path = config_dir.join("state-machine.json");
     let config_payload = serde_json::json!({
         "seed_numbers": [1, 3, 30],
@@ -993,30 +1059,33 @@ fn tooltest_dogfoods_tooltest_stdio() {
     let trace_path = config_dir.join("trace-all.jsonl");
     let trace_arg = trace_path.to_string_lossy().to_string();
 
-    let (output, run_result) = run_tooltest_run_result_allow_failure(&[
-        "--json",
-        "--full-trace",
-        "--trace-all",
-        &trace_arg,
-        "--tool-allowlist",
-        "tooltest",
-        "--cases",
-        "50",
-        "--min-sequence-len",
-        "1",
-        "--max-sequence-len",
-        "1",
-        "--no-lenient-sourcing",
-        "--state-machine-config",
-        &config_arg,
-        "stdio",
-        "--command",
-        tooltest,
-        "--arg",
-        "mcp",
-        "--env",
-        &dogfood_env,
-    ]);
+    let (output, run_result) = run_tooltest_run_result_allow_failure_in_dir(
+        &[
+            "--json",
+            "--full-trace",
+            "--trace-all",
+            &trace_arg,
+            "--tool-allowlist",
+            "tooltest",
+            "--cases",
+            "50",
+            "--min-sequence-len",
+            "1",
+            "--max-sequence-len",
+            "1",
+            "--no-lenient-sourcing",
+            "--state-machine-config",
+            &config_arg,
+            "stdio",
+            "--command",
+            tooltest,
+            "--arg",
+            "mcp",
+            "--env",
+            &dogfood_env,
+        ],
+        &config_dir,
+    );
 
     let outer_json = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
@@ -1104,7 +1173,7 @@ fn tooltest_dogfoods_tooltest_stdio() {
     let mut saw_catastrophic = false;
     let mut unexpected_failures = Vec::new();
 
-    for inner in inner_results {
+    for inner in &inner_results {
         match &inner.outcome {
             RunOutcome::Success => {
                 saw_success = true;
@@ -1146,6 +1215,36 @@ fn tooltest_dogfoods_tooltest_stdio() {
         "expected at least one catastrophic failure\nouter json:\n{}",
         outer_json
     );
+
+    let mut lint_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for warning in &run_result.warnings {
+        if let Some(id) = warning.code.lint_id() {
+            lint_ids.insert(id.to_string());
+        }
+    }
+    for inner in &inner_results {
+        for warning in &inner.warnings {
+            if let Some(id) = warning.code.lint_id() {
+                lint_ids.insert(id.to_string());
+            }
+        }
+    }
+    for expected in [
+        "max_tools",
+        "mcp_schema_min_version",
+        "json_schema_dialect_compat",
+        "json_schema_keyword_compat",
+        "output_schema_compile",
+        "max_structured_content_bytes",
+        "missing_structured_content",
+        "coverage",
+    ] {
+        assert!(
+            lint_ids.contains(expected),
+            "expected lint '{expected}' in dogfood warnings, saw {lint_ids:?}\nouter json:\n{}",
+            outer_json
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -1157,6 +1256,60 @@ fn tooltest_dogfoods_tooltest_stdio_via_shell_wrapper() {
     use std::os::unix::fs::PermissionsExt;
     let config_dir = temp_dir("dogfood-shell");
     fs::create_dir_all(&config_dir).expect("create temp dir");
+    fs::create_dir_all(config_dir.join(".git")).expect("create git dir");
+    fs::write(
+        config_dir.join("tooltest.toml"),
+        r#"
+version = 1
+
+[[lints]]
+id = "no_crash"
+level = "error"
+
+[[lints]]
+id = "max_tools"
+level = "warning"
+[lints.params]
+max = 0
+
+[[lints]]
+id = "mcp_schema_min_version"
+level = "warning"
+[lints.params]
+min_version = "9999-12-31"
+
+[[lints]]
+id = "json_schema_dialect_compat"
+level = "warning"
+[lints.params]
+allowlist = []
+
+[[lints]]
+id = "json_schema_keyword_compat"
+level = "warning"
+
+[[lints]]
+id = "output_schema_compile"
+level = "warning"
+
+[[lints]]
+id = "missing_structured_content"
+level = "warning"
+
+[[lints]]
+id = "max_structured_content_bytes"
+level = "warning"
+[lints.params]
+max_bytes = 1
+
+[[lints]]
+id = "coverage"
+level = "warning"
+[lints.params]
+rules = [{ rule = "min_calls_per_tool", min = 999 }]
+"#,
+    )
+    .expect("write lint config");
     let config_path = config_dir.join("state-machine.json");
     let config_payload = serde_json::json!({
         "seed_numbers": [1, 3, 30],
@@ -1185,26 +1338,29 @@ exec env -i TOOLTEST_MCP_DOGFOOD_COMMAND="{flaky}" LLVM_PROFILE_FILE=/dev/null T
     let trace_path = config_dir.join("trace-all.jsonl");
     let trace_arg = trace_path.to_string_lossy().to_string();
 
-    let (output, run_result) = run_tooltest_run_result_allow_failure(&[
-        "--json",
-        "--full-trace",
-        "--trace-all",
-        &trace_arg,
-        "--tool-allowlist",
-        "tooltest",
-        "--cases",
-        "50",
-        "--min-sequence-len",
-        "1",
-        "--max-sequence-len",
-        "1",
-        "--no-lenient-sourcing",
-        "--state-machine-config",
-        &config_arg,
-        "stdio",
-        "--command",
-        &wrapper_arg,
-    ]);
+    let (output, run_result) = run_tooltest_run_result_allow_failure_in_dir(
+        &[
+            "--json",
+            "--full-trace",
+            "--trace-all",
+            &trace_arg,
+            "--tool-allowlist",
+            "tooltest",
+            "--cases",
+            "50",
+            "--min-sequence-len",
+            "1",
+            "--max-sequence-len",
+            "1",
+            "--no-lenient-sourcing",
+            "--state-machine-config",
+            &config_arg,
+            "stdio",
+            "--command",
+            &wrapper_arg,
+        ],
+        &config_dir,
+    );
 
     let outer_json = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
@@ -1292,7 +1448,7 @@ exec env -i TOOLTEST_MCP_DOGFOOD_COMMAND="{flaky}" LLVM_PROFILE_FILE=/dev/null T
     let mut saw_catastrophic = false;
     let mut unexpected_failures = Vec::new();
 
-    for inner in inner_results {
+    for inner in &inner_results {
         match &inner.outcome {
             RunOutcome::Success => {
                 saw_success = true;
@@ -1334,6 +1490,36 @@ exec env -i TOOLTEST_MCP_DOGFOOD_COMMAND="{flaky}" LLVM_PROFILE_FILE=/dev/null T
         "expected at least one catastrophic failure\nouter json:\n{}",
         outer_json
     );
+
+    let mut lint_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for warning in &run_result.warnings {
+        if let Some(id) = warning.code.lint_id() {
+            lint_ids.insert(id.to_string());
+        }
+    }
+    for inner in &inner_results {
+        for warning in &inner.warnings {
+            if let Some(id) = warning.code.lint_id() {
+                lint_ids.insert(id.to_string());
+            }
+        }
+    }
+    for expected in [
+        "max_tools",
+        "mcp_schema_min_version",
+        "json_schema_dialect_compat",
+        "json_schema_keyword_compat",
+        "output_schema_compile",
+        "max_structured_content_bytes",
+        "missing_structured_content",
+        "coverage",
+    ] {
+        assert!(
+            lint_ids.contains(expected),
+            "expected lint '{expected}' in dogfood warnings, saw {lint_ids:?}\nouter json:\n{}",
+            outer_json
+        );
+    }
 }
 
 #[test]

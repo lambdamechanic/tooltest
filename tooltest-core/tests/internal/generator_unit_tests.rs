@@ -1749,7 +1749,7 @@ fn schema_branch_helpers_return_none_for_missing_arrays() {
         .expect("schema");
     assert!(schema_anyof_branches(&schema).unwrap().is_none());
     assert!(schema_oneof_branches(&schema).unwrap().is_none());
-    assert!(schema_type_union_branches(&schema).is_none());
+    assert!(schema_type_union_branches(&schema).unwrap().is_none());
 }
 
 #[test]
@@ -1761,7 +1761,8 @@ fn schema_branch_helpers_return_errors_for_empty_arrays() {
     let err = schema_oneof_branches(&schema).expect_err("oneOf error");
     assert_eq!(err, "oneOf must include at least one schema object");
     let schema = json!({ "type": [] }).as_object().cloned().expect("schema");
-    assert!(schema_type_union_branches(&schema).is_none());
+    let err = schema_type_union_branches(&schema).expect_err("type union error");
+    assert_eq!(err, "schema type array must include at least one string");
 }
 
 #[test]
@@ -1781,12 +1782,40 @@ fn schema_branch_helpers_return_errors_for_non_object_entries() {
 }
 
 #[test]
+fn schema_branch_helpers_return_errors_for_non_object_tail_entries() {
+    let schema = json!({ "anyOf": [ { "type": "string" }, true ] })
+        .as_object()
+        .cloned()
+        .expect("schema");
+    let err = schema_anyof_branches(&schema).expect_err("anyOf error");
+    assert_eq!(err, "anyOf[1] schema must be an object");
+
+    let schema = json!({ "oneOf": [ { "type": "string" }, 1 ] })
+        .as_object()
+        .cloned()
+        .expect("schema");
+    let err = schema_oneof_branches(&schema).expect_err("oneOf error");
+    assert_eq!(err, "oneOf[1] schema must be an object");
+}
+
+#[test]
 fn schema_branch_helpers_return_none_for_non_string_type_entries() {
     let schema = json!({ "type": ["string", 4] })
         .as_object()
         .cloned()
         .expect("schema");
-    assert!(schema_type_union_branches(&schema).is_none());
+    let err = schema_type_union_branches(&schema).expect_err("type union error");
+    assert_eq!(err, "schema type array must contain strings; found 4 at 1");
+}
+
+#[test]
+fn schema_branch_helpers_return_errors_for_non_string_type_head_entry() {
+    let schema = json!({ "type": [4, "string"] })
+        .as_object()
+        .cloned()
+        .expect("schema");
+    let err = schema_type_union_branches(&schema).expect_err("type union error");
+    assert_eq!(err, "schema type array must contain strings; found 4 at 0");
 }
 
 #[test]
@@ -1807,7 +1836,7 @@ fn schema_branch_helpers_return_branches_for_valid_entries() {
         .as_object()
         .cloned()
         .expect("schema");
-    assert_eq!(schema_type_union_branches(&schema).unwrap().len(), 2);
+    assert_eq!(schema_type_union_branches(&schema).unwrap().unwrap().len(), 2);
 }
 
 #[test]
@@ -2211,6 +2240,113 @@ fn schema_violations_include_schema_error_for_invalid_oneof() {
                 if reason == "oneOf must include at least one schema object"
         )
     }));
+}
+
+#[test]
+fn schema_violations_include_schema_error_for_invalid_type_union_empty_array() {
+    let schema = json!({ "type": [] }).as_object().cloned().expect("schema");
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!(true), &patterns);
+    assert!(violations.iter().any(|constraint| {
+        matches!(
+            &constraint.kind,
+            ConstraintKind::Schema(reason)
+                if reason == "schema type array must include at least one string"
+        )
+    }));
+}
+
+#[test]
+fn schema_violations_include_schema_error_for_invalid_type_union_non_string_entry() {
+    let schema = json!({ "type": ["string", 4] })
+        .as_object()
+        .cloned()
+        .expect("schema");
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!(true), &patterns);
+    assert!(violations.iter().any(|constraint| {
+        matches!(
+            &constraint.kind,
+            ConstraintKind::Schema(reason)
+                if reason == "schema type array must contain strings; found 4 at 1"
+        )
+    }));
+}
+
+#[test]
+fn schema_violations_anyof_prefers_branch_with_fewer_violations() {
+    // Head branch yields two violations (const mismatch + type mismatch). Tail yields one (minimum).
+    // This exercises the "best violation set" selection logic for anyOf.
+    let schema = json!({
+        "anyOf": [
+            { "const": "abc", "type": "string" },
+            { "type": "number", "minimum": 10 }
+        ]
+    })
+    .as_object()
+    .cloned()
+    .expect("schema");
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!(5), &patterns);
+    assert_eq!(violations.len(), 1);
+    assert!(matches!(
+        violations[0].kind,
+        ConstraintKind::Minimum(minimum) if minimum == 10.0
+    ));
+}
+
+#[test]
+fn schema_violations_oneof_prefers_branch_with_fewer_violations_when_no_matches() {
+    // Head branch yields two violations (const mismatch + type mismatch). Tail yields one (minimum).
+    // This exercises the "best violation set" selection logic for oneOf when no branches match.
+    let schema = json!({
+        "oneOf": [
+            { "const": "abc", "type": "string" },
+            { "type": "number", "minimum": 10 }
+        ]
+    })
+    .as_object()
+    .cloned()
+    .expect("schema");
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!(5), &patterns);
+    assert_eq!(violations.len(), 1);
+    assert!(matches!(
+        violations[0].kind,
+        ConstraintKind::Minimum(minimum) if minimum == 10.0
+    ));
+}
+
+#[test]
+fn schema_violations_accepts_type_union_when_head_branch_matches() {
+    let schema = json!({ "type": ["string", "number"] })
+        .as_object()
+        .cloned()
+        .expect("schema");
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!("ok"), &patterns);
+    assert!(violations.is_empty());
+}
+
+#[test]
+fn schema_violations_type_union_prefers_smaller_violation_set() {
+    // Head (string) yields multiple violations (minLength + pattern), tail (number) yields a single
+    // type mismatch. This exercises the "best violation set" selection for type unions.
+    let schema = json!({
+        "type": ["string", "number"],
+        "minLength": 5,
+        "pattern": "^[A-Z]+$"
+    })
+    .as_object()
+    .cloned()
+    .expect("schema");
+    let patterns = SchemaRegexIndex::from_schema(&schema);
+    let violations = schema_violations(&schema, &json!("a"), &patterns);
+    assert_eq!(violations.len(), 1);
+    assert!(matches!(
+        &violations[0].kind,
+        ConstraintKind::Type(schema_type) if schema_type == "number"
+    ));
 }
 
 #[test]

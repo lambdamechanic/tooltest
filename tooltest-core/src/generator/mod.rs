@@ -1674,19 +1674,19 @@ fn collect_violations_inner(
                 return;
             }
             let mut matches = 0;
-            let mut best: Option<Vec<Constraint>> = None;
-            for branch in &one_of {
+            let mut best = Vec::new();
+            for branch in one_of.iter() {
                 let branch_violations = schema_violations_inner(branch, value, patterns, root);
                 if branch_violations.is_empty() {
                     matches += 1;
                     continue;
                 }
-                let is_better = best
-                    .as_ref()
-                    .map(|current| branch_violations.len() < current.len())
-                    .unwrap_or(true);
-                if is_better {
-                    best = Some(branch_violations);
+                if best.is_empty() {
+                    best = branch_violations;
+                    continue;
+                }
+                if branch_violations.len() < best.len() {
+                    best = branch_violations;
                 }
             }
             if matches == 1 {
@@ -1699,7 +1699,6 @@ fn collect_violations_inner(
                 });
                 return;
             }
-            let mut best = best.expect("oneOf branches must yield a best violation set");
             violations.append(&mut best);
             return;
         }
@@ -1721,21 +1720,19 @@ fn collect_violations_inner(
                 violations.append(&mut base_violations);
                 return;
             }
-            let mut best: Option<Vec<Constraint>> = None;
-            for branch in &any_of {
+            let mut best = schema_violations_inner(&any_of.head, value, patterns, root);
+            if best.is_empty() {
+                return;
+            }
+            for branch in &any_of.tail {
                 let branch_violations = schema_violations_inner(branch, value, patterns, root);
                 if branch_violations.is_empty() {
                     return;
                 }
-                let is_better = best
-                    .as_ref()
-                    .map(|current| branch_violations.len() < current.len())
-                    .unwrap_or(true);
-                if is_better {
-                    best = Some(branch_violations);
+                if branch_violations.len() < best.len() {
+                    best = branch_violations;
                 }
             }
-            let mut best = best.expect("anyOf branches must yield a best violation set");
             violations.append(&mut best);
             return;
         }
@@ -1749,24 +1746,32 @@ fn collect_violations_inner(
         }
     }
 
-    if let Some(type_union) = schema_type_union_branches(schema) {
-        let mut best: Option<Vec<Constraint>> = None;
-        for branch in &type_union {
-            let branch_violations = schema_violations_inner(branch, value, patterns, root);
-            if branch_violations.is_empty() {
+    match schema_type_union_branches(schema) {
+        Ok(Some(type_union)) => {
+            let mut best = schema_violations_inner(&type_union.head, value, patterns, root);
+            if best.is_empty() {
                 return;
             }
-            let is_better = best
-                .as_ref()
-                .map(|current| branch_violations.len() < current.len())
-                .unwrap_or(true);
-            if is_better {
-                best = Some(branch_violations);
+            for branch in &type_union.tail {
+                let branch_violations = schema_violations_inner(branch, value, patterns, root);
+                if branch_violations.is_empty() {
+                    return;
+                }
+                if branch_violations.len() < best.len() {
+                    best = branch_violations;
+                }
             }
+            violations.append(&mut best);
+            return;
         }
-        let mut best = best.expect("type union branches must yield a best violation set");
-        violations.append(&mut best);
-        return;
+        Ok(None) => {}
+        Err(reason) => {
+            violations.push(Constraint {
+                path: nonempty_path(path),
+                kind: ConstraintKind::Schema(reason),
+            });
+            return;
+        }
     }
 
     if let Some(const_value) = schema.get("const") {
@@ -1918,64 +1923,99 @@ fn schema_violations_inner(
     violations
 }
 
-fn schema_anyof_branches(schema: &JsonObject) -> Result<Option<Vec<JsonObject>>, String> {
+fn schema_anyof_branches(schema: &JsonObject) -> Result<Option<NonEmpty<JsonObject>>, String> {
     let Some(value) = schema.get("anyOf") else {
         return Ok(None);
     };
     let JsonValue::Array(any_of) = value else {
         return Err("anyOf must be an array".to_string());
     };
-    if any_of.is_empty() {
-        return Err("anyOf must include at least one schema object".to_string());
-    }
-    let mut branches = Vec::with_capacity(any_of.len());
-    for (idx, value) in any_of.iter().enumerate() {
+    let (head, tail) = any_of
+        .split_first()
+        .ok_or_else(|| "anyOf must include at least one schema object".to_string())?;
+    let head = head
+        .as_object()
+        .ok_or_else(|| "anyOf[0] schema must be an object".to_string())?
+        .clone();
+    let mut tail_out = Vec::with_capacity(tail.len());
+    for (idx, value) in tail.iter().enumerate() {
+        let idx = idx + 1;
         let schema_object = value
             .as_object()
             .ok_or_else(|| format!("anyOf[{idx}] schema must be an object"))?;
-        branches.push(schema_object.clone());
+        tail_out.push(schema_object.clone());
     }
-    Ok(Some(branches))
+    Ok(Some(NonEmpty {
+        head,
+        tail: tail_out,
+    }))
 }
 
-fn schema_oneof_branches(schema: &JsonObject) -> Result<Option<Vec<JsonObject>>, String> {
+fn schema_oneof_branches(schema: &JsonObject) -> Result<Option<NonEmpty<JsonObject>>, String> {
     let Some(value) = schema.get("oneOf") else {
         return Ok(None);
     };
     let JsonValue::Array(one_of) = value else {
         return Err("oneOf must be an array".to_string());
     };
-    if one_of.is_empty() {
-        return Err("oneOf must include at least one schema object".to_string());
-    }
-    let mut branches = Vec::with_capacity(one_of.len());
-    for (idx, value) in one_of.iter().enumerate() {
+    let (head, tail) = one_of
+        .split_first()
+        .ok_or_else(|| "oneOf must include at least one schema object".to_string())?;
+    let head = head
+        .as_object()
+        .ok_or_else(|| "oneOf[0] schema must be an object".to_string())?
+        .clone();
+    let mut tail_out = Vec::with_capacity(tail.len());
+    for (idx, value) in tail.iter().enumerate() {
+        let idx = idx + 1;
         let schema_object = value
             .as_object()
             .ok_or_else(|| format!("oneOf[{idx}] schema must be an object"))?;
-        branches.push(schema_object.clone());
+        tail_out.push(schema_object.clone());
     }
-    Ok(Some(branches))
+    Ok(Some(NonEmpty {
+        head,
+        tail: tail_out,
+    }))
 }
 
-fn schema_type_union_branches(schema: &JsonObject) -> Option<Vec<JsonObject>> {
-    let JsonValue::Array(types) = schema.get("type")? else {
-        return None;
+fn schema_type_union_branches(schema: &JsonObject) -> Result<Option<NonEmpty<JsonObject>>, String> {
+    let Some(value) = schema.get("type") else {
+        return Ok(None);
     };
-    if types.is_empty() {
-        return None;
-    }
-    let mut branches = Vec::with_capacity(types.len());
-    for value in types {
-        let schema_type = value.as_str()?;
+    let JsonValue::Array(types) = value else {
+        return Ok(None);
+    };
+    let (head, tail) = types
+        .split_first()
+        .ok_or_else(|| "schema type array must include at least one string".to_string())?;
+    let schema_type = head.as_str().ok_or_else(|| {
+        format!("schema type array must contain strings; found {head} at 0")
+    })?;
+    let mut head_out = schema.clone();
+    head_out.insert(
+        "type".to_string(),
+        JsonValue::String(schema_type.to_string()),
+    );
+
+    let mut tail_out = Vec::with_capacity(tail.len());
+    for (idx, value) in tail.iter().enumerate() {
+        let idx = idx + 1;
+        let schema_type = value.as_str().ok_or_else(|| {
+            format!("schema type array must contain strings; found {value} at {idx}")
+        })?;
         let mut branch = schema.clone();
         branch.insert(
             "type".to_string(),
             JsonValue::String(schema_type.to_string()),
         );
-        branches.push(branch);
+        tail_out.push(branch);
     }
-    Some(branches)
+
+    Ok(Some(NonEmpty {
+        head: head_out,
+        tail: tail_out,
+    }))
 }
 
 fn schema_without_anyof(schema: &JsonObject) -> JsonObject {

@@ -12,6 +12,7 @@ use serde_json::{Number, Value as JsonValue};
 #[cfg(test)]
 use tooltest_test_support as _;
 
+mod coverage_filter;
 mod generator;
 mod input;
 mod lint;

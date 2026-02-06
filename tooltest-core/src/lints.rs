@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::NaiveDate;
 use serde_json::json;
 
+use crate::coverage_filter::is_coverage_tool_eligible;
 use crate::output_schema::compile_output_schema;
 pub use crate::schema_dialect::DEFAULT_JSON_SCHEMA_DIALECT;
 use crate::schema_dialect::{
@@ -420,18 +421,18 @@ impl LintRule for CoverageLint {
         let Some(coverage) = context.coverage else {
             return Vec::new();
         };
-        let mut eligible: Vec<String> = coverage
+        let eligible: Vec<String> = coverage
             .counts
             .keys()
-            .filter(|name| name.as_str() != "tools/list")
+            .filter(|name| {
+                is_coverage_tool_eligible(
+                    name.as_str(),
+                    context.coverage_allowlist,
+                    context.coverage_blocklist,
+                )
+            })
             .cloned()
             .collect();
-        if let Some(allowlist) = context.coverage_allowlist {
-            eligible.retain(|name| allowlist.iter().any(|entry| entry == name));
-        }
-        if let Some(blocklist) = context.coverage_blocklist {
-            eligible.retain(|name| !blocklist.iter().any(|entry| entry == name));
-        }
 
         let uncallable: HashSet<&str> = coverage
             .warnings

@@ -4,13 +4,12 @@ use chrono::Utc;
 use rmcp::model::CallToolResult;
 use serde_json::Number;
 
+use crate::coverage_filter::{is_coverage_tool_eligible, LIST_TOOLS_COUNT_LABEL};
 use crate::generator::{uncallable_reason, PreparedTool, UncallableReason, ValueCorpus};
 use crate::{
     CorpusReport, CoverageReport, CoverageWarning, CoverageWarningReason, StateMachineConfig,
     ToolInvocation, UncallableToolCall,
 };
-
-const LIST_TOOLS_COUNT_LABEL: &str = "tools/list";
 
 #[derive(Clone, Debug)]
 pub(super) struct CoverageTracker<'a> {
@@ -191,25 +190,18 @@ impl<'a> CoverageTracker<'a> {
 
     pub(super) fn build_warnings(&self) -> Vec<CoverageWarning> {
         let mut warnings = Vec::new();
-        let allowlist = self.allowlist.as_ref();
-        let blocklist = self.blocklist.as_ref();
+        let allowlist = self.allowlist.as_deref();
+        let blocklist = self.blocklist.as_deref();
 
         for tool in self.tools {
-            let name = tool.name.to_string();
-            if let Some(allowlist) = allowlist {
-                if !allowlist.iter().any(|entry| entry == &name) {
-                    continue;
-                }
-            }
-            if let Some(blocklist) = blocklist {
-                if blocklist.iter().any(|entry| entry == &name) {
-                    continue;
-                }
+            let name = tool.name.as_ref();
+            if !is_coverage_tool_eligible(name, allowlist, blocklist) {
+                continue;
             }
 
             if let Some(reason) = uncallable_reason(tool, &self.corpus, self.lenient_sourcing) {
                 warnings.push(CoverageWarning {
-                    tool: name,
+                    tool: name.to_string(),
                     reason: map_uncallable_reason(reason),
                 });
             }
@@ -232,24 +224,11 @@ impl<'a> CoverageTracker<'a> {
     }
 
     pub(super) fn eligible_tools(&self) -> Vec<&PreparedTool> {
-        let allowlist = self.allowlist.as_ref();
-        let blocklist = self.blocklist.as_ref();
+        let allowlist = self.allowlist.as_deref();
+        let blocklist = self.blocklist.as_deref();
         self.tools
             .iter()
-            .filter(|tool| {
-                let name = tool.name.to_string();
-                if let Some(allowlist) = allowlist {
-                    if !allowlist.iter().any(|entry| entry == &name) {
-                        return false;
-                    }
-                }
-                if let Some(blocklist) = blocklist {
-                    if blocklist.iter().any(|entry| entry == &name) {
-                        return false;
-                    }
-                }
-                true
-            })
+            .filter(|tool| is_coverage_tool_eligible(tool.name.as_ref(), allowlist, blocklist))
             .collect()
     }
 

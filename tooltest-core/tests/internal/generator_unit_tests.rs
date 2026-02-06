@@ -2067,11 +2067,9 @@ fn input_object_strategy_anyof_exercises_union_path() {
     properties.insert("vendor".to_string(), JsonValue::Object(vendor_schema));
     schema.insert("properties".to_string(), JsonValue::Object(properties));
     let mut required_vendor = JsonObject::new();
-    let mut required_values = Vec::new();
-    required_values.push(JsonValue::String("vendor".to_string()));
+    let required_values = vec![JsonValue::String("vendor".to_string())];
     required_vendor.insert("required".to_string(), JsonValue::Array(required_values));
-    let mut any_of = Vec::new();
-    any_of.push(JsonValue::Object(required_vendor));
+    let any_of = vec![JsonValue::Object(required_vendor)];
     schema.insert("anyOf".to_string(), JsonValue::Array(any_of));
     let tool = tool_with_schema("echo", JsonValue::Object(schema));
     let strategy =

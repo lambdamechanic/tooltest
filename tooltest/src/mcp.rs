@@ -588,6 +588,43 @@ fn serialize_value<T: Serialize>(value: &T) -> Result<JsonValue, ErrorData> {
     })
 }
 
+pub async fn run_stdio() -> Result<(), String> {
+    let exit_immediately = exit_immediately();
+    let service = if use_test_transport() {
+        let transport = if std::env::var_os("TOOLTEST_MCP_BAD_TRANSPORT").is_some() {
+            stdio_bad_transport()
+        } else if std::env::var_os("TOOLTEST_MCP_PANIC_TRANSPORT").is_some() {
+            stdio_panic_transport()
+        } else {
+            stdio_test_transport()
+        };
+        McpServer::new()
+            .serve(transport)
+            .await
+            .map_err(|error| format!("failed to start MCP stdio server: {error}"))?
+    } else {
+        McpServer::new()
+            .serve(stdio())
+            .await
+            .map_err(|error| format!("failed to start MCP stdio server: {error}"))?
+    };
+    if exit_immediately {
+        if std::env::var_os("TOOLTEST_MCP_PANIC_TRANSPORT").is_some() {
+            tokio::task::yield_now().await;
+        }
+        service
+            .cancel()
+            .await
+            .map_err(|error| format!("MCP stdio server failed: {error}"))?;
+        return Ok(());
+    }
+    service
+        .waiting()
+        .await
+        .map_err(|error| format!("MCP stdio server failed: {error}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1448,10 +1485,7 @@ mod tests {
     async fn tooltest_worker_reports_forced_runtime_error() {
         let _lock = env_lock().lock().await;
         fn forced_runtime_error() -> Result<tokio::runtime::Runtime, std::io::Error> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "forced runtime error",
-            ))
+            Err(std::io::Error::other("forced runtime error"))
         }
         let config = TooltestWorkerConfig {
             ready_mode: WorkerReadyMode::Send,
@@ -1684,43 +1718,6 @@ mod tests {
             })
         }
     }
-}
-
-pub async fn run_stdio() -> Result<(), String> {
-    let exit_immediately = exit_immediately();
-    let service = if use_test_transport() {
-        let transport = if std::env::var_os("TOOLTEST_MCP_BAD_TRANSPORT").is_some() {
-            stdio_bad_transport()
-        } else if std::env::var_os("TOOLTEST_MCP_PANIC_TRANSPORT").is_some() {
-            stdio_panic_transport()
-        } else {
-            stdio_test_transport()
-        };
-        McpServer::new()
-            .serve(transport)
-            .await
-            .map_err(|error| format!("failed to start MCP stdio server: {error}"))?
-    } else {
-        McpServer::new()
-            .serve(stdio())
-            .await
-            .map_err(|error| format!("failed to start MCP stdio server: {error}"))?
-    };
-    if exit_immediately {
-        if std::env::var_os("TOOLTEST_MCP_PANIC_TRANSPORT").is_some() {
-            tokio::task::yield_now().await;
-        }
-        service
-            .cancel()
-            .await
-            .map_err(|error| format!("MCP stdio server failed: {error}"))?;
-        return Ok(());
-    }
-    service
-        .waiting()
-        .await
-        .map_err(|error| format!("MCP stdio server failed: {error}"))?;
-    Ok(())
 }
 
 // HTTP transport for tooltest MCP server intentionally removed; use stdio only.

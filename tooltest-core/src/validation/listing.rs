@@ -136,7 +136,7 @@ mod tests {
         let error = ListToolsError::Schema(SchemaError::InvalidListTools("boom".to_string()));
         assert!(format!("{error}").contains("schema error"));
 
-        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "nope");
+        let io_error = std::io::Error::other("nope");
         let error = ListToolsError::Session(SessionError::from(io_error));
         assert!(format!("{error}").contains("session error"));
     }
@@ -157,10 +157,7 @@ mod tests {
     #[tokio::test]
     async fn list_tools_with_connector_propagates_session_error() {
         let error = list_tools_with_connector((), &SchemaConfig::default(), |_| async {
-            Err(SessionError::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "nope",
-            )))
+            Err(SessionError::from(std::io::Error::other("nope")))
         })
         .await
         .expect_err("session error");

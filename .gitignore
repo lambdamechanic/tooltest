@@ -6,6 +6,10 @@
 *.tmp
 *.swp
 .DS_Store
+perf.data*
+lastrun.svg
+pctx-dev.jsonl
+check.py
 
 # Gas Town (added by gt)
 .runtime/

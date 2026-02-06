@@ -1808,8 +1808,7 @@ fn mcp_schema_min_version_rejects_invalid_min_version() {
         ),
         "not-a-date",
     )
-    .err()
-    .expect("error");
+    .expect_err("error");
     assert!(error.contains("invalid minimum protocol version"));
 }
 
@@ -1839,8 +1838,7 @@ fn coverage_lint_requires_run_phase() {
         LintDefinition::new("coverage", LintPhase::List, LintLevel::Error),
         Vec::new(),
     )
-    .err()
-    .expect("error");
+    .expect_err("error");
     assert!(error.contains("run phase"));
 }
 
@@ -1903,8 +1901,7 @@ fn no_crash_lint_rejects_wrong_phase() {
         LintPhase::List,
         LintLevel::Error,
     ))
-    .err()
-    .expect("error");
+    .expect_err("error");
     assert!(error.contains("run phase"));
 }
 
@@ -1915,8 +1912,7 @@ fn no_crash_lint_rejects_non_error_level() {
         LintPhase::Run,
         LintLevel::Warning,
     ))
-    .err()
-    .expect("error");
+    .expect_err("error");
     assert!(error.contains("error level"));
 }
 

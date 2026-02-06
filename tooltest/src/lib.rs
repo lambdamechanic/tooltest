@@ -509,7 +509,7 @@ mod tests {
     use std::path::PathBuf;
     use std::process::{Command as ProcessCommand, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use clap::{CommandFactory, Parser};
@@ -554,7 +554,11 @@ mod tests {
         std::env::temp_dir().join(format!("tooltest-{name}-{pid}-{nanos}-{counter}"))
     }
 
-    static MCP_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static MCP_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+    fn mcp_env_lock() -> &'static tokio::sync::Mutex<()> {
+        MCP_ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
 
     struct EnvVarGuard {
         key: String,
@@ -949,7 +953,7 @@ mod tests {
     #[test]
     fn tooltest_input_rejects_config_command() {
         let cli = Cli::parse_from(["tooltest", "config", "default"]);
-        let error = build_tooltest_input(&cli).err().expect("error");
+        let error = build_tooltest_input(&cli).expect_err("error");
         assert!(error.contains("config command does not accept tooltest input"));
     }
 
@@ -1068,7 +1072,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_mcp_stdio_exits_successfully() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
         let _guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "1");
         let cli = Cli::parse_from(["tooltest", "mcp", "--stdio"]);
@@ -1078,7 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_mcp_stdio_waits_for_transport_shutdown() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
         let cli = Cli::parse_from(["tooltest", "mcp", "--stdio"]);
         let exit = run(cli).await;
@@ -1089,7 +1093,7 @@ mod tests {
     fn run_mcp_stdio_without_test_transport_reports_error() {
         // Run the real-stdio path in a subprocess so it can't block on the interactive terminal.
         // This test binary is already built, so spawning it is cheap and stable.
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = futures::executor::block_on(mcp_env_lock().lock());
         let exe = std::env::current_exe().expect("current test binary");
         let output = ProcessCommand::new(exe)
             .arg("--ignored")
@@ -1112,7 +1116,7 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn run_mcp_stdio_without_test_transport_reports_error_child() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         env::remove_var("TOOLTEST_MCP_TEST_TRANSPORT");
         env::remove_var("TOOLTEST_MCP_EXIT_IMMEDIATELY");
         env::remove_var("TOOLTEST_MCP_BAD_TRANSPORT");
@@ -1123,7 +1127,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_mcp_stdio_bad_transport_reports_error() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
         let _bad_guard = EnvVarGuard::set("TOOLTEST_MCP_BAD_TRANSPORT", "1");
         let result = mcp::run_stdio().await;
@@ -1134,7 +1138,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_mcp_stdio_bad_transport_returns_exit_code_2() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
         let _bad_guard = EnvVarGuard::set("TOOLTEST_MCP_BAD_TRANSPORT", "1");
         let cli = Cli::parse_from(["tooltest", "mcp", "--stdio"]);
@@ -1144,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_mcp_stdio_panic_transport_reports_error() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
         let _panic_guard = EnvVarGuard::set("TOOLTEST_MCP_PANIC_TRANSPORT", "1");
         let result = mcp::run_stdio().await;
@@ -1155,7 +1159,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_mcp_stdio_exit_immediately_reports_error_on_panic() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = mcp_env_lock().lock().await;
         let _transport_guard = EnvVarGuard::set("TOOLTEST_MCP_TEST_TRANSPORT", "1");
         let _panic_guard = EnvVarGuard::set("TOOLTEST_MCP_PANIC_TRANSPORT", "1");
         let _exit_guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "1");
@@ -1167,7 +1171,7 @@ mod tests {
 
     #[test]
     fn env_var_guard_restores_previous_value() {
-        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let _lock = futures::executor::block_on(mcp_env_lock().lock());
         env::set_var("TOOLTEST_MCP_EXIT_IMMEDIATELY", "original");
         {
             let _guard = EnvVarGuard::set("TOOLTEST_MCP_EXIT_IMMEDIATELY", "temporary");

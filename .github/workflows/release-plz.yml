@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Preflight: auto-clean open release-plz PRs
+      - name: "Preflight: auto-clean open release-plz PRs"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -38,14 +38,21 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100")"
 
-          echo "${prs_json}" | python3 - "${prefix}" <<'PY'
+          prs_file="$(mktemp)"
+          trap 'rm -f "${prs_file}"' EXIT
+          printf '%s' "${prs_json}" > "${prs_file}"
+
+          python3 - "${prefix}" "${prs_file}" <<'PY'
           import json
           import os
           import sys
+          import urllib.error
           import urllib.request
 
           prefix = sys.argv[1]
-          prs = json.load(sys.stdin)
+          prs_file = sys.argv[2]
+          with open(prs_file, "r", encoding="utf-8") as handle:
+              prs = json.load(handle)
           repo = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GITHUB_TOKEN"]
 

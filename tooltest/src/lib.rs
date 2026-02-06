@@ -507,6 +507,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::env;
     use std::path::PathBuf;
+    use std::process::{Command as ProcessCommand, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1084,13 +1085,38 @@ mod tests {
         assert_eq!(exit, ExitCode::SUCCESS);
     }
 
+    #[test]
+    fn run_mcp_stdio_without_test_transport_reports_error() {
+        // Run the real-stdio path in a subprocess so it can't block on the interactive terminal.
+        // This test binary is already built, so spawning it is cheap and stable.
+        let _lock = MCP_ENV_LOCK.lock().expect("lock");
+        let exe = std::env::current_exe().expect("current test binary");
+        let output = ProcessCommand::new(exe)
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("--nocapture")
+            .arg("tests::run_mcp_stdio_without_test_transport_reports_error_child")
+            .stdin(Stdio::null())
+            .env_remove("TOOLTEST_MCP_TEST_TRANSPORT")
+            .env_remove("TOOLTEST_MCP_EXIT_IMMEDIATELY")
+            .env_remove("TOOLTEST_MCP_BAD_TRANSPORT")
+            .env_remove("TOOLTEST_MCP_PANIC_TRANSPORT")
+            .output()
+            .expect("run child stdio test");
+
+        assert!(output.status.success());
+    }
+
+    #[ignore]
     #[tokio::test]
-    async fn run_mcp_stdio_without_test_transport_reports_error() {
+    async fn run_mcp_stdio_without_test_transport_reports_error_child() {
         let _lock = MCP_ENV_LOCK.lock().expect("lock");
         env::remove_var("TOOLTEST_MCP_TEST_TRANSPORT");
         env::remove_var("TOOLTEST_MCP_EXIT_IMMEDIATELY");
-        let result = mcp::run_stdio().await;
-        assert!(result.is_err());
+        env::remove_var("TOOLTEST_MCP_BAD_TRANSPORT");
+        env::remove_var("TOOLTEST_MCP_PANIC_TRANSPORT");
+        let error = mcp::run_stdio().await.expect_err("expected error");
+        assert!(error.contains("failed to start MCP stdio server"));
     }
 
     #[tokio::test]

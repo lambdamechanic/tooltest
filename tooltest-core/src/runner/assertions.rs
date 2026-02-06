@@ -22,9 +22,7 @@ pub(super) fn apply_default_assertions(
 
     let tool_name = invocation.name.as_ref();
     let validator = validators.get(tool_name)?;
-    let Some(structured) = response.structured_content.as_ref() else {
-        return None;
-    };
+    let structured = response.structured_content.as_ref()?;
     if let Err(error) = validator.validate(structured) {
         return Some(format!(
             "output schema violation for tool '{tool_name}': {error}"

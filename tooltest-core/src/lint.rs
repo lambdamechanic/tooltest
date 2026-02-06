@@ -30,18 +30,13 @@ pub enum LintPhase {
 }
 
 /// Source of the lint configuration for the run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LintConfigSource {
     Repo,
     Home,
+    #[default]
     Default,
-}
-
-impl Default for LintConfigSource {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 /// Definition of a lint instance.

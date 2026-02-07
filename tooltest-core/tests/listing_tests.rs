@@ -76,10 +76,7 @@ async fn list_tools_http_succeeds_with_streamable_server() {
             .await;
     });
 
-    let config = HttpConfig {
-        url: format!("http://{addr}/mcp"),
-        auth_token: None,
-    };
+    let config = HttpConfig::new(format!("http://{addr}/mcp")).expect("http config");
     let tools = list_tools_http(&config, &SchemaConfig::default())
         .await
         .expect("list tools");
@@ -94,7 +91,7 @@ async fn list_tools_http_succeeds_with_streamable_server() {
 #[tokio::test(flavor = "multi_thread")]
 async fn list_tools_stdio_succeeds_with_test_server() {
     let server = env!("CARGO_BIN_EXE_stdio_test_server");
-    let config = StdioConfig::new(server);
+    let config = StdioConfig::new(server).expect("stdio config");
 
     let tools = list_tools_stdio(&config, &SchemaConfig::default())
         .await

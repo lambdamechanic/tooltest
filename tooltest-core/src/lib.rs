@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+use reqwest::Url;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value as JsonValue};
@@ -148,28 +149,72 @@ pub struct SchemaConfig {
     pub version: SchemaVersion,
 }
 
+fn validate_stdio_command(command: &str) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("stdio command must not be empty".to_string());
+    }
+    Ok(())
+}
+
+fn validate_http_url(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|error| format!("invalid http url '{url}': {error}"))?;
+    if !parsed.has_host() {
+        return Err(format!("invalid http url '{url}': missing host"));
+    }
+    Ok(())
+}
+
+fn deserialize_stdio_command<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let command = String::deserialize(deserializer)?;
+    validate_stdio_command(&command).map_err(serde::de::Error::custom)?;
+    Ok(command)
+}
+
+fn deserialize_http_url<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let url = String::deserialize(deserializer)?;
+    validate_http_url(&url).map_err(serde::de::Error::custom)?;
+    Ok(url)
+}
+
 /// Configuration for a stdio-based MCP endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StdioConfig {
     /// Command to execute for the MCP server.
-    pub command: String,
+    #[serde(deserialize_with = "deserialize_stdio_command")]
+    command: String,
     /// Command-line arguments passed to the MCP server.
+    #[serde(default)]
     pub args: Vec<String>,
     /// Environment variables to add or override for the MCP process.
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Optional working directory for the MCP process.
+    #[serde(default)]
     pub cwd: Option<String>,
 }
 
 impl StdioConfig {
     /// Creates a stdio configuration with defaults for args, env, and cwd.
-    pub fn new(command: impl Into<String>) -> Self {
-        Self {
-            command: command.into(),
+    pub fn new(command: impl Into<String>) -> Result<Self, String> {
+        let command = command.into();
+        validate_stdio_command(&command)?;
+        Ok(Self {
+            command,
             args: Vec::new(),
             env: BTreeMap::new(),
             cwd: None,
-        }
+        })
+    }
+
+    /// Returns the configured MCP server command.
+    pub fn command(&self) -> &str {
+        &self.command
     }
 }
 
@@ -204,9 +249,28 @@ impl PreRunHook {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HttpConfig {
     /// The HTTP endpoint URL for MCP requests.
-    pub url: String,
+    #[serde(deserialize_with = "deserialize_http_url")]
+    url: String,
     /// Optional bearer token to attach to Authorization headers.
+    #[serde(default)]
     pub auth_token: Option<String>,
+}
+
+impl HttpConfig {
+    /// Creates an HTTP configuration with optional auth token.
+    pub fn new(url: impl Into<String>) -> Result<Self, String> {
+        let url = url.into();
+        validate_http_url(&url)?;
+        Ok(Self {
+            url,
+            auth_token: None,
+        })
+    }
+
+    /// Returns the configured HTTP URL.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
 }
 
 /// Predicate callback used to decide whether a tool invocation is eligible.
@@ -317,7 +381,7 @@ pub struct RunConfig {
     /// Include uncallable tool traces when coverage validation fails.
     pub show_uncallable: bool,
     /// Number of calls per tool to include in uncallable traces.
-    pub uncallable_limit: usize,
+    uncallable_limit: usize,
     /// Optional trace sink for streaming per-case traces.
     pub trace_sink: Option<Arc<dyn TraceSink>>,
     /// Configured lint rules for the run.
@@ -401,9 +465,17 @@ impl RunConfig {
     }
 
     /// Sets the call limit for uncallable tool traces.
-    pub fn with_uncallable_limit(mut self, limit: usize) -> Self {
+    pub fn with_uncallable_limit(mut self, limit: usize) -> Result<Self, String> {
+        if limit < 1 {
+            return Err("uncallable-limit must be at least 1".to_string());
+        }
         self.uncallable_limit = limit;
-        self
+        Ok(self)
+    }
+
+    /// Returns the call limit for uncallable tool traces.
+    pub fn uncallable_limit(&self) -> usize {
+        self.uncallable_limit
     }
 
     /// Sets a trace sink that receives per-case traces.

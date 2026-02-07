@@ -23,9 +23,41 @@ use super::state_machine::{execute_state_machine_sequence, StateMachineExecution
 #[derive(Clone, Debug)]
 pub struct RunnerOptions {
     /// Number of proptest cases to execute.
-    pub cases: u32,
+    cases: u32,
     /// Range of invocation counts per generated sequence.
-    pub sequence_len: RangeInclusive<usize>,
+    sequence_len: RangeInclusive<usize>,
+}
+
+impl RunnerOptions {
+    /// Creates runner options, validating that `cases >= 1` and the sequence length range is valid.
+    pub fn new(cases: u32, sequence_len: RangeInclusive<usize>) -> Result<Self, String> {
+        if cases < 1 {
+            return Err("cases must be at least 1".to_string());
+        }
+        let min_len = *sequence_len.start();
+        if min_len < 1 {
+            return Err("min-sequence-len must be at least 1".to_string());
+        }
+        let max_len = *sequence_len.end();
+        if min_len > max_len {
+            return Err("min-sequence-len must be <= max-sequence-len".to_string());
+        }
+        Ok(Self { cases, sequence_len })
+    }
+
+    /// Returns the configured number of proptest cases.
+    pub fn cases(&self) -> u32 {
+        self.cases
+    }
+
+    /// Returns the configured sequence length range.
+    pub fn sequence_len(&self) -> RangeInclusive<usize> {
+        self.sequence_len.clone()
+    }
+
+    pub(crate) fn min_sequence_len(&self) -> usize {
+        *self.sequence_len.start()
+    }
 }
 
 impl Default for RunnerOptions {
@@ -66,7 +98,7 @@ pub async fn run_with_session(
         Rc::new(RefCell::new(CoverageTracker::new(
             &aggregate_tools,
             &config.state_machine,
-            config.uncallable_limit,
+            config.uncallable_limit(),
         )));
     let last_trace: Rc<RefCell<Vec<TraceEntry>>> = Rc::new(RefCell::new(Vec::new()));
     last_trace.replace(prelude_trace.as_ref().clone());
@@ -94,7 +126,7 @@ pub async fn run_with_session(
     }
 
     let mut runner = TestRunner::new(ProptestConfig {
-        cases: options.cases,
+        cases: options.cases(),
         failure_persistence: None,
         ..ProptestConfig::default()
     });
@@ -103,7 +135,7 @@ pub async fn run_with_session(
         &tools,
         config.predicate.as_ref(),
         &config.state_machine,
-        options.sequence_len.clone(),
+        options.sequence_len(),
     ) {
         Ok(strategy) => strategy,
         Err(error) => {
@@ -117,19 +149,6 @@ pub async fn run_with_session(
             )
         }
     };
-
-    if options.cases == 0 {
-        if let Err(failure) = run_pre_run_hook(config).await {
-            return failure_result(
-                failure,
-                prelude_trace.as_ref().clone(),
-                None,
-                warnings.borrow().clone(),
-                None,
-                None,
-            );
-        }
-    }
 
     let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runner.run(&strategy, {
@@ -163,12 +182,12 @@ pub async fn run_with_session(
                             let mut tracker = CoverageTracker::new(
                                 &tools,
                                 &config.state_machine,
-                                config.uncallable_limit,
+                                config.uncallable_limit(),
                             );
                             let min_len = if config.lints.has_enabled("coverage") {
                                 None
                             } else {
-                                Some(*options.sequence_len.start())
+                                Some(options.min_sequence_len())
                             };
                             let case_index = {
                                 let mut counter = case_counter.borrow_mut();

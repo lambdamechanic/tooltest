@@ -22,11 +22,73 @@ fn schema_config_defaults_to_latest() {
 
 #[test]
 fn stdio_config_new_sets_defaults() {
-    let config = StdioConfig::new("mcp-server");
-    assert_eq!(config.command, "mcp-server");
+    let config = StdioConfig::new("mcp-server").expect("stdio config");
+    assert_eq!(config.command(), "mcp-server");
     assert!(config.args.is_empty());
     assert!(config.env.is_empty());
     assert!(config.cwd.is_none());
+}
+
+#[test]
+fn stdio_config_rejects_empty_command() {
+    let error = StdioConfig::new("  ").expect_err("expected error");
+    assert!(error.contains("stdio command must not be empty"));
+
+    let error = serde_json::from_str::<StdioConfig>(r#"{"command":"  "}"#).unwrap_err();
+    assert!(error.to_string().contains("stdio command must not be empty"));
+}
+
+#[test]
+fn config_deserialization_rejects_non_string_fields() {
+    let error = serde_json::from_str::<StdioConfig>(r#"{"command":123}"#).unwrap_err();
+    assert!(error.to_string().contains("expected a string"));
+
+    let error = serde_json::from_str::<crate::HttpConfig>(r#"{"url":123}"#).unwrap_err();
+    assert!(error.to_string().contains("expected a string"));
+}
+
+#[test]
+fn config_deserialization_accepts_valid_values() {
+    let config: StdioConfig = serde_json::from_str(
+        r#"{"command":"server","args":["--flag"],"env":{"KEY":"VALUE"},"cwd":"/tmp"}"#,
+    )
+    .expect("stdio config");
+    assert_eq!(config.command(), "server");
+    assert_eq!(config.args, vec!["--flag".to_string()]);
+    assert_eq!(config.env.get("KEY").map(String::as_str), Some("VALUE"));
+    assert_eq!(config.cwd.as_deref(), Some("/tmp"));
+
+    let config: crate::HttpConfig =
+        serde_json::from_str(r#"{"url":"http://localhost:3000/mcp","auth_token":"token"}"#)
+            .expect("http config");
+    assert_eq!(config.url(), "http://localhost:3000/mcp");
+    assert_eq!(config.auth_token.as_deref(), Some("token"));
+}
+
+#[test]
+fn http_config_validates_url() {
+    let config = crate::HttpConfig::new("http://localhost:3000/mcp").expect("http config");
+    assert_eq!(config.url(), "http://localhost:3000/mcp");
+
+    let error = crate::HttpConfig::new("localhost:3000/mcp").expect_err("expected error");
+    assert!(error.contains("invalid http url"));
+
+    let error = serde_json::from_str::<crate::HttpConfig>(r#"{"url":"file:///tmp/mcp"}"#)
+        .unwrap_err();
+    assert!(error.to_string().contains("missing host"));
+}
+
+#[test]
+fn run_config_rejects_uncallable_limit_under_one() {
+    let error = RunConfig::new()
+        .with_uncallable_limit(0)
+        .expect_err("expected error");
+    assert!(error.contains("uncallable-limit must be at least 1"));
+
+    let config = RunConfig::new()
+        .with_uncallable_limit(2)
+        .expect("valid config");
+    assert_eq!(config.uncallable_limit(), 2);
 }
 
 #[test]
@@ -192,12 +254,9 @@ fn run_config_applies_pre_run_hook_stdio_context() {
     let mut config = RunConfig::new().with_pre_run_hook(PreRunHook::new("echo ok"));
     let mut env = std::collections::BTreeMap::new();
     env.insert("FOO".to_string(), "BAR".to_string());
-    let endpoint = StdioConfig {
-        command: "server".to_string(),
-        args: Vec::new(),
-        env: env.clone(),
-        cwd: Some("/tmp".to_string()),
-    };
+    let mut endpoint = StdioConfig::new("server").expect("endpoint");
+    endpoint.env = env.clone();
+    endpoint.cwd = Some("/tmp".to_string());
 
     config.apply_stdio_pre_run_context(&endpoint);
 

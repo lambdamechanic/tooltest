@@ -716,10 +716,7 @@ async fn run_with_transport_success_path() {
         connect_result(Ok(session)),
         "local",
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -874,10 +871,7 @@ async fn run_with_session_reports_pre_run_hook_failure_during_execution() {
         path = marker.display()
     ));
     let config = RunConfig::new().with_pre_run_hook(hook);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_failure_reason_contains(&result, "pre-run hook failed");
@@ -894,10 +888,7 @@ async fn run_with_session_applies_pre_run_hook_env() {
     let mut hook = PreRunHook::new("test \"$HOOK_ENV\" = \"ok\"");
     hook.env.insert("HOOK_ENV".to_string(), "ok".to_string());
     let config = RunConfig::new().with_pre_run_hook(hook);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_success(&result);
@@ -986,10 +977,7 @@ async fn run_with_session_reports_legacy_failure_path() {
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
     let config = RunConfig::new().with_in_band_error_forbidden(true);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_failure(&result);
@@ -1002,10 +990,7 @@ async fn run_with_session_state_machine_success_executes_sequence() {
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
     let config = RunConfig::new();
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_success(&result);
@@ -1018,10 +1003,7 @@ async fn run_with_session_state_machine_reports_default_assertion_failure() {
     let transport = RunnerTransport::new(tool, response);
     let session = connect_runner_transport(transport).await.expect("connect");
     let config = RunConfig::new().with_in_band_error_forbidden(true);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_failure_reason_contains(
@@ -1039,10 +1021,7 @@ async fn run_with_session_state_machine_allows_in_band_error_by_default() {
     let config = RunConfig::new()
         .with_state_machine(StateMachineConfig::default())
         .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_success(&result);
@@ -1073,10 +1052,7 @@ async fn run_with_session_state_machine_requires_structured_content_on_error_wit
     let config = RunConfig::new()
         .with_state_machine(StateMachineConfig::default())
         .with_lints(suite);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_success(&result);
@@ -1110,10 +1086,7 @@ async fn run_with_session_state_machine_accepts_structured_content_on_error_with
     let config = RunConfig::new()
         .with_state_machine(StateMachineConfig::default())
         .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     assert_success(&result);
@@ -1131,10 +1104,7 @@ async fn run_with_session_state_machine_min_calls_per_tool_failure() {
         .with_lints(coverage_lint_suite(vec![CoverageRule::MinCallsPerTool {
             min: 2,
         }]));
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     match result.outcome {
@@ -1157,10 +1127,7 @@ async fn run_with_session_state_machine_no_uncalled_tools_failure() {
     let config = RunConfig::new()
         .with_state_machine(state_machine)
         .with_lints(coverage_lint_suite(vec![CoverageRule::NoUncalledTools]));
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     match result.outcome {
@@ -1394,10 +1361,7 @@ async fn run_with_session_no_crash_fails_on_panic() {
     let config = RunConfig::new()
         .with_trace_sink(Arc::new(PanicSink))
         .with_lints(no_crash_lint_suite());
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = run_with_session(&session, &config, options).await;
     match result.outcome {
@@ -1584,10 +1548,7 @@ async fn list_phase_lint_error_stops_before_tool_calls() {
     let result = run_with_session(
         &session,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
     assert_failure(&result);
@@ -1608,10 +1569,7 @@ async fn response_phase_lint_error_fails_after_response() {
     let result = run_with_session(
         &session,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
     assert_failure(&result);
@@ -1639,10 +1597,7 @@ async fn warning_level_lint_does_not_fail_run() {
     let result = run_with_session(
         &session,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
     assert_success(&result);
@@ -1691,10 +1646,7 @@ async fn run_result_surfaces_schema_and_lint_warnings() {
     let result = run_with_session(
         &session,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
     assert_success(&result);
@@ -2444,10 +2396,7 @@ async fn run_phase_lint_error_fails_after_run() {
     let result = run_with_session(
         &session,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
     assert_failure(&result);
@@ -2764,17 +2713,14 @@ async fn run_with_transport_reports_connect_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_http_reports_transport_error() {
-    let config = HttpConfig {
-        url: "http://localhost:1234/mcp".to_string(),
-        auth_token: None,
-    };
+    let config = HttpConfig::new("http://localhost:1234/mcp").expect("http config");
     let result = run_http(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert_failure(&result);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_stdio_reports_transport_error() {
-    let config = StdioConfig::new("mcp-server");
+    let config = StdioConfig::new("mcp-server").expect("stdio config");
     let result = run_stdio(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert_failure(&result);
 }

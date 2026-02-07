@@ -19,7 +19,7 @@ generation options, and assertion rules.
 use tooltest_core::{run_stdio, RunConfig, RunOutcome, RunnerOptions, StdioConfig};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let endpoint = StdioConfig::new("./path/to/server");
+let endpoint = StdioConfig::new("./path/to/server").expect("valid stdio config");
 let config = RunConfig::new();
 let options = RunnerOptions::default();
 

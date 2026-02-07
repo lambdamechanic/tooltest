@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use reqwest::Url;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +85,9 @@ pub struct TooltestInput {
 impl TooltestInput {
     /// Validates the input to match CLI semantics.
     pub fn validate(&self) -> Result<(), String> {
+        if self.uncallable_limit < 1 {
+            return Err("uncallable-limit must be at least 1".to_string());
+        }
         self.validate_run_config()?;
         build_sequence_len(self.min_sequence_len, self.max_sequence_len)?;
         Ok(())
@@ -93,7 +95,6 @@ impl TooltestInput {
 
     /// Builds the target configuration for the run.
     pub fn to_target_config(&self) -> Result<TooltestTargetConfig, String> {
-        self.target.validate()?;
         self.target.to_config()
     }
 
@@ -126,8 +127,9 @@ impl TooltestInput {
         let mut run_config = RunConfig::new()
             .with_state_machine(state_machine)
             .with_full_trace(self.full_trace)
-            .with_show_uncallable(self.show_uncallable)
-            .with_uncallable_limit(self.uncallable_limit);
+            .with_show_uncallable(self.show_uncallable);
+
+        run_config = run_config.with_uncallable_limit(self.uncallable_limit)?;
 
         if let Some(hook) = self.pre_run_hook.as_ref() {
             run_config = run_config.with_pre_run_hook(hook.to_pre_run_hook());
@@ -148,10 +150,7 @@ impl TooltestInput {
     /// Builds the runner options for the run.
     pub fn to_runner_options(&self) -> Result<RunnerOptions, String> {
         let sequence_len = build_sequence_len(self.min_sequence_len, self.max_sequence_len)?;
-        Ok(RunnerOptions {
-            cases: self.cases,
-            sequence_len,
-        })
+        RunnerOptions::new(self.cases, sequence_len)
     }
 
     /// Builds the target configuration, run configuration, and runner options together.
@@ -171,8 +170,8 @@ impl TooltestInput {
     }
 
     fn validate_run_config(&self) -> Result<(), String> {
-        if self.uncallable_limit < 1 {
-            return Err("uncallable-limit must be at least 1".to_string());
+        if self.cases < 1 {
+            return Err("cases must be at least 1".to_string());
         }
         if self.lenient_sourcing && self.no_lenient_sourcing {
             return Err("lenient-sourcing conflicts with no-lenient-sourcing".to_string());
@@ -209,24 +208,18 @@ pub struct TooltestTargetHttp {
 impl TooltestTarget {
     fn validate(&self) -> Result<(), String> {
         match self {
-            TooltestTarget::Stdio(wrapper) => {
-                if wrapper.stdio.command.trim().is_empty() {
-                    return Err("stdio command must not be empty".to_string());
-                }
-                Ok(())
-            }
-            TooltestTarget::Http(wrapper) => validate_http_url(&wrapper.http.url),
+            TooltestTarget::Stdio(wrapper) => crate::validate_stdio_command(&wrapper.stdio.command),
+            TooltestTarget::Http(wrapper) => crate::validate_http_url(&wrapper.http.url),
         }
     }
 
     fn to_config(&self) -> Result<TooltestTargetConfig, String> {
         match self {
             TooltestTarget::Stdio(wrapper) => {
-                Ok(TooltestTargetConfig::Stdio(wrapper.stdio.to_config()))
+                Ok(TooltestTargetConfig::Stdio(wrapper.stdio.to_config()?))
             }
             TooltestTarget::Http(wrapper) => {
-                validate_http_url(&wrapper.http.url)?;
-                Ok(TooltestTargetConfig::Http(wrapper.http.to_config()))
+                Ok(TooltestTargetConfig::Http(wrapper.http.to_config()?))
             }
         }
     }
@@ -251,13 +244,12 @@ pub struct TooltestStdioTarget {
 }
 
 impl TooltestStdioTarget {
-    fn to_config(&self) -> StdioConfig {
-        StdioConfig {
-            command: self.command.clone(),
-            args: self.args.clone(),
-            env: self.env.clone(),
-            cwd: self.cwd.clone(),
-        }
+    fn to_config(&self) -> Result<StdioConfig, String> {
+        let mut config = StdioConfig::new(self.command.clone())?;
+        config.args = self.args.clone();
+        config.env = self.env.clone();
+        config.cwd = self.cwd.clone();
+        Ok(config)
     }
 }
 
@@ -276,11 +268,10 @@ pub struct TooltestHttpTarget {
 }
 
 impl TooltestHttpTarget {
-    fn to_config(&self) -> HttpConfig {
-        HttpConfig {
-            url: self.url.clone(),
-            auth_token: self.auth_token.clone(),
-        }
+    fn to_config(&self) -> Result<HttpConfig, String> {
+        let mut config = HttpConfig::new(self.url.clone())?;
+        config.auth_token = self.auth_token.clone();
+        Ok(config)
     }
 }
 
@@ -370,14 +361,6 @@ fn build_sequence_len(min_len: usize, max_len: usize) -> Result<RangeInclusive<u
         return Err("min-sequence-len must be <= max-sequence-len".to_string());
     }
     Ok(min_len..=max_len)
-}
-
-fn validate_http_url(url: &str) -> Result<(), String> {
-    let parsed = Url::parse(url).map_err(|error| format!("invalid http url '{url}': {error}"))?;
-    if !parsed.has_host() {
-        return Err(format!("invalid http url '{url}': missing host"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

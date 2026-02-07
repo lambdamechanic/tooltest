@@ -90,7 +90,7 @@ fn tooltest_input_accepts_valid_sequence_len() {
     ]);
     let input = build_tooltest_input(&cli).expect("input");
     let options = input.to_runner_options().expect("options");
-    assert_eq!(options.sequence_len, 1..=3);
+    assert_eq!(options.sequence_len(), 1..=3);
 }
 
 #[test]
@@ -250,16 +250,13 @@ fn exit_code_for_result_handles_success_and_failure() {
 
 #[tokio::test]
 async fn list_tools_helpers_report_errors_in_cli_tests() {
-    let http = HttpConfig {
-        url: "http://127.0.0.1:0/mcp".to_string(),
-        auth_token: None,
-    };
+    let http = HttpConfig::new("http://127.0.0.1:0/mcp").expect("http config");
     assert!(list_tools_http(&http, &SchemaConfig::default())
         .await
         .is_err());
 
     let missing = temp_path("missing-stdio");
-    let stdio = StdioConfig::new(missing.display().to_string());
+    let stdio = StdioConfig::new(missing.display().to_string()).expect("stdio config");
     assert!(list_tools_stdio(&stdio, &SchemaConfig::default())
         .await
         .is_err());

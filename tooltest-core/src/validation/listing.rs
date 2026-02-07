@@ -43,12 +43,11 @@ impl From<SchemaError> for ListToolsError {
 /// ```no_run
 /// use tooltest_core::{list_tools_http, HttpConfig, SchemaConfig};
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let config = HttpConfig {
-///     url: "http://localhost:3000/mcp".into(),
-///     auth_token: None,
-/// };
-/// let tools = list_tools_http(&config, &SchemaConfig::default()).await?;
+/// # async fn run() -> Result<(), String> {
+/// let config = HttpConfig::new("http://localhost:3000/mcp")?;
+/// let tools = list_tools_http(&config, &SchemaConfig::default())
+///     .await
+///     .map_err(|error| error.to_string())?;
 /// println!("found {} tools", tools.len());
 /// # Ok(())
 /// # }
@@ -66,9 +65,11 @@ pub async fn list_tools_http(
 /// ```no_run
 /// use tooltest_core::{list_tools_stdio, SchemaConfig, StdioConfig};
 ///
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let config = StdioConfig::new("./my-mcp-server");
-/// let tools = list_tools_stdio(&config, &SchemaConfig::default()).await?;
+/// # async fn run() -> Result<(), String> {
+/// let config = StdioConfig::new("./my-mcp-server")?;
+/// let tools = list_tools_stdio(&config, &SchemaConfig::default())
+///     .await
+///     .map_err(|error| error.to_string())?;
 /// assert!(!tools.is_empty());
 /// # Ok(())
 /// # }
@@ -87,7 +88,8 @@ pub async fn list_tools_stdio(
 /// use tooltest_core::{list_tools_with_session, SchemaConfig, SessionDriver, StdioConfig};
 ///
 /// # async fn run() {
-/// let session = SessionDriver::connect_stdio(&StdioConfig::new("./my-mcp-server"))
+/// let config = StdioConfig::new("./my-mcp-server").expect("valid config");
+/// let session = SessionDriver::connect_stdio(&config)
 ///     .await
 ///     .expect("connect");
 /// let tools = list_tools_with_session(&session, &SchemaConfig::default())
@@ -200,10 +202,7 @@ mod tests {
     #[cfg(coverage)]
     #[tokio::test]
     async fn list_tools_http_reports_session_error() {
-        let config = HttpConfig {
-            url: "http://127.0.0.1:0/mcp".to_string(),
-            auth_token: None,
-        };
+        let config = HttpConfig::new("http://127.0.0.1:0/mcp").expect("http config");
 
         let error = list_tools_http(&config, &SchemaConfig::default())
             .await
@@ -214,7 +213,7 @@ mod tests {
     #[cfg(coverage)]
     #[tokio::test]
     async fn list_tools_stdio_reports_session_error() {
-        let config = StdioConfig::new("/no/such/tooltest-binary");
+        let config = StdioConfig::new("/no/such/tooltest-binary").expect("stdio config");
 
         let error = list_tools_stdio(&config, &SchemaConfig::default())
             .await

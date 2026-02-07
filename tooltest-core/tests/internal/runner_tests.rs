@@ -63,12 +63,12 @@ impl HttpTestServer {
 }
 
 fn stdio_server_config() -> Option<StdioConfig> {
-    option_env!("CARGO_BIN_EXE_stdio_test_server").map(|server| {
-        let mut config = StdioConfig::new(server);
+    option_env!("CARGO_BIN_EXE_stdio_test_server").and_then(|server| {
+        let mut config = StdioConfig::new(server).ok()?;
         config
             .env
             .insert("LLVM_PROFILE_FILE".to_string(), "/dev/null".to_string());
-        config
+        Some(config)
     })
 }
 
@@ -107,10 +107,7 @@ async fn run_with_session_returns_minimized_failure() {
     let config = RunConfig::new()
         .with_state_machine(StateMachineConfig::default())
         .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
     let result = crate::run_with_session(&driver, &config, options).await;
 
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
@@ -142,10 +139,7 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
         .with_pre_run_hook(hook)
         .with_state_machine(StateMachineConfig::default())
         .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
-    let options = RunnerOptions {
-        cases: 2,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(2, 1..=1).expect("runner options");
 
     let result = crate::run_with_session(&driver, &config, options).await;
 
@@ -155,30 +149,23 @@ async fn run_with_session_executes_pre_run_hook_per_case() {
     let _ = fs::remove_file(&path);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_executes_pre_run_hook_for_zero_case_runs() {
-    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
-    let response = CallToolResult::success(vec![Content::text("ok")]);
-    let transport = RunnerTransport::new(tool, response);
-    let driver = connect_runner_transport(transport).await.expect("connect");
+#[test]
+fn runner_options_rejects_zero_cases() {
+    let error = RunnerOptions::new(0, 1..=1).expect_err("expected error");
+    assert!(error.contains("cases must be at least 1"));
+}
 
-    let path = temp_path("pre-run-zero-case");
-    let hook = PreRunHook::new(format!("printf 'hook\\n' >> {}", path.display()));
-    let config = RunConfig::new()
-        .with_pre_run_hook(hook)
-        .with_state_machine(StateMachineConfig::default())
-        .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
-    let options = RunnerOptions {
-        cases: 0,
-        sequence_len: 1..=1,
-    };
+#[test]
+fn runner_options_rejects_zero_min_sequence_len() {
+    let error = RunnerOptions::new(1, 0..=1).expect_err("expected error");
+    assert!(error.contains("min-sequence-len must be at least 1"));
+}
 
-    let result = crate::run_with_session(&driver, &config, options).await;
-
-    assert!(matches!(result.outcome, RunOutcome::Success));
-    let contents = fs::read_to_string(&path).expect("read hook log");
-    assert_eq!(contents.lines().count(), 2);
-    let _ = fs::remove_file(&path);
+#[test]
+fn runner_options_rejects_inverted_sequence_len() {
+    let sequence_len = std::ops::RangeInclusive::new(3, 2);
+    let error = RunnerOptions::new(1, sequence_len).expect_err("expected error");
+    assert!(error.contains("min-sequence-len must be <= max-sequence-len"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -190,10 +177,7 @@ async fn run_with_session_reports_pre_run_hook_failure_details() {
 
     let hook = PreRunHook::new("echo hook-out; echo hook-err 1>&2; exit 7");
     let config = RunConfig::new().with_pre_run_hook(hook);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = crate::run_with_session(&driver, &config, options).await;
 
@@ -231,10 +215,7 @@ async fn run_with_session_reports_pre_run_hook_start_error() {
     let mut hook = PreRunHook::new("echo ok");
     hook.cwd = Some(missing_cwd.to_string_lossy().into_owned());
     let config = RunConfig::new().with_pre_run_hook(hook);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = crate::run_with_session(&driver, &config, options).await;
 
@@ -254,7 +235,7 @@ async fn run_with_session_reports_pre_run_hook_start_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_reports_pre_run_hook_failure_for_zero_case_runs() {
+async fn run_with_session_reports_pre_run_hook_failure_after_prepare() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
     let transport = RunnerTransport::new(tool, response);
@@ -266,10 +247,7 @@ async fn run_with_session_reports_pre_run_hook_failure_for_zero_case_runs() {
         marker = marker.display()
     ));
     let config = RunConfig::new().with_pre_run_hook(hook);
-    let options = RunnerOptions {
-        cases: 0,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = crate::run_with_session(&driver, &config, options).await;
 
@@ -296,10 +274,7 @@ async fn run_with_session_reports_pre_run_hook_signal_exit() {
 
     let hook = PreRunHook::new("kill -9 $$");
     let config = RunConfig::new().with_pre_run_hook(hook);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = crate::run_with_session(&driver, &config, options).await;
 
@@ -318,7 +293,7 @@ async fn run_with_session_reports_pre_run_hook_signal_exit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn run_with_session_zero_cases_without_pre_run_hook_succeeds() {
+async fn run_with_session_one_case_without_pre_run_hook_succeeds() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);
     let transport = RunnerTransport::new(tool, response);
@@ -327,10 +302,7 @@ async fn run_with_session_zero_cases_without_pre_run_hook_succeeds() {
     let config = RunConfig::new()
         .with_state_machine(StateMachineConfig::default())
         .with_lints(coverage_lint_suite(vec![CoverageRule::percent_called(0.0)]));
-    let options = RunnerOptions {
-        cases: 0,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
 
     let result = crate::run_with_session(&driver, &config, options).await;
 
@@ -389,10 +361,7 @@ async fn run_with_session_accepts_json_dsl_assertions() {
     };
 
     let config = RunConfig::new().with_assertions(assertions);
-    let options = RunnerOptions {
-        cases: 1,
-        sequence_len: 1..=1,
-    };
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
     let result = crate::run_with_session(&driver, &config, options).await;
 
     assert!(matches!(result.outcome, RunOutcome::Success));
@@ -409,10 +378,7 @@ async fn run_with_session_rejects_current_thread_runtime() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 0..=0,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -427,8 +393,8 @@ async fn run_with_session_rejects_current_thread_runtime() {
 #[test]
 fn runner_options_default_matches_expected_values() {
     let options = RunnerOptions::default();
-    assert_eq!(options.cases, 32);
-    assert_eq!(options.sequence_len, 1..=20);
+    assert_eq!(options.cases(), 32);
+    assert_eq!(options.sequence_len(), 1..=20);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -453,10 +419,7 @@ async fn run_with_session_supports_state_machine_generator() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -499,10 +462,7 @@ async fn run_with_session_generates_all_enum_values() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 20..=20,
-        },
+        RunnerOptions::new(1, 20..=20).expect("runner options"),
     )
     .await;
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
@@ -552,10 +512,7 @@ async fn run_with_session_emits_uncallable_tool_warning() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -605,10 +562,7 @@ async fn run_with_session_honors_coverage_allowlist_and_blocklist() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -639,10 +593,7 @@ async fn run_with_session_executes_allowlist_and_blocklist_filters() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -664,10 +615,7 @@ async fn run_with_session_defaults_to_percent_called_rule() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -706,10 +654,7 @@ async fn run_with_session_fails_on_coverage_validation_rule() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -752,10 +697,7 @@ async fn run_with_session_coverage_failure_includes_corpus_dump() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -785,10 +727,7 @@ async fn run_with_session_suppresses_coverage_on_positive_error() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -834,10 +773,7 @@ async fn run_with_session_percent_called_excludes_uncallable_tools() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -869,10 +805,7 @@ async fn run_with_session_allows_error_responses_and_excludes_from_coverage_by_d
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -895,10 +828,7 @@ async fn run_with_session_reports_session_error() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -924,10 +854,7 @@ async fn run_with_session_reports_list_tools_error() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -951,10 +878,7 @@ async fn run_with_session_reports_invalid_tool_schema() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -975,10 +899,7 @@ async fn run_with_session_reports_invalid_input_schema() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1005,10 +926,7 @@ async fn run_with_session_reports_invalid_output_schema() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1032,10 +950,7 @@ async fn run_with_session_skips_uncompilable_output_schema() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1051,10 +966,7 @@ async fn run_with_session_reports_no_eligible_tools() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1072,10 +984,7 @@ async fn run_with_session_reports_tool_error_response_when_forbidden() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1097,10 +1006,7 @@ async fn run_with_session_reports_call_tool_error() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1128,10 +1034,7 @@ async fn run_with_session_succeeds_with_default_assertions() {
     let result = crate::run_with_session(
         &driver,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1160,10 +1063,7 @@ async fn run_with_session_reports_response_assertion_failure() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1191,10 +1091,7 @@ async fn run_with_session_reports_sequence_assertion_failure() {
     let result = crate::run_with_session(
         &driver,
         &config,
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1229,18 +1126,12 @@ async fn run_http_succeeds_with_streamable_server() {
             .await;
     });
 
-    let config = HttpConfig {
-        url: format!("http://{addr}/mcp"),
-        auth_token: None,
-    };
+    let config = HttpConfig::new(format!("http://{addr}/mcp")).expect("http config");
     let state_machine = StateMachineConfig::default().with_lenient_sourcing(true);
     let result = crate::run_http(
         &config,
         &RunConfig::new().with_state_machine(state_machine),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
 
@@ -1252,17 +1143,14 @@ async fn run_http_succeeds_with_streamable_server() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_http_reports_transport_error() {
-    let config = HttpConfig {
-        url: "http://localhost:1234/mcp".to_string(),
-        auth_token: None,
-    };
+    let config = HttpConfig::new("http://localhost:1234/mcp").expect("http config");
     let result = crate::run_http(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_stdio_reports_transport_error() {
-    let config = StdioConfig::new("mcp-server");
+    let config = StdioConfig::new("mcp-server").expect("stdio config");
     let result = crate::run_stdio(&config, &RunConfig::new(), RunnerOptions::default()).await;
     assert!(matches!(result.outcome, RunOutcome::Failure(_)));
 }
@@ -1272,16 +1160,13 @@ async fn run_stdio_succeeds_with_real_transport() {
     let Some(config) = stdio_server_config() else {
         return;
     };
-    if !std::path::Path::new(&config.command).exists() {
+    if !std::path::Path::new(config.command()).exists() {
         return;
     }
     let result = crate::run_stdio(
         &config,
         &RunConfig::new(),
-        RunnerOptions {
-            cases: 1,
-            sequence_len: 1..=1,
-        },
+        RunnerOptions::new(1, 1..=1).expect("runner options"),
     )
     .await;
     assert!(matches!(result.outcome, RunOutcome::Success));

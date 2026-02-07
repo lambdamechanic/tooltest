@@ -56,7 +56,7 @@ impl SessionDriver {
         use rmcp::transport::TokioChildProcess;
         use tokio::process::Command;
 
-        let mut command = Command::new(&config.command);
+        let mut command = Command::new(config.command());
         command.args(&config.args).envs(&config.env);
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);
@@ -131,7 +131,7 @@ fn http_transport_config(
 ) -> rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
     use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 
-    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(config.url.as_str());
+    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(config.url());
     if let Some(auth_token) = &config.auth_token {
         let token = auth_token.trim();
         let token = token.strip_prefix("Bearer ").unwrap_or(token);

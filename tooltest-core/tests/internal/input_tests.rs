@@ -44,8 +44,8 @@ fn shared_input_defaults_match_cli_defaults() {
     let input: TooltestInput = serde_json::from_value(payload).expect("input");
 
     let options = input.to_runner_options().expect("runner options");
-    assert_eq!(options.cases, 32);
-    assert_eq!(options.sequence_len, 1..=3);
+    assert_eq!(options.cases(), 32);
+    assert_eq!(options.sequence_len(), 1..=3);
 
     let run_config = input.to_run_config().expect("run config");
     assert!(!run_config.state_machine.lenient_sourcing);
@@ -55,7 +55,7 @@ fn shared_input_defaults_match_cli_defaults() {
     assert!(!run_config.in_band_error_forbidden);
     assert!(!run_config.full_trace);
     assert!(!run_config.show_uncallable);
-    assert_eq!(run_config.uncallable_limit, 1);
+    assert_eq!(run_config.uncallable_limit(), 1);
     assert!(run_config.pre_run_hook.is_none());
 }
 
@@ -77,6 +77,25 @@ fn shared_input_validate_rejects_invalid_sequence_len() {
     let input: TooltestInput = serde_json::from_value(payload).expect("input");
     let error = input.validate().unwrap_err();
     assert!(error.contains("min-sequence-len"));
+}
+
+#[test]
+fn shared_input_validate_rejects_zero_cases() {
+    let payload = json!({
+        "target": { "stdio": { "command": "server" } },
+        "cases": 0
+    });
+    let input: TooltestInput = serde_json::from_value(payload).expect("input");
+    let error = input.validate().unwrap_err();
+    assert!(error.contains("cases must be at least 1"));
+}
+
+#[test]
+fn shared_input_validate_rejects_uncallable_limit_under_one() {
+    let mut input = stdio_input();
+    input.uncallable_limit = 0;
+    let error = input.validate().unwrap_err();
+    assert!(error.contains("uncallable-limit"));
 }
 
 #[test]
@@ -367,7 +386,7 @@ fn shared_input_applies_pre_run_hook_and_flags() {
     assert!(run_config.in_band_error_forbidden);
     assert!(run_config.full_trace);
     assert!(run_config.show_uncallable);
-    assert_eq!(run_config.uncallable_limit, 2);
+    assert_eq!(run_config.uncallable_limit(), 2);
     let hook = run_config.pre_run_hook.expect("hook");
     assert_eq!(hook.command, "echo ok");
     assert_eq!(hook.env.get("KEY").map(String::as_str), Some("VALUE"));
@@ -385,11 +404,11 @@ fn shared_input_to_configs_builds_all_parts() {
     let input: TooltestInput = serde_json::from_value(payload).expect("input");
     let config = input.to_configs().expect("configs");
     match config.target {
-        TooltestTargetConfig::Stdio(stdio) => assert_eq!(stdio.command, "server"),
+        TooltestTargetConfig::Stdio(stdio) => assert_eq!(stdio.command(), "server"),
         TooltestTargetConfig::Http(_) => panic!("unexpected http config"),
     }
-    assert_eq!(config.runner_options.cases, 10);
-    assert_eq!(config.runner_options.sequence_len, 2..=4);
+    assert_eq!(config.runner_options.cases(), 10);
+    assert_eq!(config.runner_options.sequence_len(), 2..=4);
 }
 
 #[test]

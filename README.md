@@ -293,11 +293,9 @@ The `tooltest-core` crate exposes helper APIs for listing tools with schema vali
 use tooltest_core::{list_tools_http, HttpConfig, SchemaConfig};
 
 # async fn run() {
+let endpoint = HttpConfig::new("http://localhost:3000/mcp").expect("valid http config");
 let tools = list_tools_http(
-    &HttpConfig {
-        url: "http://localhost:3000/mcp".into(),
-        auth_token: None,
-    },
+    &endpoint,
     &SchemaConfig::default(),
 )
 .await

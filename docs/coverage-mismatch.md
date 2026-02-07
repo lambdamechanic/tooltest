@@ -32,5 +32,9 @@ when loading the combined profile against multiple objects.
 
 ## Suppression
 
-`llvm-cov report --no-warn` silences the warnings, but `cargo llvm-cov` does not
-currently expose a way to pass that flag directly.
+`llvm-cov report --no-warn` does not currently silence this warning (tested with
+LLVM 21.1.3-rust-1.92.0-stable), and `cargo llvm-cov` does not expose a way to
+pass alternative flags to `llvm-cov report`.
+
+Since the warning is benign noise from dependencies, CI filters the exact
+`warning: <N> functions have mismatched data` line from stderr.

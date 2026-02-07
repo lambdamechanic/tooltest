@@ -183,6 +183,20 @@ where
 }
 
 /// Configuration for a stdio-based MCP endpoint.
+///
+/// Downstream crates cannot construct this type via a struct literal; use
+/// [`StdioConfig::new`] to ensure invariants are validated.
+///
+/// ```rust,compile_fail
+/// use tooltest_core::StdioConfig;
+///
+/// let _ = StdioConfig {
+///     command: "server".to_string(),
+///     args: Vec::new(),
+///     env: std::collections::BTreeMap::new(),
+///     cwd: None,
+/// };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StdioConfig {
     /// Command to execute for the MCP server.
@@ -246,6 +260,18 @@ impl PreRunHook {
 }
 
 /// Configuration for an HTTP-based MCP endpoint.
+///
+/// Downstream crates cannot construct this type via a struct literal; use
+/// [`HttpConfig::new`] to ensure invariants are validated.
+///
+/// ```rust,compile_fail
+/// use tooltest_core::HttpConfig;
+///
+/// let _ = HttpConfig {
+///     url: "http://localhost:3000/mcp".to_string(),
+///     auth_token: None,
+/// };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HttpConfig {
     /// The HTTP endpoint URL for MCP requests.
@@ -360,6 +386,19 @@ pub enum AssertionTarget {
 }
 
 /// Top-level configuration for executing a tooltest run.
+///
+/// Downstream crates cannot construct this type via a struct literal; use
+/// [`RunConfig::new`] and the builder methods to ensure invariants are
+/// validated.
+///
+/// ```rust,compile_fail
+/// use tooltest_core::RunConfig;
+///
+/// let _ = RunConfig {
+///     uncallable_limit: 0,
+///     ..RunConfig::new()
+/// };
+/// ```
 #[derive(Clone)]
 pub struct RunConfig {
     /// MCP schema configuration.

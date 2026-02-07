@@ -20,6 +20,18 @@ use super::result::{failure_result, finalize_state_machine_result, FailureContex
 use super::state_machine::{execute_state_machine_sequence, StateMachineExecution};
 
 /// Configuration for proptest-driven run behavior.
+///
+/// Downstream crates cannot construct this type via a struct literal; use
+/// [`RunnerOptions::new`] to ensure invariants are validated.
+///
+/// ```rust,compile_fail
+/// use tooltest_core::RunnerOptions;
+///
+/// let _ = RunnerOptions {
+///     cases: 0,
+///     sequence_len: 0..=0,
+/// };
+/// ```
 #[derive(Clone, Debug)]
 pub struct RunnerOptions {
     /// Number of proptest cases to execute.

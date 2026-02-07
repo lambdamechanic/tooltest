@@ -30,8 +30,10 @@ jobs:
           echo "$HOME/.qlty/bin" >> "$GITHUB_PATH"
       - name: Install llvm-tools
         run: rustup component add llvm-tools-preview
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
       - name: Rust fmt
         run: cargo fmt --all -- --check
       - name: Qlty
@@ -41,7 +43,8 @@ jobs:
       - name: Rust coverage
         shell: bash
         run: |
-          cargo llvm-cov --workspace --fail-under-lines 100 --fail-under-regions 100 \
+          cargo llvm-cov nextest --workspace --fail-under-lines 100 --fail-under-regions 100 \
+            --status-level fail --final-status-level fail --hide-progress-bar \
             2> >(sed -E '/^warning: [0-9]+ functions have mismatched data$/d' >&2)
 
   release-build:

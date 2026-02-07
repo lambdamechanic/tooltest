@@ -1,15 +1,15 @@
 # llvm-cov mismatch warnings
 
-Running `cargo llvm-cov --workspace --fail-under-lines 100 --fail-under-regions 100`
+Running `cargo llvm-cov nextest --workspace --fail-under-lines 100 --fail-under-regions 100`
 still emits:
 
 ```
-warning: 31 functions have mismatched data
+warning: <N> functions have mismatched data
 ```
 
 ## Identify the mismatched functions
 
-1. Run `cargo llvm-cov -v --workspace --fail-under-lines 100 --fail-under-regions 100`
+1. Run `cargo llvm-cov nextest -v --workspace --fail-under-lines 100 --fail-under-regions 100`
    and capture the `llvm-cov report ...` command it prints.
 2. Re-run that exact `llvm-cov report` command with `--dump` appended.
 3. Look for `hash-mismatch:` lines in stderr.

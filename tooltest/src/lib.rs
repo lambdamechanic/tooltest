@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::expect_used, clippy::unwrap_used))]
+
 use std::process::ExitCode;
 
 use tooltest_core::{default_tooltest_toml, TooltestRunConfig, TooltestTargetConfig};
@@ -22,6 +24,13 @@ use trace::TraceFileSink;
 mod tests;
 
 pub async fn run(cli: Cli) -> ExitCode {
+    run_with_json_serializer(cli, serde_json::to_string_pretty).await
+}
+
+async fn run_with_json_serializer(
+    cli: Cli,
+    serialize_run_result: fn(&tooltest_core::RunResult) -> Result<String, serde_json::Error>,
+) -> ExitCode {
     match &cli.command {
         Command::Mcp { .. } => {
             let result = mcp::run_stdio().await;
@@ -73,7 +82,12 @@ pub async fn run(cli: Cli) -> ExitCode {
     };
 
     let output = if json {
-        serde_json::to_string_pretty(&result).expect("serialize run result")
+        match serialize_run_result(&result) {
+            Ok(output) => output,
+            Err(error) => {
+                return error_exit(&format!("failed to serialize run result: {error}"), json);
+            }
+        }
     } else {
         format_run_result_human(&result)
     };

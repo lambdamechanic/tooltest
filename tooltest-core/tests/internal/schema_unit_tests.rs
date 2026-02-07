@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::sync::OnceLock;
 
 #[test]
 fn parse_list_tools_payload_accepts_valid_value() {
@@ -41,6 +42,46 @@ fn validators_build_and_cache() {
 fn build_validator_for_def_rejects_unknown_def() {
     let error = build_validator_for_def(MCP_SCHEMA, "DefinitelyMissing").expect_err("error");
     assert!(error.contains("failed to compile MCP schema"));
+}
+
+#[test]
+fn build_validator_for_def_rejects_invalid_schema_json() {
+    let error = build_validator_for_def("{", "ListToolsResult").expect_err("error");
+    assert!(error.contains("failed to parse MCP schema JSON"));
+}
+
+#[test]
+fn build_validator_for_def_rejects_schema_missing_defs() {
+    let schema_json = r#"{ "$schema": "https://json-schema.org/draft/2020-12/schema" }"#;
+    let error = build_validator_for_def(schema_json, "ListToolsResult").expect_err("error");
+    assert!(error.contains("missing $defs"));
+}
+
+#[test]
+fn validator_for_def_maps_init_errors_for_list_tools() {
+    let lock: OnceLock<Result<Validator, String>> = OnceLock::new();
+    let error = validator_for_def(&lock, "{", "ListToolsResult", SchemaError::InvalidListTools)
+        .expect_err("error");
+    let SchemaError::InvalidListTools(message) = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert!(message.contains("failed to parse MCP schema JSON"));
+}
+
+#[test]
+fn validator_for_def_maps_init_errors_for_call_tool_request() {
+    let lock: OnceLock<Result<Validator, String>> = OnceLock::new();
+    let error = validator_for_def(
+        &lock,
+        "{",
+        "CallToolRequestParams",
+        SchemaError::InvalidCallToolRequest,
+    )
+    .expect_err("error");
+    let SchemaError::InvalidCallToolRequest(message) = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert!(message.contains("failed to parse MCP schema JSON"));
 }
 
 #[test]

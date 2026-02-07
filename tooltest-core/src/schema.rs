@@ -17,8 +17,8 @@ const MCP_SCHEMA: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/resources/mcp-schema-2025-11-25.json"
 ));
-static LIST_TOOLS_VALIDATOR: OnceLock<Validator> = OnceLock::new();
-static CALL_TOOL_REQUEST_VALIDATOR: OnceLock<Validator> = OnceLock::new();
+static LIST_TOOLS_VALIDATOR: OnceLock<Result<Validator, String>> = OnceLock::new();
+static CALL_TOOL_REQUEST_VALIDATOR: OnceLock<Result<Validator, String>> = OnceLock::new();
 /// Errors produced while parsing MCP schema data.
 #[derive(Debug)]
 pub enum SchemaError {
@@ -116,41 +116,47 @@ fn parse_call_tool_request_payload(
     }
 }
 
+fn validator_for_def<'a>(
+    lock: &'a OnceLock<Result<Validator, String>>,
+    schema_json: &str,
+    def_name: &str,
+    wrap_error: impl FnOnce(String) -> SchemaError,
+) -> Result<&'a Validator, SchemaError> {
+    lock.get_or_init(|| build_validator_for_def(schema_json, def_name))
+        .as_ref()
+        .map_err(|message| wrap_error(message.clone()))
+}
+
 #[inline(never)]
 fn list_tools_validator(config: &SchemaConfig) -> Result<&'static Validator, SchemaError> {
     let schema_json = schema_json_for(config)?;
-    if let Some(validator) = LIST_TOOLS_VALIDATOR.get() {
-        return Ok(validator);
-    }
-    let validator = build_validator_for_def(schema_json, "ListToolsResult")
-        .expect("list tools validator compiles");
-    let _ = LIST_TOOLS_VALIDATOR.set(validator);
-    Ok(LIST_TOOLS_VALIDATOR
-        .get()
-        .expect("list tools validator initialized"))
+    validator_for_def(
+        &LIST_TOOLS_VALIDATOR,
+        schema_json,
+        "ListToolsResult",
+        SchemaError::InvalidListTools,
+    )
 }
 
 #[inline(never)]
 fn call_tool_request_validator(config: &SchemaConfig) -> Result<&'static Validator, SchemaError> {
     let schema_json = schema_json_for(config)?;
-    if let Some(validator) = CALL_TOOL_REQUEST_VALIDATOR.get() {
-        return Ok(validator);
-    }
-    let validator = build_validator_for_def(schema_json, "CallToolRequestParams")
-        .expect("call tool request validator compiles");
-    let _ = CALL_TOOL_REQUEST_VALIDATOR.set(validator);
-    Ok(CALL_TOOL_REQUEST_VALIDATOR
-        .get()
-        .expect("call tool request validator initialized"))
+    validator_for_def(
+        &CALL_TOOL_REQUEST_VALIDATOR,
+        schema_json,
+        "CallToolRequestParams",
+        SchemaError::InvalidCallToolRequest,
+    )
 }
 
 #[inline(never)]
 fn build_validator_for_def(schema_json: &str, def_name: &str) -> Result<Validator, String> {
-    let schema: JsonValue = serde_json::from_str(schema_json).expect("MCP schema JSON parses");
+    let schema: JsonValue = serde_json::from_str(schema_json)
+        .map_err(|err| format!("failed to parse MCP schema JSON: {err}"))?;
     let defs = schema
         .get("$defs")
         .cloned()
-        .expect("MCP schema defines $defs");
+        .ok_or_else(|| "MCP schema missing $defs".to_string())?;
     let schema_id = schema_id_for(&schema);
     let list_tools_schema = serde_json::json!({
         "$schema": schema_id,

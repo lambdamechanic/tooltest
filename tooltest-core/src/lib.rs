@@ -1,5 +1,6 @@
 //! Public API types for configuring and reporting tooltest runs.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(not(test), deny(clippy::expect_used, clippy::unwrap_used))]
 
 use std::collections::BTreeMap;
 use std::fmt;

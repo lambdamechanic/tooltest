@@ -305,6 +305,7 @@ impl LintRule for OutputSchemaCompileLint {
 pub struct MaxStructuredContentBytesLint {
     definition: LintDefinition,
     max_bytes: usize,
+    serialize: fn(&serde_json::Value) -> Result<Vec<u8>, serde_json::Error>,
 }
 
 impl MaxStructuredContentBytesLint {
@@ -312,6 +313,21 @@ impl MaxStructuredContentBytesLint {
         Self {
             definition,
             max_bytes,
+            serialize: serde_json::to_vec
+                as fn(&serde_json::Value) -> Result<Vec<u8>, serde_json::Error>,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_serializer(
+        definition: LintDefinition,
+        max_bytes: usize,
+        serialize: fn(&serde_json::Value) -> Result<Vec<u8>, serde_json::Error>,
+    ) -> Self {
+        Self {
+            definition,
+            max_bytes,
+            serialize,
         }
     }
 }
@@ -322,11 +338,21 @@ impl LintRule for MaxStructuredContentBytesLint {
     }
 
     fn check_response(&self, context: &ResponseLintContext<'_>) -> Vec<LintFinding> {
-        let size = match context.response.structured_content.as_ref() {
-            None => 0,
-            Some(value) => serde_json::to_vec(value)
-                .expect("serialize structuredContent")
-                .len(),
+        let Some(value) = context.response.structured_content.as_ref() else {
+            return Vec::new();
+        };
+        let size = match (self.serialize)(value) {
+            Ok(encoded) => encoded.len(),
+            Err(error) => {
+                return vec![LintFinding::new(format!(
+                    "tool '{}' structuredContent failed to serialize",
+                    context.tool.name.as_ref()
+                ))
+                .with_details(json!({
+                    "tool": context.tool.name.as_ref(),
+                    "error": error.to_string(),
+                }))];
+            }
         };
         if size <= self.max_bytes {
             return Vec::new();

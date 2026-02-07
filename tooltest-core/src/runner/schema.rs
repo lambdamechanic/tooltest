@@ -20,15 +20,23 @@ pub(super) fn build_output_validators(tools: &[Tool]) -> BTreeMap<String, jsonsc
 }
 
 pub(super) fn validate_tools(tools: Vec<Tool>, config: &SchemaConfig) -> Result<Vec<Tool>, String> {
+    validate_tools_with_serializer(tools, config, |list_tools| serde_json::to_value(list_tools))
+}
+
+pub(super) fn validate_tools_with_serializer(
+    tools: Vec<Tool>,
+    config: &SchemaConfig,
+    serialize: fn(&ListToolsResult) -> Result<serde_json::Value, serde_json::Error>,
+) -> Result<Vec<Tool>, String> {
     let list_tools = ListToolsResult {
         tools,
         next_cursor: None,
         meta: None,
     };
-    // ListToolsResult is expected to be JSON-serializable; treat serialization failures as
-    // unrecoverable to avoid introducing uncovered error branches under 100% coverage gates.
-    #[allow(clippy::expect_used)]
-    let payload = serde_json::to_value(&list_tools).expect("list tools serialize");
+    // ListToolsResult is expected to be JSON-serializable, but we handle failures to avoid panics
+    // and keep output validation on the same structured-error path.
+    let payload = serialize(&list_tools)
+        .map_err(|error| format!("failed to serialize tools/list payload: {error}"))?;
     let parsed = parse_list_tools(payload, config).map_err(|error| error.to_string())?;
     Ok(parsed.tools)
 }

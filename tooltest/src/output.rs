@@ -6,7 +6,8 @@ use tooltest_core::{CoverageWarningReason, RunOutcome, RunResult, RunWarning, Ru
 pub(super) fn maybe_dump_corpus(dump_corpus: bool, json: bool, result: &RunResult) {
     if dump_corpus && !json {
         if let Some(corpus) = &result.corpus {
-            let payload = serde_json::to_string_pretty(corpus).expect("serialize corpus");
+            let payload = serde_json::to_string_pretty(corpus)
+                .unwrap_or("<failed to serialize corpus>".to_string());
             eprintln!("corpus:\n{payload}");
         }
     }
@@ -24,7 +25,7 @@ pub(super) fn error_exit(message: &str, json: bool) -> ExitCode {
             status: "error",
             message,
         };
-        let output = serde_json::to_string_pretty(&payload).expect("serialize cli error");
+        let output = serde_json::to_string_pretty(&payload).unwrap_or(message.to_string());
         eprintln!("{output}");
     } else {
         eprintln!("{message}");
@@ -53,8 +54,8 @@ pub(super) fn format_run_result_human(result: &RunResult) -> String {
                 output.push_str(&format!("Code: {code}\n"));
             }
             if let Some(details) = &failure.details {
-                let details =
-                    serde_json::to_string_pretty(details).expect("serialize failure details");
+                let details = serde_json::to_string_pretty(details)
+                    .unwrap_or("<failed to serialize failure details>".to_string());
                 output.push_str("Details:\n");
                 output.push_str(&details);
                 output.push('\n');
@@ -98,7 +99,7 @@ pub(super) fn format_run_result_human(result: &RunResult) -> String {
                         None => serde_json::Value::Object(serde_json::Map::new()),
                     };
                     let args_payload = serde_json::to_string_pretty(&arguments)
-                        .expect("serialize uncallable arguments");
+                        .unwrap_or("<failed to serialize uncallable arguments>".to_string());
                     output.push_str("    arguments:\n");
                     for line in args_payload.lines() {
                         output.push_str("      ");
@@ -107,7 +108,7 @@ pub(super) fn format_run_result_human(result: &RunResult) -> String {
                     }
                     if let Some(result) = call.output.as_ref() {
                         let output_payload = serde_json::to_string_pretty(result)
-                            .expect("serialize uncallable output");
+                            .unwrap_or("<failed to serialize uncallable output>".to_string());
                         output.push_str("    output:\n");
                         for line in output_payload.lines() {
                             output.push_str("      ");
@@ -117,7 +118,7 @@ pub(super) fn format_run_result_human(result: &RunResult) -> String {
                     }
                     if let Some(result) = call.error.as_ref() {
                         let error_payload = serde_json::to_string_pretty(result)
-                            .expect("serialize uncallable error");
+                            .unwrap_or("<failed to serialize uncallable error>".to_string());
                         output.push_str("    error:\n");
                         for line in error_payload.lines() {
                             output.push_str("      ");
@@ -142,7 +143,8 @@ pub(super) fn format_run_result_human(result: &RunResult) -> String {
     }
 
     if !result.trace.is_empty() {
-        let trace = serde_json::to_string_pretty(&result.trace).expect("serialize trace");
+        let trace = serde_json::to_string_pretty(&result.trace)
+            .unwrap_or("<failed to serialize trace>".to_string());
         output.push_str("Trace:\n");
         output.push_str(&trace);
         output.push('\n');

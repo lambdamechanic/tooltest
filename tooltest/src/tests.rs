@@ -1042,6 +1042,41 @@ fn trace_file_sink_writes_header_and_records_trace() {
 }
 
 #[test]
+fn trace_file_sink_record_ignores_serialize_error() {
+    fn fail(_: &serde_json::Value) -> Result<String, serde_json::Error> {
+        Err(<serde_json::Error as serde::ser::Error>::custom(
+            "boom",
+        ))
+    }
+
+    let path = temp_path("trace-all-serialize-fail.jsonl");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .expect("open");
+    let sink = TraceFileSink {
+        path: path.to_string_lossy().to_string(),
+        file: std::sync::Arc::new(std::sync::Mutex::new(file)),
+        write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        serialize: fail,
+    };
+    let invocation = ToolInvocation {
+        name: "demo".into(),
+        arguments: None,
+    };
+    let trace = vec![TraceEntry::tool_call(invocation)];
+    sink.record(1, &trace);
+    // The first failure sets `write_failed` and prints a warning; the second failure should
+    // short-circuit without printing again.
+    sink.record(2, &trace);
+    assert!(sink
+        .write_failed
+        .load(std::sync::atomic::Ordering::Relaxed));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn trace_file_sink_new_fails_for_directory() {
     let path = temp_path("trace-all-dir");
     fs::create_dir_all(&path).expect("create dir");
@@ -1061,6 +1096,8 @@ fn trace_file_sink_record_ignores_write_error() {
             fs::OpenOptions::new().write(true).open(path).expect("open"),
         )),
         write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        serialize: serde_json::to_string
+            as fn(&serde_json::Value) -> Result<String, serde_json::Error>,
     };
     let invocation = ToolInvocation {
         name: "demo".into(),
@@ -1099,6 +1136,8 @@ fn trace_file_sink_record_ignores_poisoned_lock() {
         path: path.to_string_lossy().to_string(),
         file,
         write_failed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        serialize: serde_json::to_string
+            as fn(&serde_json::Value) -> Result<String, serde_json::Error>,
     };
     let invocation = ToolInvocation {
         name: "demo".into(),
@@ -1126,6 +1165,46 @@ fn maybe_dump_corpus_emits_when_requested() {
     };
 
     maybe_dump_corpus(true, false, &result);
+}
+
+#[tokio::test]
+async fn run_exits_on_json_run_result_serialize_error() {
+    fn fail(_result: &tooltest_core::RunResult) -> Result<String, serde_json::Error> {
+        Err(<serde_json::Error as serde::ser::Error>::custom(
+            "boom",
+        ))
+    }
+
+    let cli = Cli {
+        cases: 1,
+        min_sequence_len: 1,
+        max_sequence_len: 1,
+        lenient_sourcing: false,
+        mine_text: false,
+        dump_corpus: false,
+        log_corpus_deltas: false,
+        no_lenient_sourcing: false,
+        state_machine_config: None,
+        tool_allowlist: Vec::new(),
+        tool_blocklist: Vec::new(),
+        in_band_error_forbidden: false,
+
+        pre_run_hook: None,
+        json: true,
+        full_trace: false,
+        show_uncallable: false,
+        uncallable_limit: 1,
+        trace_all: None,
+        command: Command::Stdio {
+            command: "tooltest-missing-binary".to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        },
+    };
+
+    let exit = run_with_json_serializer(cli, fail).await;
+    assert_eq!(exit, ExitCode::from(2));
 }
 
 #[tokio::test]

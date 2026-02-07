@@ -109,7 +109,7 @@ pub async fn list_tools_with_session(
         next_cursor: None,
         meta: None,
     })
-    .expect("list tools serialize");
+    .unwrap_or(serde_json::Value::Null);
     let parsed = parse_list_tools(payload, schema)?;
     Ok(parsed.tools)
 }

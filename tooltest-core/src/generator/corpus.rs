@@ -98,11 +98,10 @@ impl ValueCorpus {
                 }
             }
             JsonValue::Object(map) => {
-                let mut keys: Vec<_> = map.keys().collect();
-                keys.sort();
-                for key in keys {
-                    self.insert_string(key.to_string());
-                    let value = map.get(key).expect("key from map");
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                for (key, value) in entries {
+                    self.insert_string(key.clone());
                     self.walk_value(value);
                 }
             }
@@ -119,11 +118,10 @@ impl ValueCorpus {
                 }
             }
             JsonValue::Object(map) => {
-                let mut keys: Vec<_> = map.keys().collect();
-                keys.sort();
-                for key in keys {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                for (key, value) in entries {
                     self.mine_text(key);
-                    let value = map.get(key).expect("key from map");
                     self.walk_text(value);
                 }
             }
@@ -138,7 +136,9 @@ pub(super) fn number_to_i64(value: &Number) -> Option<i64> {
     if let Some(value) = value.as_u64() {
         return i64::try_from(value).ok();
     }
-    let value = value.as_f64().expect("f64 value");
+    // This should be infallible for serde_json::Number, but fall back to NaN so we return None if
+    // it ever isn't.
+    let value = value.as_f64().unwrap_or(f64::NAN);
     if value.fract() != 0.0 {
         return None;
     }

@@ -212,10 +212,12 @@ fn corpus_mines_text_tokens_into_numbers_and_strings() {
 fn corpus_mines_text_tokens_from_arrays() {
     let mut corpus = ValueCorpus::default();
 
-    corpus.mine_text_from_value(&json!(["alpha 1", {"nested": "beta 2"}]));
+    corpus.mine_text_from_value(&json!(["alpha 1", {"nested": "beta 2", "other": "gamma 3"}]));
 
     assert!(corpus.strings().contains(&"alpha".to_string()));
     assert!(corpus.strings().contains(&"beta".to_string()));
+    assert!(corpus.strings().contains(&"gamma".to_string()));
     assert!(corpus.numbers().contains(&Number::from(1)));
     assert!(corpus.numbers().contains(&Number::from(2)));
+    assert!(corpus.numbers().contains(&Number::from(3)));
 }

@@ -9,14 +9,14 @@ pub(super) struct TraceFileSink {
     pub(super) path: String,
     pub(super) file: Arc<Mutex<fs::File>>,
     pub(super) write_failed: Arc<AtomicBool>,
+    pub(super) serialize: fn(&serde_json::Value) -> Result<String, serde_json::Error>,
 }
 
 impl TraceFileSink {
     #[cfg_attr(coverage, inline(never))]
     pub(super) fn new(path: &str) -> Result<Self, String> {
         let path = path.to_string();
-        let header = serde_json::to_string(&serde_json::json!({ "format": "trace_all_v1" }))
-            .expect("serialize trace header");
+        let header = r#"{"format":"trace_all_v1"}"#;
         let mut file = match fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -35,6 +35,8 @@ impl TraceFileSink {
             path,
             file: Arc::new(Mutex::new(file)),
             write_failed: Arc::new(AtomicBool::new(false)),
+            serialize: serde_json::to_string
+                as fn(&serde_json::Value) -> Result<String, serde_json::Error>,
         })
     }
 }
@@ -45,7 +47,18 @@ impl TraceSink for TraceFileSink {
             "case": case_index,
             "trace": trace,
         });
-        let line = serde_json::to_string(&payload).expect("serialize trace payload");
+        let line = match (self.serialize)(&payload) {
+            Ok(line) => line,
+            Err(error) => {
+                if !self
+                    .write_failed
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!("failed to serialize trace output for '{}': {error}", self.path);
+                }
+                return;
+            }
+        };
         let mut file = match self.file.lock() {
             Ok(file) => file,
             Err(_) => return,

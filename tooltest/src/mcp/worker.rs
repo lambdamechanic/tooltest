@@ -146,16 +146,34 @@ pub(super) fn tooltest_worker_inner(
 
 static WORKER: OnceLock<Result<TooltestWorker, String>> = OnceLock::new();
 
+type SpawnWorkerInit =
+    fn(&'static OnceLock<Result<TooltestWorker, String>>) -> tokio::task::JoinHandle<()>;
+
+fn spawn_worker_init(worker: &'static OnceLock<Result<TooltestWorker, String>>) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        let _ = tooltest_worker_inner(worker);
+    })
+}
+
 pub(super) async fn tooltest_worker() -> Result<&'static TooltestWorker, ErrorData> {
-    if WORKER.get().is_none() {
-        tokio::task::spawn_blocking(|| {
-            let _ = tooltest_worker_inner(&WORKER);
-        })
-        .await
-        .expect("tooltest worker init task panicked");
+    tooltest_worker_with_spawn(&WORKER, spawn_worker_init).await
+}
+
+pub(super) async fn tooltest_worker_with_spawn(
+    worker: &'static OnceLock<Result<TooltestWorker, String>>,
+    spawn_init: SpawnWorkerInit,
+) -> Result<&'static TooltestWorker, ErrorData> {
+    if worker.get().is_none() {
+        let join_result = spawn_init(worker).await;
+        if let Err(error) = join_result {
+            return Err(ErrorData::internal_error(
+                format!("tooltest worker init task failed: {error}"),
+                None,
+            ));
+        }
     }
 
-    tooltest_worker_inner(&WORKER)
+    tooltest_worker_inner(worker)
 }
 
 pub(super) async fn run_tooltest_call(

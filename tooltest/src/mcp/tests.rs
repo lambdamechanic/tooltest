@@ -7,7 +7,8 @@ use super::server::{
 use super::transport::NoopSink;
 use super::worker::{
     execute_tooltest, execute_tooltest_boxed, run_result_to_call_tool_inner, run_tooltest_call,
-    serialize_value, tooltest_worker_inner, TooltestExecuteFuture, TooltestWorker,
+    serialize_value, tooltest_worker_inner, tooltest_worker_with_spawn, TooltestExecuteFuture,
+    TooltestWorker,
     TooltestWorkerConfig, WorkerReadyMode,
 };
 use axum::Router;
@@ -853,6 +854,49 @@ async fn tooltest_worker_reports_ready_channel_failure() {
         .err()
         .expect("expected error");
     assert!(error.contains("failed to start"));
+}
+
+#[tokio::test]
+async fn tooltest_worker_with_spawn_reports_init_task_join_error() {
+    fn spawn_panic(
+        _worker: &'static OnceLock<Result<TooltestWorker, String>>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::task::spawn_blocking(|| panic!("boom"))
+    }
+
+    let worker = Box::leak(Box::new(OnceLock::new()));
+    let error = tooltest_worker_with_spawn(worker, spawn_panic)
+        .await
+        .err()
+        .expect("expected error");
+    assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+    assert!(error.message.contains("tooltest worker init task failed"));
+}
+
+#[tokio::test]
+async fn tooltest_worker_with_spawn_initializes_and_caches_worker() {
+    fn spawn_set_worker(
+        worker: &'static OnceLock<Result<TooltestWorker, String>>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::task::spawn_blocking(move || {
+            let (sender, _receiver) = mpsc::unbounded_channel();
+            let (_done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker_value = TooltestWorker {
+                sender,
+                done: std::sync::Mutex::new(done_rx),
+            };
+            let _ = worker.set(Ok(worker_value));
+        })
+    }
+
+    let worker = Box::leak(Box::new(OnceLock::new()));
+    let first = tooltest_worker_with_spawn(worker, spawn_set_worker)
+        .await
+        .expect("worker");
+    let second = tooltest_worker_with_spawn(worker, spawn_set_worker)
+        .await
+        .expect("worker");
+    assert!(std::ptr::eq(first, second));
 }
 
 #[test]

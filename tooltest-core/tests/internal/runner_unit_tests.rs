@@ -5,7 +5,7 @@ use super::assertions::{
 };
 use super::coverage::{map_uncallable_reason, CoverageTracker};
 use super::result::{finalize_state_machine_result, FailureContext};
-use super::schema::{build_output_validators, validate_tools};
+use super::schema::{build_output_validators, validate_tools, validate_tools_with_serializer};
 use super::state_machine::{execute_state_machine_sequence, StateMachineExecution};
 use super::transport::{run_with_transport, ConnectFuture};
 use super::{run_http, run_stdio, run_with_session};
@@ -1881,6 +1881,53 @@ fn max_structured_content_bytes_lint_allows_when_under_limit() {
 }
 
 #[test]
+fn max_structured_content_bytes_lint_reports_when_structured_content_fails_to_serialize() {
+    fn fail(_: &serde_json::Value) -> Result<Vec<u8>, serde_json::Error> {
+        Err(<serde_json::Error as serde::ser::Error>::custom(
+            "boom",
+        ))
+    }
+
+    let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
+    let invocation = ToolInvocation {
+        name: "echo".to_string().into(),
+        arguments: None,
+    };
+    let response = CallToolResult {
+        content: vec![Content::text("ok")],
+        structured_content: Some(json!({ "value": 1 })),
+        is_error: None,
+        meta: None,
+    };
+    let context = ResponseLintContext {
+        tool: &tool,
+        invocation: &invocation,
+        response: &response,
+    };
+    let lint = MaxStructuredContentBytesLint::new_with_serializer(
+        LintDefinition::new(
+            "max_structured_content_bytes",
+            LintPhase::Response,
+            LintLevel::Warning,
+        ),
+        64,
+        fail,
+    );
+    let findings = lint.check_response(&context);
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("failed to serialize"));
+    let details = findings[0].details.as_ref().expect("details");
+    assert_eq!(
+        details.get("tool").and_then(|value| value.as_str()),
+        Some("echo")
+    );
+    assert!(details
+        .get("error")
+        .and_then(|value| value.as_str())
+        .is_some());
+}
+
+#[test]
 fn json_schema_dialect_compat_checks_output_schema() {
     let lint = JsonSchemaDialectCompatLint::new(
         LintDefinition::new(
@@ -2784,6 +2831,25 @@ fn build_output_validators_skips_invalid_schema() {
 }
 
 #[test]
+fn build_output_validators_overwrites_duplicates() {
+    let output_schema = json!({
+        "type": "object",
+        "properties": { "status": { "type": "string" } }
+    });
+    let first = tool_with_schemas(
+        "echo",
+        json!({ "type": "object" }),
+        Some(output_schema.clone()),
+    );
+    let second = tool_with_schemas("echo", json!({ "type": "object" }), Some(output_schema));
+
+    let validators = build_output_validators(&[first, second]);
+
+    assert_eq!(validators.len(), 1);
+    assert!(validators.contains_key("echo"));
+}
+
+#[test]
 fn json_schema_keyword_compat_reports_draft_defs() {
     let tools = vec![
         tool_with_schemas(
@@ -2969,6 +3035,16 @@ fn validate_tools_accepts_valid_schema() {
     let tool = tool_with_schemas("good", json!({ "type": "object" }), None);
     let tools = validate_tools(vec![tool], &SchemaConfig::default()).expect("valid tools");
     assert_eq!(tools.len(), 1);
+}
+
+#[test]
+fn validate_tools_reports_list_tools_serialization_failures() {
+    let tool = tool_with_schemas("good", json!({ "type": "object" }), None);
+    let error = validate_tools_with_serializer(vec![tool], &SchemaConfig::default(), |_| {
+        Err(<serde_json::Error as serde::ser::Error>::custom("boom"))
+    })
+    .expect_err("error");
+    assert!(error.contains("failed to serialize tools/list payload"));
 }
 
 #[test]

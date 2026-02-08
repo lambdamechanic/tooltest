@@ -27,7 +27,7 @@ pub(super) async fn prepare_run(
     let tools = match session.list_tools().await {
         Ok(tools) => tools,
         Err(error) => {
-            let reason = format!("failed to list tools: {error:?}");
+            let reason = format!("failed to list tools: {error}");
             return Err(failure_result(
                 RunFailure::new(reason.clone()),
                 vec![TraceEntry::list_tools_with_failure(reason)],

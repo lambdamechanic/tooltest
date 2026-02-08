@@ -18,7 +18,7 @@ pub enum ListToolsError {
 impl fmt::Display for ListToolsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ListToolsError::Session(error) => write!(f, "session error: {error:?}"),
+            ListToolsError::Session(error) => write!(f, "session error: {error}"),
             ListToolsError::Schema(error) => write!(f, "schema error: {error}"),
         }
     }
@@ -141,6 +141,7 @@ mod tests {
         let io_error = std::io::Error::other("nope");
         let error = ListToolsError::Session(SessionError::from(io_error));
         assert!(format!("{error}").contains("session error"));
+        assert!(format!("{error}").contains("transport error"));
     }
 
     #[tokio::test]

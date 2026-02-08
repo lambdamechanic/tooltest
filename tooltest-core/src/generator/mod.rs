@@ -274,8 +274,10 @@ pub(crate) fn invocation_from_corpus_seeded(
     lenient_sourcing: bool,
     seed: u64,
 ) -> Result<Option<ToolInvocation>, InvocationError> {
-    Ok(invocation_plan_from_corpus_seeded(tools, predicate, corpus, lenient_sourcing, seed)?
-        .map(|(_tool_index, invocation)| invocation))
+    Ok(
+        invocation_plan_from_corpus_seeded(tools, predicate, corpus, lenient_sourcing, seed)?
+            .map(|(_tool_index, invocation)| invocation),
+    )
 }
 
 pub(crate) fn invocation_plan_from_corpus_seeded(
@@ -1989,9 +1991,9 @@ fn schema_type_union_branches(schema: &JsonObject) -> Result<Option<NonEmpty<Jso
     let (head, tail) = types
         .split_first()
         .ok_or_else(|| "schema type array must include at least one string".to_string())?;
-    let schema_type = head.as_str().ok_or_else(|| {
-        format!("schema type array must contain strings; found {head} at 0")
-    })?;
+    let schema_type = head
+        .as_str()
+        .ok_or_else(|| format!("schema type array must contain strings; found {head} at 0"))?;
     let mut head_out = schema.clone();
     head_out.insert(
         "type".to_string(),

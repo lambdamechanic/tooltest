@@ -233,7 +233,9 @@ async fn call_tool_sends_requests() {
     }
 
     let requests = requests.lock().expect("requests");
-    assert!(requests.iter().any(|message| matches!(message, JsonRpcMessage::Request(_))));
+    assert!(requests
+        .iter()
+        .any(|message| matches!(message, JsonRpcMessage::Request(_))));
 }
 
 #[tokio::test]
@@ -385,6 +387,20 @@ fn session_error_from_variants() {
 
     let error = SessionError::from(std::io::Error::other("io"));
     assert!(matches!(error, SessionError::Transport(_)));
+}
+
+#[test]
+fn session_error_source_reports_inner_errors() {
+    use std::error::Error as _;
+
+    let error = SessionError::from(ClientInitializeError::Cancelled);
+    assert!(error.source().is_some());
+
+    let error = SessionError::from(ServiceError::TransportClosed);
+    assert!(error.source().is_some());
+
+    let error = SessionError::from(std::io::Error::other("io"));
+    assert!(error.source().is_some());
 }
 
 #[test]

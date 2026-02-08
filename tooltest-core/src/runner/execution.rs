@@ -54,7 +54,10 @@ impl RunnerOptions {
         if min_len > max_len {
             return Err("min-sequence-len must be <= max-sequence-len".to_string());
         }
-        Ok(Self { cases, sequence_len })
+        Ok(Self {
+            cases,
+            sequence_len,
+        })
     }
 
     /// Returns the configured number of proptest cases.
@@ -196,11 +199,9 @@ pub async fn run_with_session(
                                 &config.state_machine,
                                 config.uncallable_limit(),
                             );
-                            let min_len = if config.lints.has_enabled("coverage") {
-                                None
-                            } else {
-                                Some(options.min_sequence_len())
-                            };
+                            // Enforce min-sequence-len even when coverage lint is enabled, so a
+                            // run cannot "succeed" with 0 tool calls when all tools are uncallable.
+                            let min_len = Some(options.min_sequence_len());
                             let case_index = {
                                 let mut counter = case_counter.borrow_mut();
                                 let index = *counter;

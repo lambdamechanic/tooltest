@@ -35,7 +35,9 @@ fn stdio_config_rejects_empty_command() {
     assert!(error.contains("stdio command must not be empty"));
 
     let error = serde_json::from_str::<StdioConfig>(r#"{"command":"  "}"#).unwrap_err();
-    assert!(error.to_string().contains("stdio command must not be empty"));
+    assert!(error
+        .to_string()
+        .contains("stdio command must not be empty"));
 }
 
 #[test]
@@ -70,11 +72,20 @@ fn http_config_validates_url() {
     let config = crate::HttpConfig::new("http://localhost:3000/mcp").expect("http config");
     assert_eq!(config.url(), "http://localhost:3000/mcp");
 
+    let config = crate::HttpConfig::new("https://example.com/mcp").expect("http config");
+    assert_eq!(config.url(), "https://example.com/mcp");
+
+    let config = crate::HttpConfig::new("http://[::1]:8080/mcp").expect("http config");
+    assert_eq!(config.url(), "http://[::1]:8080/mcp");
+
     let error = crate::HttpConfig::new("localhost:3000/mcp").expect_err("expected error");
     assert!(error.contains("invalid http url"));
 
-    let error = serde_json::from_str::<crate::HttpConfig>(r#"{"url":"file:///tmp/mcp"}"#)
-        .unwrap_err();
+    let error = crate::HttpConfig::new("ftp://example.com/mcp").expect_err("expected error");
+    assert!(error.contains("scheme must be http or https"));
+
+    let error =
+        serde_json::from_str::<crate::HttpConfig>(r#"{"url":"file:///tmp/mcp"}"#).unwrap_err();
     assert!(error.to_string().contains("missing host"));
 }
 
@@ -180,6 +191,14 @@ fn state_machine_config_sets_log_corpus_deltas() {
 fn state_machine_config_sets_mine_text() {
     let config = StateMachineConfig::default().with_mine_text(true);
     assert!(config.mine_text);
+}
+
+#[test]
+fn state_machine_config_rejects_unknown_fields_on_deserialize() {
+    let error = serde_json::from_str::<StateMachineConfig>(r#"{"nope":true}"#).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("unknown field"), "{message}");
+    assert!(message.contains("nope"), "{message}");
 }
 
 #[test]

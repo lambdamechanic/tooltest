@@ -54,7 +54,10 @@ impl TraceSink for TraceFileSink {
                     .write_failed
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
                 {
-                    eprintln!("failed to serialize trace output for '{}': {error}", self.path);
+                    eprintln!(
+                        "failed to serialize trace output for '{}': {error}",
+                        self.path
+                    );
                 }
                 return;
             }

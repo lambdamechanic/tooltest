@@ -101,6 +101,16 @@ fn cli_defaults_uncallable_flags() {
 }
 
 #[test]
+fn cli_defaults_max_sequence_len_is_20() {
+    let cli = Cli::parse_from(["tooltest", "http", "--url", "http://127.0.0.1:0/mcp"]);
+    assert_eq!(cli.max_sequence_len, 20);
+
+    let input = build_tooltest_input(&cli).expect("input");
+    let options = input.to_runner_options().expect("options");
+    assert_eq!(options.sequence_len(), 1..=20);
+}
+
+#[test]
 fn cli_parses_uncallable_flags() {
     let cli = Cli::parse_from([
         "tooltest",
@@ -203,6 +213,26 @@ fn parse_state_machine_config_reads_file() {
     let config = parse_state_machine_config(&format!("@{}", path.display())).expect("config");
     assert_eq!(config.seed_numbers.len(), 1);
     assert_eq!(config.seed_strings.len(), 1);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn parse_state_machine_config_rejects_unknown_fields_inline_json() {
+    let error =
+        parse_state_machine_config(r#"{"seed_numbers":[1],"nope":true}"#).expect_err("error");
+    assert!(error.contains("invalid state-machine-config"));
+    assert!(error.contains("unknown field"));
+    assert!(error.contains("nope"));
+}
+
+#[test]
+fn parse_state_machine_config_rejects_unknown_fields_in_file() {
+    let path = temp_path("state-machine-unknown.json");
+    fs::write(&path, r#"{"seed_numbers":[2],"nope":true}"#).expect("write config");
+    let error = parse_state_machine_config(&format!("@{}", path.display())).expect_err("error");
+    assert!(error.contains("invalid state-machine-config"));
+    assert!(error.contains("unknown field"));
+    assert!(error.contains("nope"));
     let _ = fs::remove_file(&path);
 }
 
@@ -1044,9 +1074,7 @@ fn trace_file_sink_writes_header_and_records_trace() {
 #[test]
 fn trace_file_sink_record_ignores_serialize_error() {
     fn fail(_: &serde_json::Value) -> Result<String, serde_json::Error> {
-        Err(<serde_json::Error as serde::ser::Error>::custom(
-            "boom",
-        ))
+        Err(<serde_json::Error as serde::ser::Error>::custom("boom"))
     }
 
     let path = temp_path("trace-all-serialize-fail.jsonl");
@@ -1070,9 +1098,7 @@ fn trace_file_sink_record_ignores_serialize_error() {
     // The first failure sets `write_failed` and prints a warning; the second failure should
     // short-circuit without printing again.
     sink.record(2, &trace);
-    assert!(sink
-        .write_failed
-        .load(std::sync::atomic::Ordering::Relaxed));
+    assert!(sink.write_failed.load(std::sync::atomic::Ordering::Relaxed));
     let _ = fs::remove_file(path);
 }
 
@@ -1170,9 +1196,7 @@ fn maybe_dump_corpus_emits_when_requested() {
 #[tokio::test]
 async fn run_exits_on_json_run_result_serialize_error() {
     fn fail(_result: &tooltest_core::RunResult) -> Result<String, serde_json::Error> {
-        Err(<serde_json::Error as serde::ser::Error>::custom(
-            "boom",
-        ))
+        Err(<serde_json::Error as serde::ser::Error>::custom("boom"))
     }
 
     let cli = Cli {

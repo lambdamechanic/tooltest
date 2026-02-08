@@ -79,7 +79,7 @@ pub(super) async fn execute_state_machine_sequence(
         let response = match execution.session.call_tool(invocation.clone()).await {
             Ok(response) => response,
             Err(error) => {
-                let reason = format!("session error: {error:?}");
+                let reason = format!("session error: {error}");
                 if execution.full_trace {
                     attach_failure_reason(&mut full_trace, reason.clone());
                     record_trace(&full_trace);

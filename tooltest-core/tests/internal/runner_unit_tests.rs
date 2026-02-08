@@ -1883,9 +1883,7 @@ fn max_structured_content_bytes_lint_allows_when_under_limit() {
 #[test]
 fn max_structured_content_bytes_lint_reports_when_structured_content_fails_to_serialize() {
     fn fail(_: &serde_json::Value) -> Result<Vec<u8>, serde_json::Error> {
-        Err(<serde_json::Error as serde::ser::Error>::custom(
-            "boom",
-        ))
+        Err(<serde_json::Error as serde::ser::Error>::custom("boom"))
     }
 
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);

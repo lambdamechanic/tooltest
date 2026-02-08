@@ -112,7 +112,8 @@ pub(super) fn apply_sequence_assertions(
         let AssertionRule::Sequence(sequence_assertion) = rule else {
             continue;
         };
-        if let Some(reason) = evaluate_sequence_checks(&sequence_assertion.checks, &sequence_payload)
+        if let Some(reason) =
+            evaluate_sequence_checks(&sequence_assertion.checks, &sequence_payload)
         {
             return Some(reason);
         }

@@ -1660,6 +1660,50 @@ fn state_machine_config_invalid_json_exits() {
 }
 
 #[test]
+fn state_machine_config_unknown_field_inline_exits() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        r#"{"nope":true}"#,
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid state-machine-config"), "{stderr}");
+    assert!(stderr.contains("unknown field"), "{stderr}");
+    assert!(stderr.contains("nope"), "{stderr}");
+}
+
+#[test]
+fn state_machine_config_unknown_field_file_exits() {
+    let Some(server) = test_server() else {
+        return;
+    };
+    let path = temp_path("state-machine-unknown-field.json");
+    fs::write(&path, r#"{"nope":true}"#).expect("write config");
+    let arg = format!("@{}", path.display());
+    let output = run_tooltest(&[
+        "--state-machine-config",
+        arg.as_str(),
+        "stdio",
+        "--command",
+        server,
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid state-machine-config"), "{stderr}");
+    assert!(stderr.contains("unknown field"), "{stderr}");
+    assert!(stderr.contains("nope"), "{stderr}");
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
 fn state_machine_coverage_warnings_reported() {
     let Some(server) = test_server() else {
         return;

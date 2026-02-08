@@ -8,8 +8,7 @@ use super::transport::NoopSink;
 use super::worker::{
     execute_tooltest, execute_tooltest_boxed, run_result_to_call_tool_inner, run_tooltest_call,
     serialize_value, tooltest_worker_inner, tooltest_worker_with_spawn, TooltestExecuteFuture,
-    TooltestWorker,
-    TooltestWorkerConfig, WorkerReadyMode,
+    TooltestWorker, TooltestWorkerConfig, WorkerReadyMode,
 };
 use axum::Router;
 use futures::SinkExt;

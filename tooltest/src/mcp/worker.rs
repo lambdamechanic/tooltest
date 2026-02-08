@@ -149,7 +149,9 @@ static WORKER: OnceLock<Result<TooltestWorker, String>> = OnceLock::new();
 type SpawnWorkerInit =
     fn(&'static OnceLock<Result<TooltestWorker, String>>) -> tokio::task::JoinHandle<()>;
 
-fn spawn_worker_init(worker: &'static OnceLock<Result<TooltestWorker, String>>) -> tokio::task::JoinHandle<()> {
+fn spawn_worker_init(
+    worker: &'static OnceLock<Result<TooltestWorker, String>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let _ = tooltest_worker_inner(worker);
     })

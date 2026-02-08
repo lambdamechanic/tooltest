@@ -15,6 +15,15 @@ Tooltest uses release-plz to publish crates to crates.io.
 3. Merge the release PR.
 4. The workflow publishes `tooltest` and `tooltest-core` to crates.io and tags the release.
 
+## Release PR content
+
+The release PR body is generated from two sources:
+
+- Commit-derived summary: `release-plz.toml` `workspace.pr_body` renders `release.changelog`, which is derived from git history (Conventional Commits).
+- Changelog pointers: release-plz updates the changelog files configured in `release-plz.toml` (`workspace.changelog_path` and each `package.changelog_path`), and the PR body links to them.
+
+To keep the PR body meaningful, prefer Conventional Commit messages (`feat:`, `fix:`, etc.) with clear subjects. If a change needs extra context, edit the generated changelog entries in the release PR before merging.
+
 ## Initial publish
 
 The initial publish follows the same flow: release-plz creates the first release PR, and publishing happens after it merges.

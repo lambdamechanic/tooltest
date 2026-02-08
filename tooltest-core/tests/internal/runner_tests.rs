@@ -127,6 +127,49 @@ async fn run_with_session_returns_minimized_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_with_session_enforces_min_sequence_len_with_coverage_lint_when_all_tools_uncallable() {
+    let tool = tool_with_schemas(
+        "echo",
+        json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string" }
+            },
+            "required": ["value"]
+        }),
+        None,
+    );
+    let response = CallToolResult::success(vec![Content::text("ok")]);
+    let transport = RunnerTransport::new(tool, response);
+    let driver = connect_runner_transport(transport).await.expect("connect");
+
+    let lint = CoverageLint::new(
+        LintDefinition::new("coverage", LintPhase::Run, LintLevel::Warning),
+        Vec::new(),
+    )
+    .expect("coverage lint");
+    let config = RunConfig::new()
+        .with_state_machine(StateMachineConfig::default())
+        .with_lints(LintSuite::new(vec![Arc::new(lint)]));
+    let options = RunnerOptions::new(1, 1..=1).expect("runner options");
+
+    let result = crate::run_with_session(&driver, &config, options).await;
+
+    match result.outcome {
+        RunOutcome::Failure(failure) => {
+            assert!(
+                failure
+                    .reason
+                    .contains("failed to reach minimum sequence length"),
+                "reason: {}",
+                failure.reason
+            );
+        }
+        RunOutcome::Success => panic!("expected failure"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn run_with_session_executes_pre_run_hook_per_case() {
     let tool = tool_with_schemas("echo", json!({ "type": "object" }), None);
     let response = CallToolResult::success(vec![Content::text("ok")]);

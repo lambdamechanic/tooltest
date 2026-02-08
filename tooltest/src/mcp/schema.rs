@@ -55,9 +55,7 @@ mod tests {
     #[test]
     fn inline_schema_for_type_falls_back_on_serialize_error() {
         fn fail(_schema: Schema) -> Result<JsonValue, serde_json::Error> {
-            Err(<serde_json::Error as serde::ser::Error>::custom(
-                "boom",
-            ))
+            Err(<serde_json::Error as serde::ser::Error>::custom("boom"))
         }
 
         let schema = inline_schema_for_type_inner::<tooltest_core::TooltestInput>(fail);
@@ -65,7 +63,10 @@ mod tests {
             schema.get("type").and_then(|value| value.as_str()),
             Some("object")
         );
-        assert!(schema.get("$comment").and_then(|value| value.as_str()).is_some());
+        assert!(schema
+            .get("$comment")
+            .and_then(|value| value.as_str())
+            .is_some());
     }
 
     #[test]

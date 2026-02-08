@@ -19,7 +19,7 @@ fn default_min_sequence_len() -> usize {
 }
 
 fn default_max_sequence_len() -> usize {
-    3
+    20
 }
 
 fn default_uncallable_limit() -> usize {
@@ -258,9 +258,7 @@ impl TooltestStdioTarget {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct TooltestHttpTarget {
     /// MCP endpoint URL.
-    #[schemars(regex(
-        pattern = r"^https?://[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*(?::[0-9]{1,5})?(?:/[^\s]*)?$"
-    ))]
+    #[schemars(length(min = 1))]
     pub url: String,
     /// Authorization bearer token.
     #[serde(default)]

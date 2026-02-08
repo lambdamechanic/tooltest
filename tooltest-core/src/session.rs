@@ -3,6 +3,8 @@
 //! We preserve rmcp error types inside `SessionError` to keep transport and
 //! session layers aligned and to retain full error context for debugging.
 
+use std::fmt;
+
 use crate::{HttpConfig, StdioConfig, ToolInvocation};
 use log::debug;
 use rmcp::model::Tool;
@@ -21,6 +23,26 @@ pub enum SessionError {
     Service(Box<ServiceError>),
     /// Failed to spawn or configure the stdio transport.
     Transport(Box<std::io::Error>),
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SessionError::Initialize(error) => write!(f, "initialize error: {error}"),
+            SessionError::Service(error) => write!(f, "service error: {error}"),
+            SessionError::Transport(error) => write!(f, "transport error: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SessionError::Initialize(error) => Some(error.as_ref()),
+            SessionError::Service(error) => Some(error.as_ref()),
+            SessionError::Transport(error) => Some(error.as_ref()),
+        }
+    }
 }
 
 impl From<ClientInitializeError> for SessionError {

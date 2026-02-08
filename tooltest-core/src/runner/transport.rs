@@ -55,7 +55,7 @@ pub(super) async fn run_with_transport(
         Ok(session) => session,
         Err(error) => {
             return failure_result(
-                RunFailure::new(format!("failed to connect {label} transport: {error:?}")),
+                RunFailure::new(format!("failed to connect {label} transport: {error}")),
                 Vec::new(),
                 None,
                 Vec::new(),

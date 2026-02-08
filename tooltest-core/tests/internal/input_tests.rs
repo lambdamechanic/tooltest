@@ -7,6 +7,15 @@ use crate::{
     TooltestTargetHttp, TooltestTargetStdio,
 };
 
+fn inline_schema_for_type<T: schemars::JsonSchema>() -> serde_json::Value {
+    let mut settings = schemars::generate::SchemaSettings::draft2020_12();
+    settings.inline_subschemas = true;
+    settings.transforms = vec![Box::new(schemars::transform::AddNullable::default())];
+    let generator = settings.into_generator();
+    let schema = generator.into_root_schema_for::<T>();
+    serde_json::to_value(schema).expect("schema json")
+}
+
 fn stdio_input() -> TooltestInput {
     TooltestInput {
         target: TooltestTarget::Stdio(TooltestTargetStdio {
@@ -19,7 +28,7 @@ fn stdio_input() -> TooltestInput {
         }),
         cases: 32,
         min_sequence_len: 1,
-        max_sequence_len: 3,
+        max_sequence_len: 20,
         lenient_sourcing: false,
         mine_text: false,
         dump_corpus: false,
@@ -45,7 +54,7 @@ fn shared_input_defaults_match_cli_defaults() {
 
     let options = input.to_runner_options().expect("runner options");
     assert_eq!(options.cases(), 32);
-    assert_eq!(options.sequence_len(), 1..=3);
+    assert_eq!(options.sequence_len(), 1..=20);
 
     let run_config = input.to_run_config().expect("run config");
     assert!(!run_config.state_machine.lenient_sourcing);
@@ -127,6 +136,38 @@ fn shared_input_rejects_unparseable_http_url() {
     let input: TooltestInput = serde_json::from_value(payload).expect("input");
     let error = input.to_target_config().unwrap_err();
     assert!(error.contains("invalid http url"));
+}
+
+#[test]
+fn shared_input_accepts_ipv6_http_url() {
+    let payload = json!({
+        "target": {
+            "http": { "url": "http://[::1]:8080/mcp" }
+        }
+    });
+    let input: TooltestInput = serde_json::from_value(payload).expect("input");
+    let config = input.to_target_config().expect("target config");
+    match config {
+        TooltestTargetConfig::Http(config) => assert_eq!(config.url(), "http://[::1]:8080/mcp"),
+        TooltestTargetConfig::Stdio(_) => panic!("expected http config"),
+    }
+}
+
+#[test]
+fn http_target_schema_accepts_ipv6_url() {
+    let schema = inline_schema_for_type::<TooltestHttpTarget>();
+    let validator = jsonschema::draft202012::new(&schema).expect("validator");
+
+    for url in [
+        "http://[::1]:8080/mcp",
+        "http://localhost:3000/mcp",
+        "https://example.com/mcp",
+    ] {
+        let instance = json!({ "url": url });
+        if let Err(error) = validator.validate(&instance) {
+            panic!("schema rejected {url}: {error}");
+        }
+    }
 }
 
 #[test]

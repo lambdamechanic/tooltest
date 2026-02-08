@@ -1836,7 +1836,10 @@ fn schema_branch_helpers_return_branches_for_valid_entries() {
         .as_object()
         .cloned()
         .expect("schema");
-    assert_eq!(schema_type_union_branches(&schema).unwrap().unwrap().len(), 2);
+    assert_eq!(
+        schema_type_union_branches(&schema).unwrap().unwrap().len(),
+        2
+    );
 }
 
 #[test]

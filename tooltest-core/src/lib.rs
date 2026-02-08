@@ -73,7 +73,7 @@ pub enum SchemaVersion {
 ///
 /// State-machine generation is always used for sequence runs; there is no legacy mode.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StateMachineConfig {
     /// Seed numbers added to the corpus before generation.
     pub seed_numbers: Vec<Number>,
@@ -159,8 +159,19 @@ fn validate_stdio_command(command: &str) -> Result<(), String> {
 
 fn validate_http_url(url: &str) -> Result<(), String> {
     let parsed = Url::parse(url).map_err(|error| format!("invalid http url '{url}': {error}"))?;
-    if !parsed.has_host() {
-        return Err(format!("invalid http url '{url}': missing host"));
+    match parsed.host_str() {
+        Some(host) if !host.is_empty() => {}
+        _ => {
+            return Err(format!("invalid http url '{url}': missing host"));
+        }
+    }
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(format!(
+                "invalid http url '{url}': scheme must be http or https (got '{scheme}')"
+            ));
+        }
     }
     Ok(())
 }

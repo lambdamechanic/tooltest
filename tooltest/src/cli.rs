@@ -10,7 +10,7 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     pub min_sequence_len: usize,
     /// Maximum sequence length per generated run.
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 20)]
     pub max_sequence_len: usize,
     /// Allow schema-based generation when corpus lacks required values.
     #[arg(long)]
@@ -41,7 +41,8 @@ pub struct Cli {
     #[arg(long)]
     pub in_band_error_forbidden: bool,
 
-    /// Shell command to execute before validation and each run.
+    /// Shell command string executed via `sh -c` before validation and each run.
+    /// Requires a POSIX `sh`; on Windows this needs Git Bash/MSYS2 (native support welcome).
     #[arg(long)]
     pub pre_run_hook: Option<String>,
     /// Emit JSON output instead of human-readable output.

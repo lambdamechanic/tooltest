@@ -185,18 +185,12 @@ When coverage validation fails without a positive error, you can include uncalla
 the output with `--show-uncallable`. Use `--uncallable-limit <N>` to control how many calls per
 tool are included (default: 1).
 
-### Tool filters and pre-run hook
+### Tool filters
 
 Filter eligible tools by name (exact, case-sensitive) using `--tool-allowlist` and
 `--tool-blocklist`. These flags only affect invocation generation and are separate from
 `coverage_allowlist`/`coverage_blocklist` in the state-machine config, which only affect
 coverage warnings and validation.
-
-Run a shell command after the initial `tools/list` and before tool schema validation, and before
-every generated sequence (including shrink/minimization) using `--pre-run-hook "<shell command>"`.
-The hook does not run before the first `tools/list`. If the hook exits non-zero, the run fails with
-`code: pre_run_hook_failed` and structured details (exit code, stdout, stderr, signal). For stdio
-runs, the hook uses the same `--env` and `--cwd` settings as the MCP server process.
 
 ### In-band tool errors
 
@@ -251,11 +245,18 @@ Log newly mined corpus values after each tool response (stderr):
 ### Pre-run command hook
 
 Run a command after the initial `tools/list` (before tool schema validation) and before each
-proptest case to reset external state. The hook expects a JSON argv array. Non-zero exit codes
-fail the run and include stdout/stderr in the failure details.
+proptest case to reset external state.
+
+The hook is a shell command string executed via `sh -c`. On Windows, this is unsupported unless a
+compatible `sh` is available (for example via Git Bash/MSYS2); patches to add native Windows support
+are welcome.
+
+If the hook exits non-zero, the run fails with `code: pre_run_hook_failed` and structured details
+(exit code, stdout, stderr, signal). For stdio runs, the hook uses the same `--env` and `--cwd`
+settings as the MCP server process.
 
 ```bash
---pre-run-hook '["/bin/sh","-c","./scripts/reset-state.sh"]'
+--pre-run-hook "./scripts/reset-state.sh"
 ```
 
 ---

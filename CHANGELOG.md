@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [0.4.0] - 2026-02-09
+
 ### Added
 
 - `tooltest.toml` lint configuration and a lint framework with phases (`list`, `response`, `run`).
@@ -16,3 +20,7 @@
 - Missing `structuredContent` for tools with output schemas is now reported as a configurable lint warning instead of a
   hard failure.
 - Coverage validation defaults to 100% tool coverage when enabled with no explicit rules configured.
+
+### Notes
+
+- Older releases are recorded in `tooltest/CHANGELOG.md` and `tooltest-core/CHANGELOG.md`.

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.4.0...tooltest-v0.4.2) - 2026-02-09
+
+### Other
+
+- Merge pull request #125 from lambdamechanic/release-plz-2026-02-09T03-51-52Z
+- update Cargo.lock dependencies
+
 ## [0.4.1](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.4.0...tooltest-v0.4.1) - 2026-02-09
 
 ### Other

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-core-v0.3.0...tooltest-core-v0.4.0) - 2026-02-09
+
+### Other
+
+- expand changelogs since 0.3.0
+
 ### Added
 
 - Lint framework with configurable phases (`list`, `response`, `run`) and severity (`error`, `warning`, `disabled`).

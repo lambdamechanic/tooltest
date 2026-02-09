@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.4.0...tooltest-v0.4.1) - 2026-02-09
+
+### Other
+
+- Merge pull request #124 from lambdamechanic/changelog-backfill-0.4.0
+
 No unreleased changes yet.
 
 ## [0.4.0] - 2026-02-09

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.4.0...tooltest-v0.4.1) - 2026-02-09
+
+### Other
+
+- Merge pull request #122 from lambdamechanic/mcp-fix-loop-prompt
+
 ### Added
 
 - `tooltest.toml` lint configuration and a lint framework with phases (`list`, `response`, `run`).

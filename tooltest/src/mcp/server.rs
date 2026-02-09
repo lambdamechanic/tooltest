@@ -22,35 +22,27 @@ pub(super) const TOOLTEST_FIX_LOOP_RESOURCE_URI: &str = "tooltest://guides/fix-l
 const TOOLTEST_FIX_LOOP_RESOURCE_NAME: &str = "tooltest-fix-loop";
 const TOOLTEST_FIX_LOOP_RESOURCE_DESCRIPTION: &str =
     "Step-by-step guidance for running tooltest to fix MCP issues.";
-pub(super) const TOOLTEST_FIX_LOOP_PROMPT: &str = r#"You have access to this repository and can run commands.
+/// MCP-served fix-loop guidance. This intentionally assumes the caller is already using MCP, so
+/// it does not mention the CLI wrapper.
+pub(super) const TOOLTEST_FIX_LOOP_PROMPT_MCP: &str = r#"You are operating via an MCP client and can call MCP tools.
 Goal: make the repository's MCP server(s) conform to the MCP spec as exercised by tooltest.
 
-Figure out how to start the MCP server from this repo (stdio or streamable HTTP).
+Strategy:
+- Keep changes small and compatible. Don't rename tools or change schemas unless required by the spec.
+- Work on a small, related subset of tools intended to be used together. Default to testing at most 50 tools at a time, and strongly prefer a smaller group. Use `tool_allowlist` in the tooltest input to enforce this.
 
-Select a small, related subset of tools intended to be used together. Default to testing at most 50 tools at a time, and strongly prefer a smaller group. Use `--tool-allowlist` (or `tool_allowlist` in MCP input) to enforce this.
+How to iterate (MCP-only):
+1) Call the `tooltest` tool with a target (stdio or HTTP) and an allowlist.
+2) Read the failures, make a focused fix, and re-run.
+3) Add/adjust tests when needed to lock in behavior and prevent regressions.
 
-Run tooltest against it and fix failures until it exits 0.
-
-If you see "state-machine generator failed to reach minimum sequence length", re-run with `--lenient-sourcing` or seed values in `--state-machine-config`.
-
-CLI usage (preferred when you can run commands):
-- Use CLI-only flags for debugging, e.g. `--trace-all /tmp/tooltest-traces.jsonl`.
-- Examples:
-  CLI stdio (allowlist example): tooltest stdio --command "<command that starts the repo's MCP server>" --tool-allowlist foo --tool-allowlist bar
-  CLI http (allowlist example): tooltest http --url "http://127.0.0.1:9000/mcp" --tool-allowlist foo --tool-allowlist bar
-
-MCP tool usage (when you must call via MCP):
-- Call the `tooltest` tool with the shared input schema.
-- Only fields in the MCP input schema are accepted (CLI-only flags like `--json` and `--trace-all` are not supported).
-- Example (allowlist):
+Example tool input (allowlist):
 {
   "target": { "stdio": { "command": "<command that starts the repo's MCP server>" } },
   "tool_allowlist": ["foo", "bar"]
 }
 
-Don't rename tools or change schemas unless required; prefer backward-compatible fixes.
-
-Add/adjust tests if needed.
+If you see "state-machine generator failed to reach minimum sequence length", re-run with `lenient_sourcing: true` or provide seed values via `state_machine_config`.
 
 Return a short summary of what you changed and why, plus the final passing tooltest output snippet.
 "#;
@@ -190,7 +182,7 @@ fn fix_loop_prompt_result() -> GetPromptResult {
         messages: vec![PromptMessage {
             role: PromptMessageRole::User,
             content: PromptMessageContent::Text {
-                text: TOOLTEST_FIX_LOOP_PROMPT.to_string(),
+                text: TOOLTEST_FIX_LOOP_PROMPT_MCP.to_string(),
             },
         }],
     }
@@ -221,7 +213,7 @@ fn fix_loop_resource_contents() -> ResourceContents {
     ResourceContents::TextResourceContents {
         uri: TOOLTEST_FIX_LOOP_RESOURCE_URI.to_string(),
         mime_type: Some("text/plain".to_string()),
-        text: TOOLTEST_FIX_LOOP_PROMPT.to_string(),
+        text: TOOLTEST_FIX_LOOP_PROMPT_MCP.to_string(),
         meta: None,
     }
 }

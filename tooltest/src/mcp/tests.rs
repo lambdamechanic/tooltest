@@ -1,6 +1,6 @@
 use super::schema::tooltest_input_schema;
 use super::server::{
-    McpServer, TOOLTEST_FIX_LOOP_PROMPT, TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION,
+    McpServer, TOOLTEST_FIX_LOOP_PROMPT_DESCRIPTION, TOOLTEST_FIX_LOOP_PROMPT_MCP,
     TOOLTEST_FIX_LOOP_PROMPT_NAME, TOOLTEST_FIX_LOOP_RESOURCE_URI, TOOLTEST_TOOL_DESCRIPTION,
     TOOLTEST_TOOL_NAME,
 };
@@ -241,7 +241,7 @@ async fn get_prompt_returns_fix_loop_literal() {
     let result = get_prompt_from_response(response).expect("get prompt response");
     let message = result.messages.first().expect("prompt message");
     let text = prompt_text_from_message(message).expect("text prompt content");
-    assert_eq!(text, TOOLTEST_FIX_LOOP_PROMPT);
+    assert_eq!(text, TOOLTEST_FIX_LOOP_PROMPT_MCP);
 }
 
 #[tokio::test]
@@ -274,7 +274,7 @@ async fn read_resource_returns_fix_loop_text() {
     let content = result.contents.first().expect("resource content");
     let (text, mime_type) = resource_text_from_content(content).expect("text content");
     assert_eq!(mime_type, Some("text/plain"));
-    assert_eq!(text, TOOLTEST_FIX_LOOP_PROMPT);
+    assert_eq!(text, TOOLTEST_FIX_LOOP_PROMPT_MCP);
 }
 
 #[tokio::test]

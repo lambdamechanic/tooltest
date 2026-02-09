@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.3.0...tooltest-v0.4.0) - 2026-02-09
+
+### Other
+
+- expand changelogs since 0.3.0
+
 ### Added
 
 - `tooltest mcp`: run tooltest as an MCP server exposing:

@@ -43,50 +43,36 @@ Install from crates.io:
 cargo install tooltest
 ```
 
+### Recommended for coding agents (MCP)
+
+For day-to-day server fixes, install `tooltest` as an MCP server in your coding agent and let the
+agent run the fix-test loop.
+
+1. Add this MCP server entry to your agent config:
+
+```json
+{
+  "mcpServers": {
+    "tooltest": {
+      "command": "tooltest",
+      "args": ["mcp", "--stdio"]
+    }
+  }
+}
+```
+
+2. Ask your agent to run the loop:
+
+```text
+Run the tooltest fix-test loop for this repository.
+```
+
+If your agent supports MCP prompts/resources, ask it to use `tooltest-fix-loop`
+(`tooltest://guides/fix-loop`) for step-by-step guidance.
+
 ### Profiling (debug)
 
-`tooltest-prof` is an optional wrapper that runs the installed `tooltest` binary under `flamegraph`.
-It is a debugging tool and is not included in release artifacts or `cargo install` by default.
-
-Install the wrapper via the install script:
-
-```bash
-TOOLTEST_INSTALL_DEBUG_TOOLS=1 \
-  curl -fsSL https://raw.githubusercontent.com/lambdamechanic/tooltest/main/install.sh | bash
-```
-
-Prerequisites:
-- `flamegraph` in your `PATH` (from `cargo install flamegraph`)
-- `perf`/DTrace permissions for your platform (see `flamegraph --help`)
-
-Usage (writes SVG output to `TOOLTEST_PROFILE_PATH` when set):
-
-```bash
-TOOLTEST_PROFILE_PATH="$PWD/tooltest.svg" \
-  tooltest-prof stdio --command ./path/to/your-mcp-server
-```
-
-For MCP usage, configure your launcher to invoke `tooltest-prof` instead of `tooltest`.
-
-If your flamegraph is mostly "unknown", rebuild tooltest with symbols + frame pointers and
-point the wrapper at the new binary:
-
-```bash
-./scripts/tooltest-prof-build
-TOOLTEST_PROFILE_TOOLTEST_PATH="$PWD/target/release/tooltest" \
-  TOOLTEST_PROFILE_PATH="$PWD/tooltest.svg" \
-  tooltest-prof stdio --command ./path/to/your-mcp-server
-```
-
-Manual rebuild (if you prefer):
-
-```bash
-RUSTFLAGS="-C force-frame-pointers=yes" \
-  CARGO_PROFILE_RELEASE_DEBUG=1 \
-  CARGO_PROFILE_RELEASE_STRIP=none \
-  CARGO_PROFILE_RELEASE_LTO=false \
-  cargo build -p tooltest --bin tooltest --release
-```
+Profiling instructions are in [`docs/profiling.md`](docs/profiling.md).
 
 ### Test a stdio MCP server
 
@@ -338,9 +324,13 @@ async fn calls_hosted_tool() {
 
 ---
 
-## Agent-assisted “fix loop” prompt
+## Manual agent-assisted “fix loop” prompt
 
-Paste this into your coding agent (with repo access) and let it iterate until tooltest is clean.
+If you've already installed `tooltest` as an MCP server in your coding agent (recommended in Quick
+start), you can skip this and just ask the agent to run the tooltest fix-test loop.
+
+Otherwise, paste this into your coding agent (with repo access) and let it iterate until tooltest
+is clean.
 
 ```text
 You have access to this repository and can run commands.

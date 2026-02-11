@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.4.1...tooltest-v0.4.2) - 2026-02-11
+
+### Other
+
+- move profiling guide and emphasize MCP fix-test quickstart
+
 ## [0.4.1](https://github.com/lambdamechanic/tooltest/compare/tooltest-v0.4.0...tooltest-v0.4.1) - 2026-02-09
 
 ### Other

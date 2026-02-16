@@ -3253,6 +3253,50 @@ fn json_schema_non_standard_keywords_ignores_anyof_without_nullable() {
 }
 
 #[test]
+fn json_schema_non_standard_keywords_reports_nullable_without_schema_decl() {
+    // Schema without $schema key defaults to 2020-12, so nullable should be reported
+    let tools = vec![tool_with_schemas(
+        "no-schema-decl",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "nullable": true }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("no-schema-decl"));
+    assert!(findings[0].message.contains("nullable"));
+}
+
+#[test]
+fn json_schema_non_standard_keywords_handles_empty_tools() {
+    let tools: Vec<crate::Tool> = vec![];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: 0,
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
 fn validate_tools_rejects_invalid_schema() {
     let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
     let error = validate_tools(vec![tool], &SchemaConfig::default()).expect_err("error");

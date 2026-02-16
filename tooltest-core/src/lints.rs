@@ -275,8 +275,9 @@ impl JsonSchemaNonStandardKeywordsLint {
         let normalized = normalize_schema_id(schema_id);
         // 2020-12 and later (including 2019-09) are "modern" schemas
         // that should not use non-standard keywords like nullable
-        normalized.starts_with("https://json-schema.org/draft/2020-12")
-            || normalized.starts_with("https://json-schema.org/draft/2019-09")
+        let is_2020_12 = normalized.starts_with("https://json-schema.org/draft/2020-12");
+        let is_2019_09 = normalized.starts_with("https://json-schema.org/draft/2019-09");
+        is_2020_12 || is_2019_09
     }
 
     /// Recursively check a JSON value for the `nullable` keyword.

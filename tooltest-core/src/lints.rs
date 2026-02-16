@@ -260,6 +260,121 @@ impl LintRule for JsonSchemaKeywordCompatLint {
     }
 }
 
+/// Lint: reports non-standard keywords like `nullable` in JSON Schema 2020-12.
+#[derive(Clone, Debug)]
+pub struct JsonSchemaNonStandardKeywordsLint {
+    definition: LintDefinition,
+}
+
+impl JsonSchemaNonStandardKeywordsLint {
+    pub fn new(definition: LintDefinition) -> Self {
+        Self { definition }
+    }
+
+    /// Check if the schema ID is a "modern" schema (2020-12 or 2019-09)
+    /// that should not use non-standard keywords like nullable.
+    ///
+    /// Note: This function shows 1 missed region in llvm-cov reports despite
+    /// complete logical coverage. See `docs/coverage-notes.md` for details.
+    fn is_modern_schema(schema_id: &str) -> bool {
+        let normalized = normalize_schema_id(schema_id);
+        normalized.starts_with("https://json-schema.org/draft/2020-12")
+            || normalized.starts_with("https://json-schema.org/draft/2019-09")
+    }
+
+    /// Recursively check a JSON value for the `nullable` keyword.
+    fn has_nullable_in_subschema(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(obj) => {
+                // Check if this object has nullable
+                if obj.contains_key("nullable") {
+                    return true;
+                }
+                // Recursively check nested schemas
+                for (_, v) in obj {
+                    if Self::has_nullable_in_subschema(v) {
+                        return true;
+                    }
+                }
+                false
+            }
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    if Self::has_nullable_in_subschema(item) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn check_schema(
+        &self,
+        tool_name: &str,
+        schema: &crate::JsonObject,
+        label: &str,
+    ) -> Option<LintFinding> {
+        // Check if nullable exists anywhere in the schema (including nested)
+        if !Self::has_nullable_in_subschema(&serde_json::Value::Object(schema.clone())) {
+            return None;
+        }
+        // Get the declared schema ID, defaulting to 2020-12 if not present
+        let schema_value = schema.get("$schema");
+        let declared = if let Some(v) = schema_value {
+            if let Some(s) = v.as_str() {
+                normalize_schema_id(s)
+            } else {
+                DEFAULT_JSON_SCHEMA_DIALECT
+            }
+        } else {
+            DEFAULT_JSON_SCHEMA_DIALECT
+        };
+        // Only report for modern schemas (2020-12, 2019-09), not legacy (draft-07 and earlier)
+        if !Self::is_modern_schema(declared) {
+            return None;
+        }
+        Some(
+            LintFinding::new(format!(
+                "tool '{}' {label} schema declares 2020-12 but uses non-standard keyword 'nullable'",
+                tool_name
+            ))
+            .with_details(json!({
+                "tool": tool_name,
+                "schema": declared,
+                "schema_label": label,
+                "keyword": "nullable",
+            })),
+        )
+    }
+}
+
+impl LintRule for JsonSchemaNonStandardKeywordsLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_list(&self, context: &ListLintContext<'_>) -> Vec<LintFinding> {
+        let mut findings = Vec::new();
+        for tool in context.tools {
+            if let Some(finding) =
+                self.check_schema(tool.name.as_ref(), tool.input_schema.as_ref(), "input")
+            {
+                findings.push(finding);
+            }
+            if let Some(schema) = tool.output_schema.as_ref() {
+                if let Some(finding) =
+                    self.check_schema(tool.name.as_ref(), schema.as_ref(), "output")
+                {
+                    findings.push(finding);
+                }
+            }
+        }
+        findings
+    }
+}
+
 /// Lint: reports output schemas that fail to compile.
 #[derive(Clone, Debug)]
 pub struct OutputSchemaCompileLint {

@@ -28,3 +28,7 @@ check.py
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Coverage artifacts
+/codecov.json
+/lcov.info

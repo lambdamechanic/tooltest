@@ -183,6 +183,22 @@ fn schema_has_properties(schema: &JsonValue, keys: &[&str]) -> bool {
     false
 }
 
+/// Recursively checks if a JSON value contains a `nullable` key anywhere.
+fn contains_nullable_key(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Object(obj) => {
+            // Check if this object has a `nullable` key
+            if obj.contains_key("nullable") {
+                return true;
+            }
+            // Recursively check all values
+            obj.values().any(contains_nullable_key)
+        }
+        JsonValue::Array(arr) => arr.iter().any(contains_nullable_key),
+        _ => false,
+    }
+}
+
 #[tokio::test]
 async fn noop_sink_close_completes() {
     let mut sink = NoopSink;
@@ -206,6 +222,39 @@ async fn list_tools_includes_tooltest() {
     assert!(!tool.input_schema.is_empty());
     let output_schema = tool.output_schema.as_ref().expect("output schema");
     assert!(!output_schema.is_empty());
+}
+
+#[tokio::test]
+async fn list_tools_schemas_have_no_nullable() {
+    let response = send_request(ClientRequest::ListToolsRequest(ListToolsRequest {
+        method: Default::default(),
+        params: None,
+        extensions: Default::default(),
+    }))
+    .await;
+    let tools = list_tools_from_response(response).expect("list tools response");
+
+    for tool in &tools {
+        // Check inputSchema has no nullable keys
+        let input_schema_value: JsonValue =
+            serde_json::to_value(&tool.input_schema).expect("input schema to value");
+        assert!(
+            !contains_nullable_key(&input_schema_value),
+            "inputSchema for tool '{}' contains 'nullable' keyword",
+            tool.name.as_ref()
+        );
+
+        // Check outputSchema has no nullable keys (if present)
+        if let Some(output_schema) = &tool.output_schema {
+            let output_schema_value: JsonValue =
+                serde_json::to_value(output_schema).expect("output schema to value");
+            assert!(
+                !contains_nullable_key(&output_schema_value),
+                "outputSchema for tool '{}' contains 'nullable' keyword",
+                tool.name.as_ref()
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -984,6 +1033,55 @@ fn schema_has_properties_traverses_unions() {
     });
     assert!(schema_has_properties(&schema, &["bravo"]));
     assert!(!schema_has_properties(&schema, &["charlie"]));
+}
+
+#[test]
+fn contains_nullable_key_finds_top_level_nullable() {
+    let schema = json!({
+        "type": "string",
+        "nullable": true
+    });
+    assert!(contains_nullable_key(&schema));
+}
+
+#[test]
+fn contains_nullable_key_finds_nested_nullable() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "nullable": true
+            },
+            "count": {
+                "type": "integer"
+            }
+        }
+    });
+    assert!(contains_nullable_key(&schema));
+}
+
+#[test]
+fn contains_nullable_key_finds_nullable_in_array() {
+    let schema = json!({
+        "anyOf": [
+            {"type": "string", "nullable": true},
+            {"type": "null"}
+        ]
+    });
+    assert!(contains_nullable_key(&schema));
+}
+
+#[test]
+fn contains_nullable_key_returns_false_when_absent() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "count": { "type": "integer" }
+        }
+    });
+    assert!(!contains_nullable_key(&schema));
 }
 
 #[tokio::test]

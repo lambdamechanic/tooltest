@@ -1,5 +1,5 @@
 use rmcp::model::JsonObject;
-use schemars::{generate::SchemaSettings, transform::AddNullable, JsonSchema, Schema};
+use schemars::{generate::SchemaSettings, JsonSchema, Schema};
 use serde_json::Value as JsonValue;
 use std::sync::{Arc, OnceLock};
 
@@ -30,7 +30,6 @@ fn inline_schema_for_type_inner<T: JsonSchema>(
 ) -> Arc<JsonObject> {
     let mut settings = SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
-    settings.transforms = vec![Box::new(AddNullable::default())];
     let generator = settings.into_generator();
     let schema = generator.into_root_schema_for::<T>();
     let value = match to_value(schema) {

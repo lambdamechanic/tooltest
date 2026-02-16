@@ -32,6 +32,11 @@ id = "json_schema_keyword_compat"
 level = "warning"
 
 [[lints]]
+# Warn when JSON Schema uses non-standard keywords (e.g., nullable).
+id = "json_schema_non_standard_keywords"
+level = "warning"
+
+[[lints]]
 # Restrict input/output $schema values to a known allowlist.
 id = "json_schema_dialect_compat"
 level = "disabled"

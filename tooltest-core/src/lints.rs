@@ -271,15 +271,12 @@ impl JsonSchemaNonStandardKeywordsLint {
         Self { definition }
     }
 
-    fn is_202012_schema(schema_id: &str) -> bool {
+    /// Check if the schema ID is a "modern" schema (2020-12 or 2019-09)
+    /// that should not use non-standard keywords like nullable
+    fn is_modern_schema(schema_id: &str) -> bool {
         let normalized = normalize_schema_id(schema_id);
-        // 2020-12 and later (including 2019-09) are "modern" schemas
-        // that should not use non-standard keywords like nullable
-        match () {
-            _ if normalized.starts_with("https://json-schema.org/draft/2020-12") => true,
-            _ if normalized.starts_with("https://json-schema.org/draft/2019-09") => true,
-            _ => false,
-        }
+        normalized.starts_with("https://json-schema.org/draft/2020-12")
+            || normalized.starts_with("https://json-schema.org/draft/2019-09")
     }
 
     /// Recursively check a JSON value for the `nullable` keyword.
@@ -331,8 +328,8 @@ impl JsonSchemaNonStandardKeywordsLint {
         } else {
             DEFAULT_JSON_SCHEMA_DIALECT
         };
-        // Only report for 2020-12 schemas, not legacy (draft-07 and earlier)
-        if !Self::is_202012_schema(declared) {
+        // Only report for modern schemas (2020-12, 2019-09), not legacy (draft-07 and earlier)
+        if !Self::is_modern_schema(declared) {
             return None;
         }
         Some(

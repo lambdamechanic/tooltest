@@ -3198,6 +3198,61 @@ fn json_schema_non_standard_keywords_reports_nullable_in_anyof() {
 }
 
 #[test]
+fn json_schema_non_standard_keywords_reports_nullable_in_2019_09() {
+    let tools = vec![tool_with_schemas(
+        "2019-09-nullable",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2019-09/schema",
+            "properties": {
+                "name": { "type": "string", "nullable": true }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("2019-09-nullable"));
+    assert!(findings[0].message.contains("nullable"));
+}
+
+#[test]
+fn json_schema_non_standard_keywords_ignores_anyof_without_nullable() {
+    let tools = vec![tool_with_schemas(
+        "anyof-no-nullable",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "anyOf": [
+                { "type": "string" },
+                { "type": "null" }
+            ]
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
 fn validate_tools_rejects_invalid_schema() {
     let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
     let error = validate_tools(vec![tool], &SchemaConfig::default()).expect_err("error");

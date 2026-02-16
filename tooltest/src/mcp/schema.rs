@@ -6,10 +6,12 @@ use std::sync::{Arc, OnceLock};
 /// Recursively removes the `nullable` keyword from a JSON Schema object.
 ///
 /// This is a workaround for rmcp upstream, which generates `nullable` keywords
-/// in output schemas. The `nullable` keyword is not part of JSON Schema 2020-12
-/// and will cause validation failures with strict schema validators.
+/// in output schemas via `schema_for_type()`. The `nullable` keyword is not part
+/// of JSON Schema 2020-12 (it's an OpenAPI 3.0 extension) and causes validation
+/// failures with strict schema validators like mcporter.
 ///
-/// See: <https://github.com/anthropics/anthropic-sdk-rust/issues/XXX>
+/// TODO: Remove this workaround when rmcp fixes upstream:
+/// <https://github.com/modelcontextprotocol/rust-sdk/issues/663>
 pub(crate) fn strip_nullable_from_object(obj: &mut JsonObject) {
     // Remove nullable if present
     obj.remove("nullable");
@@ -60,6 +62,10 @@ fn inline_schema_for_type_inner<T: JsonSchema>(
 ) -> Arc<JsonObject> {
     let mut settings = SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
+    // Note: AddNullable is intentionally NOT included here. The `nullable` keyword
+    // is an OpenAPI 3.0 extension, not part of JSON Schema 2020-12. Including it
+    // causes validation failures with strict schema validators like mcporter.
+    // See: https://github.com/modelcontextprotocol/rust-sdk/issues/663
     let generator = settings.into_generator();
     let schema = generator.into_root_schema_for::<T>();
     let value = match to_value(schema) {

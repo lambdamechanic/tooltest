@@ -10,7 +10,11 @@ use crate::{
 fn inline_schema_for_type<T: schemars::JsonSchema>() -> serde_json::Value {
     let mut settings = schemars::generate::SchemaSettings::draft2020_12();
     settings.inline_subschemas = true;
-    settings.transforms = vec![Box::new(schemars::transform::AddNullable::default())];
+    // Note: AddNullable is intentionally NOT included here to match production
+    // schema generation (see tooltest/src/mcp/schema.rs). The nullable keyword
+    // is not part of JSON Schema 2020-12 and causes validation failures with
+    // strict validators like mcporter.
+    // See: https://github.com/modelcontextprotocol/rust-sdk/issues/663
     let generator = settings.into_generator();
     let schema = generator.into_root_schema_for::<T>();
     serde_json::to_value(schema).expect("schema json")

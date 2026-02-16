@@ -3,6 +3,36 @@ use schemars::{generate::SchemaSettings, JsonSchema, Schema};
 use serde_json::Value as JsonValue;
 use std::sync::{Arc, OnceLock};
 
+/// Recursively removes the `nullable` keyword from a JSON Schema object.
+///
+/// This is a workaround for rmcp upstream, which generates `nullable` keywords
+/// in output schemas. The `nullable` keyword is not part of JSON Schema 2020-12
+/// and will cause validation failures with strict schema validators.
+///
+/// See: <https://github.com/anthropics/anthropic-sdk-rust/issues/XXX>
+pub(crate) fn strip_nullable_from_object(obj: &mut JsonObject) {
+    // Remove nullable if present
+    obj.remove("nullable");
+    // Recursively process all values
+    for value in obj.values_mut() {
+        strip_nullable_from_value(value);
+    }
+}
+
+fn strip_nullable_from_value(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(obj) => {
+            strip_nullable_from_object(obj);
+        }
+        JsonValue::Array(arr) => {
+            for item in arr {
+                strip_nullable_from_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn tooltest_input_schema() -> Arc<JsonObject> {
     default_tooltest_input_schema()
 }
@@ -50,6 +80,7 @@ fn inline_schema_for_type_inner<T: JsonSchema>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn inline_schema_for_type_falls_back_on_serialize_error() {
@@ -82,6 +113,85 @@ mod tests {
         assert_eq!(
             schema.get("$comment").and_then(|value| value.as_str()),
             Some("schema serialization produced non-object value")
+        );
+    }
+
+    #[test]
+    fn strip_nullable_removes_top_level_nullable() {
+        let mut schema = json!({
+            "type": "string",
+            "nullable": true
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        strip_nullable_from_object(&mut schema);
+        assert!(!schema.contains_key("nullable"));
+        assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("string"));
+    }
+
+    #[test]
+    fn strip_nullable_removes_nested_nullable() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "nullable": true
+                },
+                "count": {
+                    "type": "integer"
+                }
+            },
+            "nullable": false
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        strip_nullable_from_object(&mut schema);
+        assert!(!schema.contains_key("nullable"));
+        let props = schema.get("properties").unwrap().as_object().unwrap();
+        let name = props.get("name").unwrap().as_object().unwrap();
+        assert!(!name.contains_key("nullable"));
+        let count = props.get("count").unwrap().as_object().unwrap();
+        assert!(!count.contains_key("nullable"));
+    }
+
+    #[test]
+    fn strip_nullable_handles_arrays() {
+        let mut schema = json!({
+            "anyOf": [
+                {"type": "string", "nullable": true},
+                {"type": "null"}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        strip_nullable_from_object(&mut schema);
+        let any_of = schema.get("anyOf").unwrap().as_array().unwrap();
+        let first = any_of[0].as_object().unwrap();
+        assert!(!first.contains_key("nullable"));
+    }
+
+    #[test]
+    fn strip_nullable_preserves_other_keys() {
+        let mut schema = json!({
+            "type": "string",
+            "nullable": true,
+            "minLength": 1,
+            "description": "A string field"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        strip_nullable_from_object(&mut schema);
+        assert!(!schema.contains_key("nullable"));
+        assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("string"));
+        assert_eq!(schema.get("minLength").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(
+            schema.get("description").and_then(|v| v.as_str()),
+            Some("A string field")
         );
     }
 }

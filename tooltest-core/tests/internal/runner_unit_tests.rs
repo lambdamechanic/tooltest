@@ -15,8 +15,8 @@ use crate::generator::{
 };
 use crate::lints::{
     CoverageLint, JsonSchemaDialectCompatLint, JsonSchemaKeywordCompatLint,
-    MaxStructuredContentBytesLint, MaxToolsLint, McpSchemaMinVersionLint,
-    MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
+    JsonSchemaNonStandardKeywordsLint, MaxStructuredContentBytesLint, MaxToolsLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
     DEFAULT_JSON_SCHEMA_DIALECT,
 };
 use crate::{
@@ -3019,6 +3019,182 @@ fn json_schema_keyword_compat_ignores_modern_defs() {
         tools: &tools,
     });
     assert!(findings.is_empty());
+}
+
+#[test]
+fn json_schema_non_standard_keywords_reports_nullable_in_input() {
+    let tools = vec![tool_with_schemas(
+        "has-nullable",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "name": { "type": "string", "nullable": true }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("has-nullable"));
+    assert!(findings[0].message.contains("input"));
+    assert!(findings[0].message.contains("nullable"));
+}
+
+#[test]
+fn json_schema_non_standard_keywords_reports_nullable_in_output() {
+    let tools = vec![tool_with_schemas(
+        "has-nullable-output",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema"
+        }),
+        Some(json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "result": { "type": "string", "nullable": true }
+            }
+        })),
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("has-nullable-output"));
+    assert!(findings[0].message.contains("output"));
+    assert!(findings[0].message.contains("nullable"));
+}
+
+#[test]
+fn json_schema_non_standard_keywords_reports_nullable_in_nested() {
+    let tools = vec![tool_with_schemas(
+        "nested-nullable",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "value": { "type": "string", "nullable": true }
+                        }
+                    }
+                }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("nested-nullable"));
+}
+
+#[test]
+fn json_schema_non_standard_keywords_ignores_legacy_schema() {
+    let tools = vec![tool_with_schemas(
+        "legacy-nullable",
+        json!({
+            "type": "object",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "properties": {
+                "name": { "type": "string", "nullable": true }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn json_schema_non_standard_keywords_ignores_schema_without_nullable() {
+    let tools = vec![tool_with_schemas(
+        "no-nullable",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "name": { "type": "string" }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn json_schema_non_standard_keywords_reports_nullable_in_anyof() {
+    let tools = vec![tool_with_schemas(
+        "anyof-nullable",
+        json!({
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "anyOf": [
+                { "type": "string", "nullable": true },
+                { "type": "null" }
+            ]
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("anyof-nullable"));
 }
 
 #[test]

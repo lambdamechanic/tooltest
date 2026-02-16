@@ -1230,7 +1230,8 @@ rules = [{ rule = "min_calls_per_tool", min = 999 }]
         "mcp_schema_min_version",
         "json_schema_dialect_compat",
         "json_schema_keyword_compat",
-        "json_schema_non_standard_keywords",
+        // Note: json_schema_non_standard_keywords (nullable) is no longer expected
+        // because we now strip nullable from output schemas in server.rs
         "output_schema_compile",
         "max_structured_content_bytes",
         "missing_structured_content",
@@ -1510,7 +1511,8 @@ exec env -i TOOLTEST_MCP_DOGFOOD_COMMAND="{flaky}" LLVM_PROFILE_FILE=/dev/null T
         "mcp_schema_min_version",
         "json_schema_dialect_compat",
         "json_schema_keyword_compat",
-        "json_schema_non_standard_keywords",
+        // Note: json_schema_non_standard_keywords (nullable) is no longer expected
+        // because we now strip nullable from output schemas in server.rs
         "output_schema_compile",
         "max_structured_content_bytes",
         "missing_structured_content",

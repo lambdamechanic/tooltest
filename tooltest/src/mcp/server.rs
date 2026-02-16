@@ -9,6 +9,7 @@ use rmcp::model::{
 use rmcp::transport::stdio;
 use rmcp::{ErrorData, RoleServer, ServiceExt};
 use serde_json::{json, Value as JsonValue};
+use std::sync::Arc;
 
 use super::{schema, transport, worker};
 
@@ -156,12 +157,17 @@ impl ServerHandler for McpServer {
 }
 
 fn tooltest_tool() -> Tool {
+    // Workaround: rmcp's schema_for_type generates `nullable` keywords which are not
+    // valid in JSON Schema 2020-12. Strip them before returning the schema.
+    // See: https://github.com/anthropics/anthropic-sdk-rust/issues/XXX
+    let mut output_schema = (*schema_for_type::<tooltest_core::RunResult>()).clone();
+    schema::strip_nullable_from_object(&mut output_schema);
     Tool {
         name: TOOLTEST_TOOL_NAME.into(),
         title: None,
         description: Some(TOOLTEST_TOOL_DESCRIPTION.into()),
         input_schema: schema::tooltest_input_schema(),
-        output_schema: Some(schema_for_type::<tooltest_core::RunResult>()),
+        output_schema: Some(Arc::new(output_schema)),
         annotations: None,
         icons: None,
         meta: None,

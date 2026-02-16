@@ -332,8 +332,16 @@ fn init_response(id: RequestId) -> ServerJsonRpcMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_lines, tool_stub_with_name};
+    use super::{
+        handle_message, list_tools_response, run, run_server, select_lines, tool_stub,
+        tool_stub_with_name, validate_expectations, write_response,
+    };
+    use rmcp::model::{
+        ClientJsonRpcMessage, ClientRequest, InitializeRequest,
+        ListToolsRequest as ClientListToolsRequest, NumberOrString, RequestId,
+    };
     use std::env;
+    use std::io::Cursor;
     use tooltest_test_support::EnvVarGuard;
 
     #[test]
@@ -385,5 +393,117 @@ mod tests {
         }
         assert_eq!(env::var(key).ok().as_deref(), Some("original"));
         env::remove_var(key);
+    }
+
+    #[test]
+    fn handle_message_handles_initialize() {
+        let request = ClientJsonRpcMessage::Request(rmcp::model::JsonRpcRequest {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id: RequestId::Number(1),
+            request: ClientRequest::InitializeRequest(InitializeRequest::default()),
+        });
+        let response = handle_message(request);
+        assert!(response.is_some());
+    }
+
+    #[test]
+    fn handle_message_ignores_notifications() {
+        let notification = ClientJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            notification: rmcp::model::ClientNotification::InitializedNotification(
+                rmcp::model::InitializedNotification::default(),
+            ),
+        });
+        let response = handle_message(notification);
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn handle_message_ignores_unhandled_request() {
+        let request = ClientJsonRpcMessage::Request(rmcp::model::JsonRpcRequest {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id: RequestId::Number(1),
+            request: ClientRequest::ListToolsRequest(ClientListToolsRequest::default()),
+        });
+        let response = handle_message(request);
+        assert!(response.is_some());
+    }
+
+    #[test]
+    fn handle_message_ignores_error() {
+        let error = ClientJsonRpcMessage::Error(rmcp::model::JsonRpcError {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id: NumberOrString::Number(1),
+            error: rmcp::model::ErrorData::internal_error("test", None),
+        });
+        let response = handle_message(error);
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn write_response_writes_to_stdout() {
+        let tool = tool_stub();
+        let response = list_tools_response(RequestId::Number(1), vec![tool]);
+        let mut cursor = Cursor::new(Vec::new());
+        write_response(&mut cursor, &response).expect("write response");
+        let output = String::from_utf8(cursor.into_inner()).expect("utf8");
+        assert!(output.contains("tools"));
+    }
+
+    #[test]
+    fn run_server_handles_empty_input() {
+        let mut lines = std::iter::empty::<Result<String, std::io::Error>>();
+        let mut cursor = Cursor::new(Vec::new());
+        run_server(&mut lines, &mut cursor);
+        assert!(cursor.into_inner().is_empty());
+    }
+
+    #[test]
+    fn run_server_skips_empty_and_invalid_input() {
+        let lines = vec![
+            Ok(String::new()),
+            Ok("   ".to_string()),
+            Ok("invalid json".to_string()),
+        ];
+        let mut lines = lines.into_iter();
+        let mut cursor = Cursor::new(Vec::new());
+        run_server(&mut lines, &mut cursor);
+        // Should handle gracefully without panicking
+    }
+
+    #[test]
+    fn run_server_emits_responses() {
+        let request = serde_json::to_string(&ClientJsonRpcMessage::Request(
+            rmcp::model::JsonRpcRequest {
+                jsonrpc: rmcp::model::JsonRpcVersion2_0,
+                id: RequestId::Number(1),
+                request: ClientRequest::InitializeRequest(InitializeRequest::default()),
+            },
+        ))
+        .expect("serialize request");
+        let lines = vec![Ok(request)];
+        let mut lines = lines.into_iter();
+        let mut cursor = Cursor::new(Vec::new());
+        run_server(&mut lines, &mut cursor);
+        let output = String::from_utf8(cursor.into_inner()).expect("utf8");
+        assert!(output.contains("result"));
+    }
+
+    #[test]
+    fn validate_expectations_succeeds_without_env() {
+        validate_expectations().expect("validation should succeed");
+    }
+
+    #[test]
+    fn validate_expectations_checks_value_type() {
+        let _guard = EnvVarGuard::set("TOOLTEST_VALUE_TYPE", "string");
+        validate_expectations().expect("string is valid");
+    }
+
+    #[test]
+    fn run_with_empty_input() {
+        let mut lines = std::iter::empty::<Result<String, std::io::Error>>();
+        let mut cursor = Cursor::new(Vec::new());
+        run(&mut lines, &mut cursor).expect("run should succeed");
     }
 }

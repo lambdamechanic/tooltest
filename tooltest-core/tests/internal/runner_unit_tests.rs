@@ -3326,6 +3326,53 @@ fn json_schema_non_standard_keywords_handles_non_string_schema() {
 }
 
 #[test]
+fn json_schema_non_standard_keywords_reports_multiple_tools_with_nullable() {
+    // Multiple tools with nullable to ensure loop continues properly
+    let tools = vec![
+        tool_with_schemas(
+            "first-tool",
+            json!({
+                "type": "object",
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                    "name": { "type": "string", "nullable": true }
+                }
+            }),
+            None,
+        ),
+        tool_with_schemas(
+            "second-tool",
+            json!({
+                "type": "object",
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                    "value": { "type": "number", "nullable": true }
+                }
+            }),
+            Some(json!({
+                "type": "object",
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                    "result": { "type": "string", "nullable": true }
+                }
+            })),
+        ),
+    ];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    // 2 input schemas + 1 output schema = 3 findings
+    assert_eq!(findings.len(), 3);
+}
+
+#[test]
 fn validate_tools_rejects_invalid_schema() {
     let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
     let error = validate_tools(vec![tool], &SchemaConfig::default()).expect_err("error");

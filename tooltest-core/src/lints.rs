@@ -272,16 +272,14 @@ impl JsonSchemaNonStandardKeywordsLint {
     }
 
     /// Check if the schema ID is a "modern" schema (2020-12 or 2019-09)
-    /// that should not use non-standard keywords like nullable
+    /// that should not use non-standard keywords like nullable.
+    ///
+    /// Note: This function shows 1 missed region in llvm-cov reports despite
+    /// complete logical coverage. See `docs/coverage-notes.md` for details.
     fn is_modern_schema(schema_id: &str) -> bool {
         let normalized = normalize_schema_id(schema_id);
-        const MODERN_PREFIXES: &[&str] = &[
-            "https://json-schema.org/draft/2020-12",
-            "https://json-schema.org/draft/2019-09",
-        ];
-        MODERN_PREFIXES
-            .iter()
-            .any(|prefix| normalized.starts_with(prefix))
+        normalized.starts_with("https://json-schema.org/draft/2020-12")
+            || normalized.starts_with("https://json-schema.org/draft/2019-09")
     }
 
     /// Recursively check a JSON value for the `nullable` keyword.

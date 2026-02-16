@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::lint::{LintConfigSource, LintDefinition, LintLevel, LintPhase, LintSuite};
 use crate::lints::{
     CoverageLint, JsonSchemaDialectCompatLint, JsonSchemaKeywordCompatLint,
-    MaxStructuredContentBytesLint, MaxToolsLint, McpSchemaMinVersionLint,
-    MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
+    JsonSchemaNonStandardKeywordsLint, MaxStructuredContentBytesLint, MaxToolsLint,
+    McpSchemaMinVersionLint, MissingStructuredContentLint, NoCrashLint, OutputSchemaCompileLint,
 };
 use crate::CoverageRule;
 
@@ -152,6 +152,13 @@ fn build_lint_rule(entry: &LintConfigEntry) -> Result<std::sync::Arc<dyn crate::
             reject_params(entry, "json_schema_keyword_compat")?;
             let definition = definition_with_params(entry, LintPhase::List, None);
             Ok(std::sync::Arc::new(JsonSchemaKeywordCompatLint::new(
+                definition,
+            )))
+        }
+        "json_schema_non_standard_keywords" => {
+            reject_params(entry, "json_schema_non_standard_keywords")?;
+            let definition = definition_with_params(entry, LintPhase::List, None);
+            Ok(std::sync::Arc::new(JsonSchemaNonStandardKeywordsLint::new(
                 definition,
             )))
         }
@@ -666,6 +673,10 @@ id = "json_schema_keyword_compat"
 level = "warning"
 
 [[lints]]
+id = "json_schema_non_standard_keywords"
+level = "warning"
+
+[[lints]]
 id = "max_structured_content_bytes"
 level = "warning"
 [lints.params]
@@ -695,6 +706,7 @@ level = "error"
         assert!(suite.has_enabled("mcp_schema_min_version"));
         assert!(suite.has_enabled("json_schema_dialect_compat"));
         assert!(suite.has_enabled("json_schema_keyword_compat"));
+        assert!(suite.has_enabled("json_schema_non_standard_keywords"));
         assert!(suite.has_enabled("max_structured_content_bytes"));
         assert!(suite.has_enabled("missing_structured_content"));
         assert!(suite.has_enabled("output_schema_compile"));
@@ -885,6 +897,22 @@ max = 1
             r#"
 [[lints]]
 id = "json_schema_keyword_compat"
+level = "warning"
+[lints.params]
+extra = 1
+"#,
+        )
+        .err()
+        .expect("error");
+        assert!(error.contains("does not accept params"));
+    }
+
+    #[test]
+    fn parse_lint_suite_rejects_params_for_non_standard_keywords() {
+        let error = parse_lint_suite(
+            r#"
+[[lints]]
+id = "json_schema_non_standard_keywords"
 level = "warning"
 [lints.params]
 extra = 1

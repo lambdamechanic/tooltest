@@ -260,6 +260,81 @@ impl LintRule for JsonSchemaKeywordCompatLint {
     }
 }
 
+/// Lint: reports non-standard keywords like `nullable` in JSON Schema 2020-12.
+#[derive(Clone, Debug)]
+pub struct JsonSchemaNonStandardKeywordsLint {
+    definition: LintDefinition,
+}
+
+impl JsonSchemaNonStandardKeywordsLint {
+    pub fn new(definition: LintDefinition) -> Self {
+        Self { definition }
+    }
+
+    fn is_202012_schema(schema_id: &str) -> bool {
+        let normalized = normalize_schema_id(schema_id);
+        // 2020-12 and later (including 2019-09) are "modern" schemas
+        // that should not use non-standard keywords like nullable
+        normalized.starts_with("https://json-schema.org/draft/2020-12")
+            || normalized.starts_with("https://json-schema.org/draft/2019-09")
+    }
+
+    fn check_schema(
+        &self,
+        tool_name: &str,
+        schema: &crate::JsonObject,
+        label: &str,
+    ) -> Option<LintFinding> {
+        if !schema.contains_key("nullable") {
+            return None;
+        }
+        let declared = schema_id_from_object(schema)
+            .map(normalize_schema_id)
+            .unwrap_or(DEFAULT_JSON_SCHEMA_DIALECT);
+        // Only report for 2020-12 schemas, not legacy (draft-07 and earlier)
+        if !Self::is_202012_schema(declared) {
+            return None;
+        }
+        Some(
+            LintFinding::new(format!(
+                "tool '{}' {label} schema declares 2020-12 but uses non-standard keyword 'nullable'",
+                tool_name
+            ))
+            .with_details(json!({
+                "tool": tool_name,
+                "schema": declared,
+                "schema_label": label,
+                "keyword": "nullable",
+            })),
+        )
+    }
+}
+
+impl LintRule for JsonSchemaNonStandardKeywordsLint {
+    fn definition(&self) -> &LintDefinition {
+        &self.definition
+    }
+
+    fn check_list(&self, context: &ListLintContext<'_>) -> Vec<LintFinding> {
+        let mut findings = Vec::new();
+        for tool in context.tools {
+            if let Some(finding) =
+                self.check_schema(tool.name.as_ref(), tool.input_schema.as_ref(), "input")
+            {
+                findings.push(finding);
+            }
+            if let Some(schema) = tool.output_schema.as_ref() {
+                if let Some(finding) =
+                    self.check_schema(tool.name.as_ref(), schema.as_ref(), "output")
+                {
+                    findings.push(finding);
+                }
+            }
+        }
+        findings
+    }
+}
+
 /// Lint: reports output schemas that fail to compile.
 #[derive(Clone, Debug)]
 pub struct OutputSchemaCompileLint {

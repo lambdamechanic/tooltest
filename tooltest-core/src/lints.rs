@@ -320,9 +320,17 @@ impl JsonSchemaNonStandardKeywordsLint {
         if !Self::has_nullable_in_subschema(&serde_json::Value::Object(schema.clone())) {
             return None;
         }
-        let declared = schema_id_from_object(schema)
-            .map(normalize_schema_id)
-            .unwrap_or(DEFAULT_JSON_SCHEMA_DIALECT);
+        // Get the declared schema ID, defaulting to 2020-12 if not present
+        let schema_value = schema.get("$schema");
+        let declared = if let Some(v) = schema_value {
+            if let Some(s) = v.as_str() {
+                normalize_schema_id(s)
+            } else {
+                DEFAULT_JSON_SCHEMA_DIALECT
+            }
+        } else {
+            DEFAULT_JSON_SCHEMA_DIALECT
+        };
         // Only report for 2020-12 schemas, not legacy (draft-07 and earlier)
         if !Self::is_202012_schema(declared) {
             return None;

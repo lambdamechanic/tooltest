@@ -3297,6 +3297,35 @@ fn json_schema_non_standard_keywords_handles_empty_tools() {
 }
 
 #[test]
+fn json_schema_non_standard_keywords_handles_non_string_schema() {
+    // Schema with $schema that is not a string should use default
+    let tools = vec![tool_with_schemas(
+        "non-string-schema",
+        json!({
+            "type": "object",
+            "$schema": 123,  // Not a string
+            "properties": {
+                "name": { "type": "string", "nullable": true }
+            }
+        }),
+        None,
+    )];
+    let lint = JsonSchemaNonStandardKeywordsLint::new(LintDefinition::new(
+        "json_schema_non_standard_keywords",
+        LintPhase::List,
+        LintLevel::Warning,
+    ));
+    let findings = lint.check_list(&crate::ListLintContext {
+        raw_tool_count: tools.len(),
+        protocol_version: None,
+        tools: &tools,
+    });
+    // Should report because default is 2020-12 and nullable is present
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].message.contains("non-string-schema"));
+}
+
+#[test]
 fn validate_tools_rejects_invalid_schema() {
     let tool = tool_with_schemas("bad", json!({ "type": "string" }), None);
     let error = validate_tools(vec![tool], &SchemaConfig::default()).expect_err("error");

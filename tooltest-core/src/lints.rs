@@ -279,13 +279,42 @@ impl JsonSchemaNonStandardKeywordsLint {
             || normalized.starts_with("https://json-schema.org/draft/2019-09")
     }
 
+    /// Recursively check a JSON value for the `nullable` keyword.
+    fn has_nullable_in_subschema(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(obj) => {
+                // Check if this object has nullable
+                if obj.contains_key("nullable") {
+                    return true;
+                }
+                // Recursively check nested schemas
+                for (_, v) in obj {
+                    if Self::has_nullable_in_subschema(v) {
+                        return true;
+                    }
+                }
+                false
+            }
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    if Self::has_nullable_in_subschema(item) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn check_schema(
         &self,
         tool_name: &str,
         schema: &crate::JsonObject,
         label: &str,
     ) -> Option<LintFinding> {
-        if !schema.contains_key("nullable") {
+        // Check if nullable exists anywhere in the schema (including nested)
+        if !Self::has_nullable_in_subschema(&serde_json::Value::Object(schema.clone())) {
             return None;
         }
         let declared = schema_id_from_object(schema)

@@ -1,20 +1,20 @@
 ---
 name: lambda-workflow
-description: "One lifecycle for Lambda repos: choose a br issue, start work, land the PR, and watch GitHub via Dumbwaiter MCP until it merges."
+description: "End-to-end delivery lifecycle for Lambda repos: claim a br issue, create feature branches, open draft PRs, build with tests-first habits, land ready-for-review PRs, and monitor merge status via Dumbwaiter MCP. Use when starting work on a Lambda repo, picking up a br issue, submitting a pull request, tracking merge status, or running the full development workflow from issue to merge."
 ---
 
 # Lambda Workflow
 
-Use this skill whenever you touch delivery end-to-end - from grabbing a br issue through merge/closure. Each phase builds on the last; do not skip ahead unless a human explicitly says so.
+End-to-end delivery lifecycle from br issue through merge. Each phase builds on the last; do not skip ahead unless a human explicitly says so.
 
 ## Lifecycle Map
 
-1. **Select & Claim Work** - pick an unblocked br issue, understand scope, and claim it
-2. **Kick Off & Draft** – baseline tests, branch, and open a draft PR immediately so CI starts.
-3. **Build & Validate** – implement with tests-first habits, keeping trackers and notes fresh.
-4. **Land the Plane** – ready-for-review PR with full test/QA + repo hygiene.
-5. **Monitor & Respond** – use the Dumbwaiter MCP to wait on GitHub signals (checks, reviews, comments, merge) and react.
-6. **Close the Loop** - sync br/git, close the issue, and record proof the change stuck.
+1. **Select & Claim Work** — pick an unblocked br issue, understand scope, claim it
+2. **Kick Off & Draft** — baseline tests, branch, open a draft PR so CI starts
+3. **Build & Validate** — implement with tests-first habits, keep trackers fresh
+4. **Land the Plane** — ready-for-review PR with full test/QA + repo hygiene
+5. **Monitor & Respond** — Dumbwaiter MCP watches GitHub signals (checks, reviews, merge)
+6. **Close the Loop** — sync br/git, close the issue, record proof
 
 ## 1. Select & Claim the br Issue
 
@@ -105,4 +105,4 @@ Once the PR is Ready, hand monitoring to the Dumbwaiter MCP so you don’t poll 
 
 - After Dumbwaiter reports `pr_merged`, archive local branches/stashes so the next effort starts clean.
 
-Following this workflow keeps the entire Lambda lifecycle observable: br reflects intent, GitHub shows work-in-progress via draft PRs, Ready PRs meet the landing checklist, and Dumbwaiter MCP watches the PR until it merges.
+This lifecycle keeps delivery observable: br reflects intent, draft PRs show work-in-progress, and Dumbwaiter MCP watches until merge.

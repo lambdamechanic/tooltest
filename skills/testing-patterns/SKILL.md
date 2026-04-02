@@ -1,11 +1,11 @@
 ---
 name: testing-patterns
-description: Testing patterns and standards for this codebase, including async effects, fakes vs mocks, and property-based testing.
+description: “Guides writing unit tests, integration tests, and property-based tests (proptest) for this Rust codebase. Covers effect abstraction via traits, fakes vs mocks, async test patterns, and coverage standards. Use when writing tests, choosing between fakes and mocks, setting up property-based tests, testing async effects, or reviewing test coverage in this codebase.”
 ---
 
 # Testing Patterns & Effect Abstraction
 
-Short version: model your “effects” as traits, inject them, keep core logic pure, and provide real + fake implementations. That’s the idiomatic Rust way; free monads aren’t a thing here.
+Model effects as traits, inject them, keep core logic pure, provide real + fake implementations.
 
 ---
 
@@ -208,17 +208,10 @@ When in doubt, assume reviewers will ask “where’s the property test?” and 
 
 ## Property-Based Testing Workflow (proptest)
 
-When you add or refresh property tests, approach the work like a mini br issue - not a plan-tool exercise. Claim/track the effort via `br` (`ready` -> `update ... --status in_progress` -> `close`), and keep the following loop tight:
+1. **Identify high-value properties.** Start with public API or core modules. Look for invariants (round trips, idempotence, ordering guarantees). Skip trivial wrappers.
+2. **Study usage.** Grep the repo to see how the function/struct is consumed so strategies stay within real-world preconditions.
+3. **Write precise `proptest` cases.** Few high-signal tests beat shotgun suites. Favor `prop::collection`, `any::<T>()`, `from_regex`; only add bounds when the code requires them.
+4. **Use real generators.** Model inputs with strategies (vecs, maps, enums) instead of manual loops. Let generators produce arbitrarily long inputs unless the code has a hard limit.
+5. **Run and reflect.** `cargo test` with property tests. If a failure exposes a gap, fix the bug or constrain the strategy with a documented reason.
 
-1. **Identify high-value properties.** Start with the public API or core modules. Look for invariants (round trips, idempotence, ordering guarantees, etc.) that actually buy us something. Skip trivial wrappers.
-2. **Study how the code is used.** Before writing a property, grep the repo to see how that function/struct is consumed so your strategy stays within real-world preconditions.
-3. **Write precise `proptest` cases.** Small number of high-signal tests beats shotgun suites. Favor clear strategies (e.g., `prop::collection`, `any::<T>()`, `from_regex`) and only add bounds when the code truly requires them.
-4. **Lean on real generators.** Model inputs with strategies (vecs, maps, enums) instead of manual loops like `for skip in 0..5`. Let the generator produce arbitrarily long lists/arrays (only constrain them when the production code has a hard limit) so burn-in runs and shrink output stay meaningful.
-5. **Run and reflect.** `cargo test` (or the specific crate) with the new property tests. If a proptest failure exposes a gap, either fix the bug or constrain the strategy with a documented reason.
-
-Keep the tests maintainable: name the property after the behavior it documents, describe why the invariant matters in a short comment when it isn’t obvious, and prefer deterministic shrink-friendly strategies. The expectation is that every non-trivial business rule eventually has a companion `proptest!` block living next to its unit tests.
-When you record notes or TODOs for these efforts, put them in the br issue itself so the history stays alongside the task - no side trackers, no plan tool usage, no Hypothesis snippets.
-
----
-
-**Analogy:** Traits + adapters ≈ Haskell typeclasses + interpreters. Stick to this pattern instead of free monads.
+Name properties after the behavior they document. Every non-trivial business rule should eventually have a companion `proptest!` block next to its unit tests.

@@ -1,30 +1,22 @@
 ---
 name: galahad
-description: how to approach tests, types and coverage
+description: “Enforces the Galahad Principle for type safety, test quality, and 100% coverage targets. Defines priority order (types > tests > clarity > performance), forbidden patterns (type escapes, coverage gaming), and the fix-root-cause workflow for failures. Use when writing tests, fixing type errors, reviewing coverage reports, or deciding whether to suppress a lint/warning.”
 ---
 
 # Coding Agent Quality Rules (Galahad Principle)
 
-Based on Jonathan Lange’s “The Galahad Principle”:
-https://jml.io/galahad-principle/
-
-Core idea: **getting to 100% yields disproportionate value**—especially **simplicity** and **trust**. When checks are truly “all green”, any new failure is a strong, unambiguous signal; “absence of evidence becomes evidence of absence”.
+Based on Jonathan Lange’s [The Galahad Principle](https://jml.io/galahad-principle/): **getting to 100% yields disproportionate value**—especially **simplicity** and **trust**. Any new failure is a strong, unambiguous signal.
 
 ## Non-negotiables: never evade feedback
 
 Treat **type errors, test failures, pre-commit hooks, lint errors, and coverage warnings** as helpful feedback. Fix root causes.
 
 ### Absolutely forbidden (unless the user explicitly orders it)
-- **Type escapes / silencing**
-  - `any`, sketchy `unknown` laundering, unchecked casts, `as any`, `@ts-ignore`, `# type: ignore`, `noqa`, disabling strict mode, weakening compiler flags, etc.
-- **Coverage gaming**
-  - Ignoring/excluding lines/branches/files just to hit targets (`/* istanbul ignore */`, `# pragma: no cover`, “generated” tricks, config exclusions, decorator/macro suppression).
-- **Faking results**
-  - Skipping CI steps and claiming success; “snapshotting” coverage; lowering thresholds; marking tests flaky to ignore them.
+- **Type escapes / silencing** — `any`, `as any`, `@ts-ignore`, `# type: ignore`, `noqa`, disabling strict mode, weakening compiler flags
+- **Coverage gaming** — `/* istanbul ignore */`, `# pragma: no cover`, config exclusions, decorator/macro suppression
+- **Faking results** — skipping CI steps, “snapshotting” coverage, lowering thresholds, marking tests flaky to ignore them
 
 ## Priorities
-
-Type safety is part of correctness and **outranks tests**.
 
 When tradeoffs exist, prioritize in this order:
 1. **Type safety / soundness**
@@ -32,8 +24,6 @@ When tradeoffs exist, prioritize in this order:
 3. **Clarity / maintainability**
 4. **Performance**
 5. **Backwards compatibility** (lowest)
-
-Breaking changes are acceptable when they improve verifiability and simplify the system.
 
 ## Default workflow (when anything fails)
 
@@ -44,32 +34,41 @@ Breaking changes are acceptable when they improve verifiability and simplify the
 5. Refactor production code if needed to make it easy to type-check and validate.
 
 ### Run checks in this order
-1. **Typecheck**
-2. **Unit tests**
-3. **Integration tests**
-4. **Lint / pre-commit**
-5. **Coverage**
-
-Goal: a repo where “all green” is normal, and any new red is a loud, trustworthy signal.
+1. **Typecheck** → 2. **Unit tests** → 3. **Integration tests** → 4. **Lint / pre-commit** → 5. **Coverage**
 
 ## “Hard to test” means refactor
 
-If something is hard to test or hard to type:
-- Treat it as a **design smell**.
-- Refactor towards:
-  - smaller pure functions
-  - explicit data flow, minimal global state
-  - clear boundaries between logic and side effects
-  - typed domain models over stringly-typed blobs
+If something is hard to test or hard to type, treat it as a **design smell**. Refactor towards smaller pure functions, explicit data flow, clear boundaries between logic and side effects, and typed domain models.
 
-## Mocks: don’t overuse them
+**Before** (hard to test — hidden dependency):
+```rust
+fn process_order(order: &Order) -> Result<Receipt, Error> {
+    let now = SystemTime::now(); // hidden side effect
+    let rate = fetch_exchange_rate(order.currency)?; // hidden I/O
+    Ok(Receipt { total: order.amount * rate, timestamp: now })
+}
+```
 
-Avoid injecting mocks via monkeypatching or replacing system utilities by default.
+**After** (testable — explicit dependencies):
+```rust
+fn process_order(order: &Order, now: SystemTime, rate: f64) -> Receipt {
+    Receipt { total: order.amount * rate, timestamp: now }
+}
+```
 
-Preferred approach:
-- Make the function under test able to operate in multiple environments by **passing in the substitutable operations explicitly** (usually as function parameters or small interfaces).
-- Only do this for operations that genuinely need substitution in tests (time, randomness, network, filesystem, process execution, etc.).
-- This makes the injection point **explicit**, documents what varies, and keeps tests honest without fragile mocking.
+## Mocks: prefer explicit injection
+
+Pass substitutable operations explicitly (function parameters or small interfaces) instead of monkeypatching. Only abstract operations that genuinely need substitution in tests (time, randomness, network, filesystem).
+
+```rust
+// Explicit dependency injection — testable without mocking frameworks
+pub trait Clock { fn now(&self) -> SystemTime; }
+pub struct Service<C: Clock> { clock: C }
+
+// Test: inject a fake
+struct FixedClock(SystemTime);
+impl Clock for FixedClock { fn now(&self) -> SystemTime { self.0 } }
+```
 
 ## What “good” looks like
 
